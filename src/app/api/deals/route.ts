@@ -2,6 +2,10 @@ import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import {
+  assertBusinessUnitAccess,
+  getBusinessUnitSelection,
+} from "@/lib/business-units";
 import { createRecordActivity, ownerScope, validateOwner } from "@/lib/crm";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -19,9 +23,13 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const query = listQuerySchema.parse(Object.fromEntries(url.searchParams));
     const stageId = url.searchParams.get("stageId");
+    const businessUnitSelection = await getBusinessUnitSelection(context);
     const where: Prisma.DealWhereInput = {
       organizationId: context.organization.id,
       deletedAt: null,
+      ...(businessUnitSelection.selectedBusinessUnitId
+        ? { businessUnitId: businessUnitSelection.selectedBusinessUnitId }
+        : {}),
       ...(await ownerScope(context)),
       ...(query.ownerUserId ? { ownerUserId: query.ownerUserId } : {}),
       ...(stageId ? { stageId } : {}),
@@ -77,6 +85,7 @@ export async function POST(request: Request) {
         pipelineId: input.pipelineId,
         organizationId: context.organization.id,
       },
+      include: { pipeline: { select: { businessUnitId: true } } },
     });
     if (!stage)
       return NextResponse.json(
@@ -88,12 +97,21 @@ export async function POST(request: Request) {
         { message: "失注理由を入力してください。" },
         { status: 400 },
       );
+    if (
+      !(await assertBusinessUnitAccess(context, stage.pipeline.businessUnitId))
+    ) {
+      return NextResponse.json(
+        { message: "この事業部へ商談を作成する権限がありません。" },
+        { status: 403 },
+      );
+    }
     const deal = await prisma.$transaction(async (tx) => {
       const created = await tx.deal.create({
         data: {
           ...input,
           ownerUserId,
           organizationId: context.organization.id,
+          businessUnitId: stage.pipeline.businessUnitId,
           amount: input.amount ?? null,
           probability: stage.probability,
           status: stage.stageType,

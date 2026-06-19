@@ -12,10 +12,29 @@ export default async function MembersPage() {
   const members = await prisma.organizationMember.findMany({
     where: { organizationId: context.organization.id },
     include: {
-      user: { select: { id: true, name: true, email: true } },
       team: { select: { name: true } },
+      user: {
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          businessUnitMemberships: {
+            where: { organizationId: context.organization.id },
+            select: {
+              businessUnitId: true,
+              workFunction: true,
+              isManager: true,
+            },
+          },
+        },
+      },
     },
     orderBy: [{ role: "asc" }, { createdAt: "asc" }],
+  });
+  const businessUnits = await prisma.businessUnit.findMany({
+    where: { organizationId: context.organization.id, status: "ACTIVE" },
+    select: { id: true, name: true },
+    orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
   });
 
   return (
@@ -28,6 +47,7 @@ export default async function MembersPage() {
       <SettingsNav />
       <MemberManagement
         members={members}
+        businessUnits={businessUnits}
         canManage={hasPermission(
           context.membership.role,
           Permission.MANAGE_MEMBERS,

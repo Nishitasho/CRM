@@ -17,7 +17,14 @@ export default async function EditDealPage({
     prisma.deal.findFirst({
       where: { id, organizationId: context.organization.id, deletedAt: null },
     }),
-    getCrmFormOptions(context.organization.id),
+    prisma.deal
+      .findFirst({
+        where: { id, organizationId: context.organization.id, deletedAt: null },
+        select: { businessUnitId: true },
+      })
+      .then((deal) =>
+        getCrmFormOptions(context.organization.id, deal?.businessUnitId),
+      ),
   ]);
   if (!item) notFound();
 

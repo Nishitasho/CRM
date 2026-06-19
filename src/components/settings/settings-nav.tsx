@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 const items = [
+  ["/settings/business-units", "事業部"],
   ["/settings/members", "メンバーと権限"],
   ["/settings/pipelines", "パイプライン"],
   ["/settings/custom-properties", "カスタム項目"],

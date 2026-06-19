@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import { assertBusinessUnitAccess } from "@/lib/business-units";
 import {
   canEditRecord,
   canViewRecord,
@@ -83,12 +84,21 @@ export async function PATCH(request: Request, { params }: Params) {
         pipelineId: input.pipelineId,
         organizationId: context.organization.id,
       },
+      include: { pipeline: { select: { businessUnitId: true } } },
     });
     if (!stage)
       return NextResponse.json(
         { message: "ステージが正しくありません。" },
         { status: 400 },
       );
+    if (
+      !(await assertBusinessUnitAccess(context, stage.pipeline.businessUnitId))
+    ) {
+      return NextResponse.json(
+        { message: "この事業部の商談を編集する権限がありません。" },
+        { status: 403 },
+      );
+    }
     if (stage.stageType === "LOST" && !input.lostReason)
       return NextResponse.json(
         { message: "失注理由を入力してください。" },
@@ -99,6 +109,7 @@ export async function PATCH(request: Request, { params }: Params) {
         where: { id },
         data: {
           ...input,
+          businessUnitId: stage.pipeline.businessUnitId,
           probability: stage.probability,
           status: stage.stageType,
           closeDate:

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import { assertBusinessUnitAccess } from "@/lib/business-units";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { pipelineSchema } from "@/lib/validation";
@@ -27,12 +28,21 @@ export async function PATCH(request: Request, { params }: Params) {
         { message: "パイプラインが見つかりません。" },
         { status: 404 },
       );
+    if (!(await assertBusinessUnitAccess(context, current.businessUnitId))) {
+      return NextResponse.json(
+        { message: "この事業部のパイプラインを編集する権限がありません。" },
+        { status: 403 },
+      );
+    }
 
     const shouldBeDefault = current.isDefault || input.isDefault;
     const item = await prisma.$transaction(async (tx) => {
       if (shouldBeDefault)
         await tx.pipeline.updateMany({
-          where: { organizationId: context.organization.id },
+          where: {
+            organizationId: context.organization.id,
+            businessUnitId: current.businessUnitId,
+          },
           data: { isDefault: false },
         });
 
@@ -74,6 +84,12 @@ export async function DELETE(_: Request, { params }: Params) {
         { message: "パイプラインが見つかりません。" },
         { status: 404 },
       );
+    if (!(await assertBusinessUnitAccess(context, pipeline.businessUnitId))) {
+      return NextResponse.json(
+        { message: "この事業部のパイプラインを削除する権限がありません。" },
+        { status: 403 },
+      );
+    }
     if (pipelineCount <= 1)
       return NextResponse.json(
         { message: "最後のパイプラインは削除できません。" },

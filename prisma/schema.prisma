@@ -25,6 +25,21 @@ enum MemberStatus {
   @@map("member_status")
 }
 
+enum BusinessUnitStatus {
+  ACTIVE   @map("active")
+  INACTIVE @map("inactive")
+
+  @@map("business_unit_status")
+}
+
+enum WorkFunction {
+  IS
+  FS
+  CS
+
+  @@map("work_function")
+}
+
 enum StageType {
   OPEN @map("open")
   WON  @map("won")
@@ -138,20 +153,21 @@ model User {
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  memberships       OrganizationMember[]
-  sessions          AuthSession[]
-  ownedContacts     Contact[]            @relation("ContactOwner")
-  ownedCompanies    Company[]            @relation("CompanyOwner")
-  ownedDeals        Deal[]               @relation("DealOwner")
-  activities        Activity[]
-  ownedTasks        Task[]               @relation("TaskOwner")
-  createdTasks      Task[]               @relation("TaskCreator")
-  uploadedImports   ImportJob[]
-  createdTemplates  EmailTemplate[]
-  availabilityRules AvailabilityRule[]
-  meetingLinks      MeetingLink[]
-  auditLogs         AuditLog[]
-  savedViews        SavedView[]
+  memberships             OrganizationMember[]
+  sessions                AuthSession[]
+  ownedContacts           Contact[]                @relation("ContactOwner")
+  ownedCompanies          Company[]                @relation("CompanyOwner")
+  ownedDeals              Deal[]                   @relation("DealOwner")
+  activities              Activity[]
+  ownedTasks              Task[]                   @relation("TaskOwner")
+  createdTasks            Task[]                   @relation("TaskCreator")
+  uploadedImports         ImportJob[]
+  createdTemplates        EmailTemplate[]
+  availabilityRules       AvailabilityRule[]
+  meetingLinks            MeetingLink[]
+  auditLogs               AuditLog[]
+  savedViews              SavedView[]
+  businessUnitMemberships BusinessUnitMembership[]
 }
 
 model Organization {
@@ -161,49 +177,99 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  memberships       OrganizationMember[]
-  teams             Team[]
-  invitations       Invitation[]
-  sessions          AuthSession[]
-  contacts          Contact[]
-  companies         Company[]
-  deals             Deal[]
-  activities        Activity[]
-  tasks             Task[]
-  pipelines         Pipeline[]
-  stages            PipelineStage[]
-  associations      ObjectAssociation[]
-  customProperties  CustomProperty[]
-  importJobs        ImportJob[]
-  emailTemplates    EmailTemplate[]
-  availabilityRules AvailabilityRule[]
-  meetingLinks      MeetingLink[]
-  meetingBookings   MeetingBooking[]
-  forms             Form[]
-  formSubmissions   FormSubmission[]
-  conversations     Conversation[]
-  auditLogs         AuditLog[]
-  savedViews        SavedView[]
+  memberships             OrganizationMember[]
+  teams                   Team[]
+  invitations             Invitation[]
+  sessions                AuthSession[]
+  contacts                Contact[]
+  companies               Company[]
+  deals                   Deal[]
+  activities              Activity[]
+  tasks                   Task[]
+  pipelines               Pipeline[]
+  stages                  PipelineStage[]
+  associations            ObjectAssociation[]
+  customProperties        CustomProperty[]
+  importJobs              ImportJob[]
+  emailTemplates          EmailTemplate[]
+  availabilityRules       AvailabilityRule[]
+  meetingLinks            MeetingLink[]
+  meetingBookings         MeetingBooking[]
+  forms                   Form[]
+  formSubmissions         FormSubmission[]
+  conversations           Conversation[]
+  auditLogs               AuditLog[]
+  savedViews              SavedView[]
+  businessUnits           BusinessUnit[]
+  businessUnitMemberships BusinessUnitMembership[]
 }
 
 model OrganizationMember {
-  id             String           @id @default(uuid()) @db.Uuid
-  organizationId String           @map("organization_id") @db.Uuid
-  userId         String           @map("user_id") @db.Uuid
-  role           OrganizationRole @default(USER)
-  teamId         String?          @map("team_id") @db.Uuid
-  status         MemberStatus     @default(ACTIVE)
-  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                     String           @id @default(uuid()) @db.Uuid
+  organizationId         String           @map("organization_id") @db.Uuid
+  userId                 String           @map("user_id") @db.Uuid
+  role                   OrganizationRole @default(USER)
+  teamId                 String?          @map("team_id") @db.Uuid
+  selectedBusinessUnitId String?          @map("selected_business_unit_id") @db.Uuid
+  status                 MemberStatus     @default(ACTIVE)
+  createdAt              DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt              DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  organization         Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team                 Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  selectedBusinessUnit BusinessUnit? @relation("SelectedBusinessUnit", fields: [selectedBusinessUnitId], references: [id], onDelete: SetNull)
 
   @@unique([organizationId, userId])
   @@index([userId, status])
   @@index([organizationId, role, status])
+  @@index([organizationId, selectedBusinessUnitId])
   @@map("organization_members")
+}
+
+model BusinessUnit {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  name           String             @db.VarChar(160)
+  slug           String             @db.VarChar(80)
+  description    String?
+  status         BusinessUnitStatus @default(ACTIVE)
+  displayOrder   Int                @default(0) @map("display_order")
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  memberships       BusinessUnitMembership[]
+  selectedByMembers OrganizationMember[]     @relation("SelectedBusinessUnit")
+  pipelines         Pipeline[]
+  deals             Deal[]
+  forms             Form[]
+
+  @@unique([organizationId, slug])
+  @@unique([organizationId, name])
+  @@index([organizationId, status, displayOrder])
+  @@map("business_units")
+}
+
+model BusinessUnitMembership {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  businessUnitId String             @map("business_unit_id") @db.Uuid
+  userId         String             @map("user_id") @db.Uuid
+  workFunction   WorkFunction       @map("work_function")
+  isManager      Boolean            @default(false) @map("is_manager")
+  status         BusinessUnitStatus @default(ACTIVE)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnit BusinessUnit @relation(fields: [businessUnitId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([businessUnitId, userId, workFunction])
+  @@index([organizationId, userId, status])
+  @@index([organizationId, businessUnitId, workFunction, status])
+  @@map("business_unit_memberships")
 }
 
 model Team {
@@ -318,17 +384,19 @@ model Company {
 model Pipeline {
   id             String   @id @default(uuid()) @db.Uuid
   organizationId String   @map("organization_id") @db.Uuid
+  businessUnitId String?  @map("business_unit_id") @db.Uuid
   name           String   @db.VarChar(160)
   isDefault      Boolean  @default(false) @map("is_default")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnit BusinessUnit?   @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
   stages       PipelineStage[]
   deals        Deal[]
 
   @@unique([organizationId, name])
-  @@index([organizationId, isDefault])
+  @@index([organizationId, businessUnitId, isDefault])
   @@map("pipelines")
 }
 
@@ -356,6 +424,7 @@ model PipelineStage {
 model Deal {
   id                String     @id @default(uuid()) @db.Uuid
   organizationId    String     @map("organization_id") @db.Uuid
+  businessUnitId    String?    @map("business_unit_id") @db.Uuid
   ownerUserId       String?    @map("owner_user_id") @db.Uuid
   pipelineId        String     @map("pipeline_id") @db.Uuid
   stageId           String     @map("stage_id") @db.Uuid
@@ -374,12 +443,13 @@ model Deal {
   deletedAt         DateTime?  @map("deleted_at") @db.Timestamptz(3)
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnit BusinessUnit? @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
   owner        User?         @relation("DealOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   pipeline     Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Restrict)
   stage        PipelineStage @relation(fields: [stageId], references: [id], onDelete: Restrict)
 
   @@unique([organizationId, externalId])
-  @@index([organizationId, pipelineId, stageId, deletedAt])
+  @@index([organizationId, businessUnitId, pipelineId, stageId, deletedAt])
   @@index([organizationId, ownerUserId])
   @@map("deals")
 }
@@ -587,6 +657,7 @@ model MeetingBooking {
 model Form {
   id               String   @id @default(uuid()) @db.Uuid
   organizationId   String   @map("organization_id") @db.Uuid
+  businessUnitId   String?  @map("business_unit_id") @db.Uuid
   name             String   @db.VarChar(160)
   slug             String   @unique @db.VarChar(100)
   fields           Json     @default("[]") @db.JsonB
@@ -596,9 +667,10 @@ model Form {
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  businessUnit BusinessUnit?    @relation(fields: [businessUnitId], references: [id], onDelete: SetNull)
   submissions  FormSubmission[]
 
-  @@index([organizationId])
+  @@index([organizationId, businessUnitId])
   @@map("forms")
 }
 

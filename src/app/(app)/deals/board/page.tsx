@@ -4,6 +4,7 @@ import { ObjectNav } from "@/components/crm/object-nav";
 import { KanbanBoard } from "@/components/deals/kanban-board";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
 
@@ -16,8 +17,12 @@ export default async function DealBoardPage({
   if (!context) redirect("/login");
 
   const params = await searchParams;
+  const businessUnitSelection = await getBusinessUnitSelection(context);
+  const businessUnitFilter = businessUnitSelection.selectedBusinessUnitId
+    ? { businessUnitId: businessUnitSelection.selectedBusinessUnitId }
+    : {};
   const pipelines = await prisma.pipeline.findMany({
-    where: { organizationId: context.organization.id },
+    where: { organizationId: context.organization.id, ...businessUnitFilter },
     include: { stages: { orderBy: { sortOrder: "asc" } } },
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
@@ -30,6 +35,7 @@ export default async function DealBoardPage({
       organizationId: context.organization.id,
       pipelineId: pipeline.id,
       deletedAt: null,
+      ...businessUnitFilter,
       ...(await ownerScope(context)),
     },
     include: { owner: { select: { name: true } } },
@@ -83,7 +89,7 @@ export default async function DealBoardPage({
       <PageHeading
         eyebrow="Deal pipeline"
         title="商談パイプライン"
-        description={`${pipeline.name}の商談をドラッグ＆ドロップで更新できます。`}
+        description={`${businessUnitSelection.selectedBusinessUnitName} / ${pipeline.name}の商談をドラッグ＆ドロップで更新できます。`}
         action={
           <div className="flex gap-2">
             <Link href="/deals" className="secondary-button">

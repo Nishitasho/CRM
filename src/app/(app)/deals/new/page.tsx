@@ -2,13 +2,16 @@ import { redirect } from "next/navigation";
 import { RecordForm } from "@/components/crm/record-form";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { getBusinessUnitSelection } from "@/lib/business-units";
 import { getCrmFormOptions } from "@/lib/page-data";
 
 export default async function NewDealPage() {
   const context = await getAuthContext();
   if (!context) redirect("/login");
+  const businessUnitSelection = await getBusinessUnitSelection(context);
   const { members, pipelines, customProperties } = await getCrmFormOptions(
     context.organization.id,
+    businessUnitSelection.selectedBusinessUnitId,
   );
 
   return (
@@ -16,7 +19,7 @@ export default async function NewDealPage() {
       <PageHeading
         eyebrow="New deal"
         title="商談を追加"
-        description="商談は必ずパイプラインとステージに紐付きます。"
+        description={`${businessUnitSelection.selectedBusinessUnitName}の商談として登録します。`}
       />
       <RecordForm
         type="deal"

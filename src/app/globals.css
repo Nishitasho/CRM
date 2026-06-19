@@ -4,13 +4,40 @@
 
 :root {
   color-scheme: light;
-  --ink: #17211b;
-  --muted: #667169;
-  --canvas: #f5f7f2;
-  --panel: #ffffff;
-  --line: #dfe5dd;
-  --brand: #2b7a4b;
-  --brand-dark: #194f30;
+  --background: #f8fafc;
+  --surface: #ffffff;
+  --surface-subtle: #f1f5f9;
+  --surface-hover: #fff7ed;
+  --foreground: #0f172a;
+  --foreground-secondary: #475569;
+  --foreground-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --brand-50: #fff7ed;
+  --brand-100: #ffedd5;
+  --brand-200: #fed7aa;
+  --brand-300: #fdba74;
+  --brand-400: #fb923c;
+  --brand-500: #f97316;
+  --brand-600: #ea580c;
+  --brand-700: #c2410c;
+  --brand-800: #9a3412;
+  --brand-900: #7c2d12;
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #b91c1c;
+  --info: #0369a1;
+  --sidebar: #111827;
+  --sidebar-hover: #1f2937;
+  --sidebar-foreground: #e5e7eb;
+  --sidebar-muted: #9ca3af;
+  --ink: var(--foreground);
+  --muted: var(--foreground-secondary);
+  --canvas: var(--background);
+  --panel: var(--surface);
+  --line: var(--border);
+  --brand: var(--brand-500);
+  --brand-dark: var(--brand-700);
 }
 
 * {
@@ -25,10 +52,15 @@ body {
   margin: 0;
   color: var(--ink);
   background:
-    radial-gradient(circle at 90% 5%, rgba(233, 123, 74, 0.08), transparent 23rem),
-    var(--canvas);
+    linear-gradient(
+      180deg,
+      rgba(255, 247, 237, 0.62),
+      rgba(255, 255, 255, 0) 18rem
+    ),
+    var(--background);
   font-family: Inter, "Hiragino Sans", "Yu Gothic UI", "Yu Gothic", sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -45,31 +77,31 @@ a {
 
 ::selection {
   color: white;
-  background: var(--brand);
+  background: var(--brand-600);
 }
 
 @layer components {
   .field-label {
-    @apply mb-2 block text-sm font-semibold text-ink;
+    @apply mb-2 block text-xs font-semibold text-slate-600;
   }
 
   .text-field {
-    @apply w-full rounded-xl border border-line bg-white px-4 py-3 text-sm text-ink outline-none transition placeholder:text-slate-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-100;
+    @apply w-full rounded-lg border border-line bg-white px-3.5 py-2.5 text-sm text-ink outline-none transition placeholder:text-slate-400 hover:border-slate-300 focus:border-brand-500 focus:ring-4 focus:ring-brand-100;
   }
 
   .primary-button {
-    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-4 focus:ring-brand-100 disabled:cursor-not-allowed disabled:opacity-60;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 focus:outline-none focus:ring-4 focus:ring-brand-100 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .secondary-button {
-    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-line bg-white px-5 py-2.5 text-sm font-bold text-ink transition hover:border-brand-500 hover:text-brand-700 focus:outline-none focus:ring-4 focus:ring-brand-100 disabled:cursor-not-allowed disabled:opacity-60;
+    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700 focus:outline-none focus:ring-4 focus:ring-brand-100 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .card {
-    @apply rounded-2xl border border-line bg-white shadow-card;
+    @apply rounded-lg border border-line bg-white shadow-card;
   }
 
   .eyebrow {
-    @apply text-xs font-bold uppercase tracking-[0.16em] text-brand-600;
+    @apply text-xs font-semibold uppercase tracking-[0.14em] text-brand-700;
   }
 }

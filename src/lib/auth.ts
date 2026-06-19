@@ -18,6 +18,7 @@ export type AuthContext = {
     id: string;
     role: OrganizationRole;
     teamId: string | null;
+    selectedBusinessUnitId: string | null;
   };
 };
 
@@ -50,7 +51,9 @@ export async function destroySession() {
   const cookieStore = await cookies();
   const token = cookieStore.get(cookieName)?.value;
   if (token) {
-    await prisma.authSession.deleteMany({ where: { tokenHash: hashToken(token) } });
+    await prisma.authSession.deleteMany({
+      where: { tokenHash: hashToken(token) },
+    });
   }
   cookieStore.delete(cookieName);
 }
@@ -80,7 +83,13 @@ export async function getAuthContext(): Promise<AuthContext | null> {
         userId: session.userId,
       },
     },
-    select: { id: true, role: true, teamId: true, status: true },
+    select: {
+      id: true,
+      role: true,
+      teamId: true,
+      selectedBusinessUnitId: true,
+      status: true,
+    },
   });
 
   if (!membership || membership.status !== MemberStatus.ACTIVE) {
@@ -95,6 +104,7 @@ export async function getAuthContext(): Promise<AuthContext | null> {
       id: membership.id,
       role: membership.role,
       teamId: membership.teamId,
+      selectedBusinessUnitId: membership.selectedBusinessUnitId,
     },
   };
 }

@@ -26,6 +26,48 @@ async function main() {
     update: { name: "株式会社サンプル" },
     create: { name: "株式会社サンプル", slug: "sample" },
   });
+  const firstBusinessUnit = await prisma.businessUnit.upsert({
+    where: {
+      organizationId_slug: {
+        organizationId: organization.id,
+        slug: "first",
+      },
+    },
+    update: {
+      name: "第1事業部",
+      description: "IS / FSで営業活動を管理する初期事業部",
+      status: "ACTIVE",
+      displayOrder: 1,
+    },
+    create: {
+      organizationId: organization.id,
+      name: "第1事業部",
+      slug: "first",
+      description: "IS / FSで営業活動を管理する初期事業部",
+      displayOrder: 1,
+    },
+  });
+  const hdBusinessUnit = await prisma.businessUnit.upsert({
+    where: {
+      organizationId_slug: {
+        organizationId: organization.id,
+        slug: "hd",
+      },
+    },
+    update: {
+      name: "HD事業部",
+      description: "IS / FS / CSで営業から制作進行まで管理する初期事業部",
+      status: "ACTIVE",
+      displayOrder: 2,
+    },
+    create: {
+      organizationId: organization.id,
+      name: "HD事業部",
+      slug: "hd",
+      description: "IS / FS / CSで営業から制作進行まで管理する初期事業部",
+      displayOrder: 2,
+    },
+  });
 
   const superAdmin = await prisma.user.upsert({
     where: { email: "admin@example.com" },
@@ -67,7 +109,11 @@ async function main() {
         userId: superAdmin.id,
       },
     },
-    update: { role: OrganizationRole.SUPER_ADMIN, teamId: salesTeam.id },
+    update: {
+      role: OrganizationRole.SUPER_ADMIN,
+      teamId: salesTeam.id,
+      selectedBusinessUnitId: null,
+    },
     create: {
       organizationId: organization.id,
       userId: superAdmin.id,
@@ -144,14 +190,75 @@ async function main() {
         userId: member.id,
       },
     },
-    update: { role: OrganizationRole.USER, teamId: salesTeam.id },
+    update: {
+      role: OrganizationRole.USER,
+      teamId: salesTeam.id,
+      selectedBusinessUnitId: firstBusinessUnit.id,
+    },
     create: {
       organizationId: organization.id,
       userId: member.id,
       role: OrganizationRole.USER,
       teamId: salesTeam.id,
+      selectedBusinessUnitId: firstBusinessUnit.id,
     },
   });
+
+  for (const item of [
+    {
+      userId: superAdmin.id,
+      businessUnitId: firstBusinessUnit.id,
+      workFunction: "IS",
+    },
+    {
+      userId: superAdmin.id,
+      businessUnitId: firstBusinessUnit.id,
+      workFunction: "FS",
+    },
+    {
+      userId: superAdmin.id,
+      businessUnitId: hdBusinessUnit.id,
+      workFunction: "IS",
+    },
+    {
+      userId: superAdmin.id,
+      businessUnitId: hdBusinessUnit.id,
+      workFunction: "FS",
+    },
+    {
+      userId: superAdmin.id,
+      businessUnitId: hdBusinessUnit.id,
+      workFunction: "CS",
+    },
+    {
+      userId: member.id,
+      businessUnitId: firstBusinessUnit.id,
+      workFunction: "IS",
+    },
+    {
+      userId: member.id,
+      businessUnitId: hdBusinessUnit.id,
+      workFunction: "FS",
+    },
+  ] as const) {
+    await prisma.businessUnitMembership.upsert({
+      where: {
+        businessUnitId_userId_workFunction: {
+          businessUnitId: item.businessUnitId,
+          userId: item.userId,
+          workFunction: item.workFunction,
+        },
+      },
+      update: { organizationId: organization.id, status: "ACTIVE" },
+      create: {
+        organizationId: organization.id,
+        userId: item.userId,
+        businessUnitId: item.businessUnitId,
+        workFunction: item.workFunction,
+        isManager: item.userId === superAdmin.id,
+      },
+    });
+  }
 
   const pipeline = await prisma.pipeline.upsert({
     where: {
@@ -160,10 +267,26 @@ async function main() {
         name: "標準営業パイプライン",
       },
     },
-    update: { isDefault: true },
+    update: { businessUnitId: firstBusinessUnit.id, isDefault: true },
     create: {
       organizationId: organization.id,
+      businessUnitId: firstBusinessUnit.id,
       name: "標準営業パイプライン",
+      isDefault: true,
+    },
+  });
+  const hdPipeline = await prisma.pipeline.upsert({
+    where: {
+      organizationId_name: {
+        organizationId: organization.id,
+        name: "HD営業パイプライン",
+      },
+    },
+    update: { businessUnitId: hdBusinessUnit.id, isDefault: true },
+    create: {
+      organizationId: organization.id,
+      businessUnitId: hdBusinessUnit.id,
+      name: "HD営業パイプライン",
       isDefault: true,
     },
   });
@@ -177,6 +300,21 @@ async function main() {
       create: {
         organizationId: organization.id,
         pipelineId: pipeline.id,
+        sortOrder: index + 1,
+        ...stage,
+      },
+    });
+    await prisma.pipelineStage.upsert({
+      where: {
+        pipelineId_sortOrder: {
+          pipelineId: hdPipeline.id,
+          sortOrder: index + 1,
+        },
+      },
+      update: stage,
+      create: {
+        organizationId: organization.id,
+        pipelineId: hdPipeline.id,
         sortOrder: index + 1,
         ...stage,
       },
@@ -320,6 +458,7 @@ async function main() {
     where: { slug: "sample-contact" },
     update: {
       organizationId: organization.id,
+      businessUnitId: firstBusinessUnit.id,
       name: "無料相談フォーム",
       fields: [
         { name: "lastName", label: "姓", type: "text", required: true },
@@ -342,6 +481,7 @@ async function main() {
     },
     create: {
       organizationId: organization.id,
+      businessUnitId: firstBusinessUnit.id,
       name: "無料相談フォーム",
       slug: "sample-contact",
       fields: [
@@ -475,6 +615,7 @@ async function main() {
       const stage = pipelineStages[index % pipelineStages.length];
       return {
         organizationId: organization.id,
+        businessUnitId: firstBusinessUnit.id,
         ownerUserId: index % 3 === 0 ? member.id : superAdmin.id,
         pipelineId: pipeline.id,
         stageId: stage.id,

@@ -2,7 +2,7 @@
 
 営業代行会社・Web制作会社・広告代理店向けの営業CRMです。HubSpotのCRM思想を参考にしつつ、UI・名称・文言は独自に設計しています。
 
-現在は **Phase 1〜5** が完了しています。認証・CRMコアから、公開フォーム、日程調整、メールログ、Web問い合わせ受付まで実装済みです。
+現在は既存CRM機能に加えて、営業オペレーション管理CRMへ拡張するための **事業部基盤 Phase 1** まで実装済みです。認証・CRMコア、インポート、公開フォーム、日程調整、メールログ、Web問い合わせ受付、事業部切り替えを利用できます。
 
 ## 技術構成
 
@@ -168,6 +168,18 @@ npm run build
 - コンタクト・会社・商談のカスタム項目定義、入力、詳細表示、CSV入出力
 - 管理者向けカスタム項目管理権限
 
+## 事業部基盤 Phase 1の実装範囲
+
+- `BusinessUnit` / `BusinessUnitMembership`
+- 第1事業部、HD事業部の初期seed
+- IS / FS / CSを権限ロールとは別の職種として管理
+- ヘッダーの事業部セレクター
+- 商談、パイプライン、フォームへの `businessUnitId`
+- ダッシュボード、商談、パイプライン、フォーム、パイプライン設定の事業部絞り込み
+- 設定画面での事業部管理
+- メンバー設定での事業部・職種所属管理
+- 詳細な設計メモ: `docs/business-units-phase1.md`
+
 ## Phase 5の実装範囲
 
 - 項目を選択して作成できる公開フォームとiframe埋め込みコード
@@ -201,8 +213,9 @@ npm run build
 - `EmailTemplate`
 - `AvailabilityRule` / `MeetingLink` / `MeetingBooking`
 - `Form` / `FormSubmission` / `Conversation`
+- `BusinessUnit` / `BusinessUnitMembership`
 
-初期SQLは `prisma/migrations/20260612000000_init/migration.sql`、Phase 4追加分は `prisma/migrations/20260613000000_phase4/migration.sql` にあります。
+初期SQLは `prisma/migrations/20260612000000_init/migration.sql`、Phase 4追加分は `prisma/migrations/20260613000000_phase4/migration.sql`、事業部基盤は `prisma/migrations/20260619043656_business_units/migration.sql` にあります。
 
 ## API
 
@@ -213,6 +226,10 @@ npm run build
 | `POST`         | `/api/auth/logout`                     | ログアウト               |
 | `GET` / `POST` | `/api/organizations`                   | 所属組織一覧 / 組織作成  |
 | `POST`         | `/api/organizations/switch`            | 利用中の組織を切り替え   |
+| `GET` / `POST` | `/api/business-units`                  | 事業部一覧 / 事業部作成  |
+| `PATCH`        | `/api/business-units/:id`              | 事業部更新               |
+| `POST`         | `/api/business-units/select`           | 表示中の事業部を保存     |
+| `POST`         | `/api/business-unit-memberships`       | 事業部・職種所属を更新   |
 | `POST`         | `/api/organizations/invitations`       | 招待URLを発行            |
 | `GET` / `POST` | `/api/invitations/:token`              | 招待確認 / 承認          |
 | `PATCH`        | `/api/organizations/members/:memberId` | ロール・状態変更         |

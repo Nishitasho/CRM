@@ -37,9 +37,11 @@ const availableFields: FormField[] = [
 export function FormManager({
   forms,
   appUrl,
+  selectedBusinessUnitId,
 }: {
   forms: CrmForm[];
   appUrl: string;
+  selectedBusinessUnitId: string | null;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<CrmForm | null>(null);
@@ -72,6 +74,7 @@ export function FormManager({
         body: JSON.stringify({
           name: data.get("name"),
           slug: data.get("slug"),
+          businessUnitId: selectedBusinessUnitId,
           fields,
           submitButtonText: data.get("submitButtonText"),
           redirectUrl: data.get("redirectUrl"),

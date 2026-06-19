@@ -1,6 +1,9 @@
 import { prisma } from "./prisma";
 
-export async function getCrmFormOptions(organizationId: string) {
+export async function getCrmFormOptions(
+  organizationId: string,
+  businessUnitId?: string | null,
+) {
   const [members, pipelines, customProperties] = await Promise.all([
     prisma.organizationMember.findMany({
       where: { organizationId, status: "ACTIVE" },
@@ -8,7 +11,7 @@ export async function getCrmFormOptions(organizationId: string) {
       orderBy: { createdAt: "asc" },
     }),
     prisma.pipeline.findMany({
-      where: { organizationId },
+      where: { organizationId, ...(businessUnitId ? { businessUnitId } : {}) },
       select: {
         id: true,
         name: true,

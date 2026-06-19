@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Icon } from "@/components/ui/icon";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
 
@@ -18,6 +19,10 @@ export default async function DashboardPage() {
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const scope = await ownerScope(context);
+  const businessUnitSelection = await getBusinessUnitSelection(context);
+  const businessUnitFilter = businessUnitSelection.selectedBusinessUnitId
+    ? { businessUnitId: businessUnitSelection.selectedBusinessUnitId }
+    : {};
   const [
     monthDeals,
     wonDeals,
@@ -32,6 +37,7 @@ export default async function DashboardPage() {
         organizationId,
         deletedAt: null,
         createdAt: { gte: monthStart, lt: monthEnd },
+        ...businessUnitFilter,
         ...scope,
       },
       _sum: { amount: true },
@@ -43,16 +49,23 @@ export default async function DashboardPage() {
         deletedAt: null,
         status: "WON",
         closeDate: { gte: monthStart, lt: monthEnd },
+        ...businessUnitFilter,
         ...scope,
       },
       _sum: { amount: true },
       _count: true,
     }),
     prisma.pipelineStage.findMany({
-      where: { organizationId, pipeline: { isDefault: true } },
+      where: {
+        organizationId,
+        pipeline: {
+          isDefault: true,
+          ...businessUnitFilter,
+        },
+      },
       include: {
         deals: {
-          where: { deletedAt: null, ...scope },
+          where: { deletedAt: null, ...businessUnitFilter, ...scope },
           select: { amount: true },
         },
       },
@@ -132,7 +145,7 @@ export default async function DashboardPage() {
       <PageHeading
         eyebrow="Sales overview"
         title={`おはようございます、${context.user.name}さん`}
-        description={`${context.organization.name}の今月の営業状況です。`}
+        description={`${businessUnitSelection.selectedBusinessUnitName}の今月の営業状況です。`}
         action={
           <Link href="/deals/board" className="primary-button">
             商談パイプライン <Icon name="arrow" className="h-4 w-4" />

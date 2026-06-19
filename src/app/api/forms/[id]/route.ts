@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import { assertBusinessUnitAccess } from "@/lib/business-units";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { crmFormSchema } from "@/lib/validation";
@@ -27,9 +28,23 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 404 },
       );
     const input = crmFormSchema.parse(await request.json());
+    const businessUnitId = input.businessUnitId ?? exists.businessUnitId;
+    if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
+      return NextResponse.json(
+        { message: "この事業部のフォームを編集する権限がありません。" },
+        { status: 403 },
+      );
+    }
     const item = await prisma.form.update({
       where: { id },
-      data: { ...input, fields: input.fields as Prisma.InputJsonValue },
+      data: {
+        businessUnitId,
+        name: input.name,
+        slug: input.slug,
+        submitButtonText: input.submitButtonText,
+        redirectUrl: input.redirectUrl,
+        fields: input.fields as Prisma.InputJsonValue,
+      },
     });
     return NextResponse.json({ item });
   } catch (error) {

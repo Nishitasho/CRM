@@ -8,7 +8,7 @@ const navigation = [
   { href: "/dashboard", label: "ダッシュボード", icon: "dashboard" },
   {
     href: "/contacts",
-    label: "コンタクト",
+    label: "顧客",
     icon: "contacts",
     activePrefixes: ["/contacts", "/companies", "/deals"],
   },
@@ -25,13 +25,13 @@ export function Sidebar() {
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 border-r border-white/10 bg-ink text-white lg:flex lg:flex-col">
-      <div className="flex h-20 items-center gap-3 border-b border-white/10 px-6 text-lg font-bold">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-500">
+      <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5 text-base font-bold">
+        <span className="grid h-9 w-9 place-items-center rounded-lg bg-brand-600 shadow-sm">
           S
         </span>
         SalesNest
       </div>
-      <nav className="flex-1 space-y-1 px-3 py-6">
+      <nav className="flex-1 space-y-1 px-3 py-5">
         {navigation.map((item) => {
           const prefixes =
             "activePrefixes" in item ? item.activePrefixes : [item.href];
@@ -43,20 +43,23 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition ${
+              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition ${
                 active
-                  ? "bg-white text-ink shadow-sm"
+                  ? "bg-white/10 text-white shadow-sm ring-1 ring-white/10"
                   : "text-white/60 hover:bg-white/10 hover:text-white"
               }`}
             >
-              <Icon name={item.icon} className="h-[19px] w-[19px]" />
+              <Icon
+                name={item.icon}
+                className={`h-[18px] w-[18px] ${active ? "text-brand-500" : ""}`}
+              />
               {item.label}
             </Link>
           );
         })}
       </nav>
-      <div className="m-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-        <p className="text-xs font-bold text-brand-100">CRM READY</p>
+      <div className="m-4 rounded-lg border border-white/10 bg-white/[0.04] p-4">
+        <p className="text-xs font-bold text-brand-500">CRM READY</p>
         <p className="mt-2 text-sm leading-6 text-white/60">
           集客から商談化までを一つのCRMで管理できます。
         </p>

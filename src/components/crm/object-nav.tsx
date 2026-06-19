@@ -13,7 +13,7 @@ export function ObjectNav({
   active: "contacts" | "companies" | "deals" | "board";
 }) {
   return (
-    <nav className="mb-5 flex flex-wrap gap-2 border-b border-line pb-3">
+    <nav className="mb-5 flex flex-wrap gap-1 border-b border-line pb-3">
       {items.map((item) => {
         const key = item.href === "/deals/board" ? "board" : item.href.slice(1);
         const selected = active === key;
@@ -23,8 +23,8 @@ export function ObjectNav({
             href={item.href}
             className={
               selected
-                ? "rounded-lg bg-ink px-3 py-2 text-sm font-bold text-white"
-                : "rounded-lg px-3 py-2 text-sm font-bold text-slate-500 hover:bg-canvas hover:text-ink"
+                ? "rounded-lg bg-brand-50 px-3 py-2 text-sm font-semibold text-brand-700 ring-1 ring-brand-100"
+                : "rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:bg-white hover:text-ink"
             }
           >
             {item.label}

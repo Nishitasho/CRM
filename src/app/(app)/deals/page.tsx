@@ -8,6 +8,7 @@ import { RecordList } from "@/components/crm/record-list";
 import { SavedViewBar } from "@/components/crm/saved-view-bar";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
 
@@ -22,9 +23,13 @@ export default async function DealsPage({
   const q = params.q?.trim() ?? "";
   const page = Math.max(1, Number(params.page) || 1);
   const pageSize = 20;
+  const businessUnitSelection = await getBusinessUnitSelection(context);
   const where: Prisma.DealWhereInput = {
     organizationId: context.organization.id,
     deletedAt: null,
+    ...(businessUnitSelection.selectedBusinessUnitId
+      ? { businessUnitId: businessUnitSelection.selectedBusinessUnitId }
+      : {}),
     ...(await ownerScope(context)),
     ...(q ? { name: { contains: q, mode: "insensitive" } } : {}),
   };
@@ -47,7 +52,7 @@ export default async function DealsPage({
       <PageHeading
         eyebrow="Deals"
         title="商談"
-        description="パイプラインとステージに沿って営業案件を管理します。"
+        description={`${businessUnitSelection.selectedBusinessUnitName}のパイプラインとステージに沿って営業案件を管理します。`}
         action={
           <Link href="/deals/board" className="secondary-button">
             パイプライン表示

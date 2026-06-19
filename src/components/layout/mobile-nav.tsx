@@ -13,7 +13,7 @@ const items = [
   },
   {
     href: "/contacts",
-    label: "コンタクト",
+    label: "顧客",
     icon: "contacts",
     activePrefixes: ["/contacts", "/companies", "/deals"],
   },

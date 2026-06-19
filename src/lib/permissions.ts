@@ -23,6 +23,7 @@ const rolePermissions: Record<OrganizationRole, ReadonlySet<Permission>> = {
     Permission.CRM_DELETE,
     Permission.MANAGE_PIPELINES,
     Permission.MANAGE_MEMBERS,
+    Permission.MANAGE_ORGANIZATION,
     Permission.MANAGE_CUSTOM_PROPERTIES,
     Permission.VIEW_AUDIT_LOG,
     Permission.IMPORT_DATA,

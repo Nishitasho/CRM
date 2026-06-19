@@ -54,6 +54,24 @@ export const updateMemberSchema = z
     message: "変更内容を指定してください。",
   });
 
+export const businessUnitSchema = z.object({
+  name: z.string().trim().min(1, "事業部名を入力してください。").max(160),
+  slug: z
+    .string()
+    .trim()
+    .regex(
+      /^[a-z0-9][a-z0-9-]*$/,
+      "slugは英小文字・数字・ハイフンで入力してください。",
+    )
+    .max(80),
+  description: z.preprocess(
+    (value) => (value === "" ? null : value),
+    z.string().trim().max(1000).nullable().optional(),
+  ),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  displayOrder: z.coerce.number().int().min(0).default(0),
+});
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 
 const optionalText = (max: number) =>
@@ -286,6 +304,7 @@ export const formFieldSchema = z.object({
 export const crmFormSchema = z
   .object({
     name: z.string().trim().min(1, "フォーム名を入力してください。").max(160),
+    businessUnitId: optionalUuid,
     slug: z
       .string()
       .trim()

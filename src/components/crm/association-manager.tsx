@@ -1,8 +1,175 @@
 "use client";
-import { FormEvent, useState } from "react"; import Link from "next/link"; import { useRouter } from "next/navigation";
-type ObjectType = "CONTACT" | "COMPANY" | "DEAL"; type Option = { id: string; name: string }; type Related = { associationId: string; id: string; name: string; type: ObjectType; label: string | null; isPrimary: boolean };
-const paths = { CONTACT: "contacts", COMPANY: "companies", DEAL: "deals" }; const labels = { CONTACT: "連絡先", COMPANY: "会社", DEAL: "商談" };
-export function AssociationManager({ objectType, objectId, related, options, canEdit }: { objectType: ObjectType; objectId: string; related: Related[]; options: Record<ObjectType, Option[]>; canEdit: boolean }) { const router = useRouter(); const targetTypes = (["CONTACT", "COMPANY", "DEAL"] as ObjectType[]).filter((type) => type !== objectType); const [targetType, setTargetType] = useState<ObjectType>(targetTypes[0]); const [error, setError] = useState(""); async function add(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const data = new FormData(event.currentTarget); const response = await fetch("/api/associations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceObjectType: objectType, sourceObjectId: objectId, targetObjectType: targetType, targetObjectId: data.get("targetObjectId"), label: data.get("label"), isPrimary: data.get("isPrimary") === "on" }) }); const result = await response.json(); if (!response.ok) return setError(result.message ?? "関連付けできませんでした。"); setError(""); router.refresh(); } async function remove(id: string) { await fetch(`/api/associations/${id}`, { method: "DELETE" }); router.refresh(); }
-  return <div className="space-y-5">{targetTypes.map((type) => { const items = related.filter((item) => item.type === type); return <section key={type}><h3 className="text-sm font-bold">関連{labels[type]} <span className="ml-1 text-xs font-normal text-slate-400">{items.length}</span></h3><div className="mt-2 space-y-2">{items.map((item) => <div key={item.associationId} className="rounded-xl border border-line p-3"><div className="flex items-start justify-between gap-2"><Link href={`/${paths[type]}/${item.id}`} className="text-sm font-bold hover:text-brand-700">{item.name}</Link>{canEdit ? <button className="text-xs text-slate-400 hover:text-red-600" onClick={() => remove(item.associationId)}>解除</button> : null}</div>{item.label || item.isPrimary ? <p className="mt-1 text-xs text-slate-500">{item.isPrimary ? "主要・" : ""}{item.label}</p> : null}</div>)}{!items.length ? <p className="text-xs text-slate-400">関連データなし</p> : null}</div></section>; })}
-  {canEdit ? <form onSubmit={add} className="rounded-xl bg-canvas p-3"><p className="mb-3 text-xs font-bold text-slate-500">関連付けを追加</p><select className="text-field" value={targetType} onChange={(e) => setTargetType(e.target.value as ObjectType)}>{targetTypes.map((type) => <option key={type} value={type}>{labels[type]}</option>)}</select><select className="text-field mt-2" name="targetObjectId" required><option value="">選択してください</option>{options[targetType].filter((item) => item.id !== objectId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input className="text-field mt-2" name="label" placeholder="ラベル（決裁者など）" /><label className="mt-3 flex items-center gap-2 text-xs text-slate-600"><input type="checkbox" name="isPrimary" />主要な関連先にする</label>{error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}<button className="secondary-button mt-3 min-h-9 w-full py-1">追加</button></form> : null}</div>;
+
+import { FormEvent, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+type ObjectType = "CONTACT" | "COMPANY" | "DEAL";
+type Option = { id: string; name: string };
+type Related = {
+  associationId: string;
+  id: string;
+  name: string;
+  type: ObjectType;
+  label: string | null;
+  isPrimary: boolean;
+};
+
+const paths = { CONTACT: "contacts", COMPANY: "companies", DEAL: "deals" };
+const labels = { CONTACT: "連絡先", COMPANY: "会社", DEAL: "商談" };
+
+export function AssociationManager({
+  objectType,
+  objectId,
+  related,
+  options,
+  canEdit,
+}: {
+  objectType: ObjectType;
+  objectId: string;
+  related: Related[];
+  options: Record<ObjectType, Option[]>;
+  canEdit: boolean;
+}) {
+  const router = useRouter();
+  const targetTypes = (["CONTACT", "COMPANY", "DEAL"] as ObjectType[]).filter(
+    (type) => type !== objectType,
+  );
+  const [targetType, setTargetType] = useState<ObjectType>(targetTypes[0]);
+  const [error, setError] = useState("");
+
+  async function add(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const response = await fetch("/api/associations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceObjectType: objectType,
+        sourceObjectId: objectId,
+        targetObjectType: targetType,
+        targetObjectId: data.get("targetObjectId"),
+        label: data.get("label"),
+        isPrimary: data.get("isPrimary") === "on",
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok)
+      return setError(result.message ?? "関連付けできませんでした。");
+
+    setError("");
+    form.reset();
+    router.refresh();
+  }
+
+  async function remove(id: string) {
+    const response = await fetch(`/api/associations/${id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const result = await response.json();
+      setError(result.message ?? "関連付けを解除できませんでした。");
+      return;
+    }
+
+    setError("");
+    router.refresh();
+  }
+
+  return (
+    <div className="space-y-5">
+      {targetTypes.map((type) => {
+        const items = related.filter((item) => item.type === type);
+        return (
+          <section key={type}>
+            <h3 className="text-sm font-bold">
+              関連{labels[type]}{" "}
+              <span className="ml-1 text-xs font-normal text-slate-400">
+                {items.length}
+              </span>
+            </h3>
+            <div className="mt-2 space-y-2">
+              {items.map((item) => (
+                <div
+                  key={item.associationId}
+                  className="rounded-xl border border-line p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <Link
+                      href={`/${paths[type]}/${item.id}`}
+                      className="text-sm font-bold hover:text-brand-700"
+                    >
+                      {item.name}
+                    </Link>
+                    {canEdit ? (
+                      <button
+                        className="text-xs text-slate-400 hover:text-red-600"
+                        onClick={() => remove(item.associationId)}
+                      >
+                        解除
+                      </button>
+                    ) : null}
+                  </div>
+                  {item.label || item.isPrimary ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      {item.isPrimary ? "主要・" : ""}
+                      {item.label}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+              {!items.length ? (
+                <p className="text-xs text-slate-400">関連データなし</p>
+              ) : null}
+            </div>
+          </section>
+        );
+      })}
+
+      {canEdit ? (
+        <form onSubmit={add} className="rounded-xl bg-canvas p-3">
+          <p className="mb-3 text-xs font-bold text-slate-500">
+            関連付けを追加
+          </p>
+          <select
+            className="text-field"
+            value={targetType}
+            onChange={(event) =>
+              setTargetType(event.target.value as ObjectType)
+            }
+          >
+            {targetTypes.map((type) => (
+              <option key={type} value={type}>
+                {labels[type]}
+              </option>
+            ))}
+          </select>
+          <select className="text-field mt-2" name="targetObjectId" required>
+            <option value="">選択してください</option>
+            {options[targetType]
+              .filter((item) => item.id !== objectId)
+              .map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+          </select>
+          <input
+            className="text-field mt-2"
+            name="label"
+            placeholder="ラベル（決裁者など）"
+          />
+          <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" name="isPrimary" />
+            主要な関連先にする
+          </label>
+          {error ? <p className="mt-2 text-xs text-red-600">{error}</p> : null}
+          <button className="secondary-button mt-3 min-h-9 w-full py-1">
+            追加
+          </button>
+        </form>
+      ) : null}
+    </div>
+  );
 }

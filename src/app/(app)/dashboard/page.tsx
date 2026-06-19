@@ -135,7 +135,7 @@ export default async function DashboardPage() {
         description={`${context.organization.name}の今月の営業状況です。`}
         action={
           <Link href="/deals/board" className="primary-button">
-            商談カンバン <Icon name="arrow" className="h-4 w-4" />
+            商談パイプライン <Icon name="arrow" className="h-4 w-4" />
           </Link>
         }
       />

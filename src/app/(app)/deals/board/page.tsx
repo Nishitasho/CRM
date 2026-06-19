@@ -82,7 +82,7 @@ export default async function DealBoardPage({
     <div className="mx-auto max-w-[1800px]">
       <PageHeading
         eyebrow="Deal pipeline"
-        title="商談カンバン"
+        title="商談パイプライン"
         description={`${pipeline.name}の商談をドラッグ＆ドロップで更新できます。`}
         action={
           <div className="flex gap-2">

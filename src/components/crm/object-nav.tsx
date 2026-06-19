@@ -4,7 +4,7 @@ const items = [
   { href: "/contacts", label: "コンタクト" },
   { href: "/companies", label: "会社" },
   { href: "/deals", label: "商談" },
-  { href: "/deals/board", label: "カンバン" },
+  { href: "/deals/board", label: "パイプライン" },
 ] as const;
 
 export function ObjectNav({

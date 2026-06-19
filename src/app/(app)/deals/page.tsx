@@ -50,7 +50,7 @@ export default async function DealsPage({
         description="パイプラインとステージに沿って営業案件を管理します。"
         action={
           <Link href="/deals/board" className="secondary-button">
-            カンバン表示
+            パイプライン表示
           </Link>
         }
       />

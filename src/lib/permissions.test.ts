@@ -21,6 +21,12 @@ describe("role permissions", () => {
     );
   });
 
+  it("allows admins to manage products and sales settings", () => {
+    expect(hasPermission("ADMIN", Permission.MANAGE_PRODUCTS)).toBe(true);
+    expect(hasPermission("ADMIN", Permission.MANAGE_SALES_SETTINGS)).toBe(true);
+    expect(hasPermission("USER", Permission.MANAGE_PRODUCTS)).toBe(false);
+  });
+
   it("keeps read-only members from mutating CRM data", () => {
     expect(hasPermission("READ_ONLY", Permission.CRM_READ)).toBe(true);
     expect(hasPermission("READ_ONLY", Permission.CRM_WRITE)).toBe(false);

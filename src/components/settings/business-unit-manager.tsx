@@ -10,6 +10,13 @@ type BusinessUnit = {
   description: string | null;
   status: "ACTIVE" | "INACTIVE";
   displayOrder: number;
+  amountMetricBasis: "REVENUE" | "GROSS_PROFIT" | null;
+  confirmedAmountDateBasis:
+    | "WON_AT"
+    | "CONTRACTED_AT"
+    | "COLLECTED_AT"
+    | "BILLING_STARTED_AT"
+    | null;
 };
 
 export function BusinessUnitManager({
@@ -32,6 +39,8 @@ export function BusinessUnitManager({
       description: data.get("description"),
       status: data.get("status"),
       displayOrder: data.get("displayOrder"),
+      amountMetricBasis: data.get("amountMetricBasis") || null,
+      confirmedAmountDateBasis: data.get("confirmedAmountDateBasis") || null,
     };
     const response = await fetch(
       editing ? `/api/business-units/${editing.id}` : "/api/business-units",
@@ -129,6 +138,32 @@ export function BusinessUnitManager({
                 />
               </label>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label>
+                <span className="field-label">主要指標</span>
+                <select
+                  className="text-field"
+                  name="amountMetricBasis"
+                  defaultValue={editing?.amountMetricBasis ?? "GROSS_PROFIT"}
+                >
+                  <option value="GROSS_PROFIT">粗利基準</option>
+                  <option value="REVENUE">売上基準</option>
+                </select>
+              </label>
+              <label>
+                <span className="field-label">確定日付基準</span>
+                <select
+                  className="text-field"
+                  name="confirmedAmountDateBasis"
+                  defaultValue={editing?.confirmedAmountDateBasis ?? "WON_AT"}
+                >
+                  <option value="WON_AT">受注日</option>
+                  <option value="CONTRACTED_AT">契約日</option>
+                  <option value="COLLECTED_AT">回収日</option>
+                  <option value="BILLING_STARTED_AT">課金開始日</option>
+                </select>
+              </label>
+            </div>
             <button className="primary-button w-full">
               {editing ? "保存" : "追加"}
             </button>
@@ -169,6 +204,16 @@ export function BusinessUnitManager({
                 </div>
                 <p className="mt-1 text-sm text-slate-500">
                   {unit.description ?? "説明未設定"}
+                </p>
+                <p className="mt-2 text-xs text-slate-400">
+                  {unit.amountMetricBasis === "REVENUE" ? "売上基準" : "粗利基準"} ・
+                  {unit.confirmedAmountDateBasis === "CONTRACTED_AT"
+                    ? "契約日基準"
+                    : unit.confirmedAmountDateBasis === "COLLECTED_AT"
+                      ? "回収日基準"
+                      : unit.confirmedAmountDateBasis === "BILLING_STARTED_AT"
+                        ? "課金開始日基準"
+                        : "受注日基準"}
                 </p>
               </div>
               <span className="text-xs font-semibold text-slate-400">

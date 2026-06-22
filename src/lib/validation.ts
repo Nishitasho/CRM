@@ -70,6 +70,14 @@ export const businessUnitSchema = z.object({
   ),
   status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
   displayOrder: z.coerce.number().int().min(0).default(0),
+  amountMetricBasis: z
+    .enum(["REVENUE", "GROSS_PROFIT"])
+    .nullable()
+    .optional(),
+  confirmedAmountDateBasis: z
+    .enum(["WON_AT", "CONTRACTED_AT", "COLLECTED_AT", "BILLING_STARTED_AT"])
+    .nullable()
+    .optional(),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
@@ -177,6 +185,15 @@ export const dealSchema = z.object({
   expectedCloseDate: optionalDate,
   closeDate: optionalDate,
   lostReason: optionalText(1000),
+  primaryLossReasonId: optionalUuid,
+  lossReasonNote: optionalText(2000),
+  forecastCategoryId: optionalUuid,
+  decisionMakerStatus: z
+    .enum(["DECISION_MAKER", "NON_DECISION_MAKER", "UNKNOWN"])
+    .default("UNKNOWN"),
+  nextAction: optionalText(240),
+  nextActionDate: optionalDate,
+  nextActionOwnerId: optionalUuid,
   source: optionalText(120),
   customFields: customFieldValues.default({}),
 });
@@ -184,6 +201,8 @@ export const dealSchema = z.object({
 export const dealStageSchema = z.object({
   stageId: z.string().uuid("ステージを選択してください。"),
   lostReason: optionalText(1000),
+  primaryLossReasonId: optionalUuid,
+  lossReasonNote: optionalText(2000),
 });
 
 export const activitySchema = z.object({
@@ -244,10 +263,13 @@ export const pipelineStageSchema = z.object({
   probability: z.coerce.number().int().min(0).max(100),
   stageType: z.enum(["OPEN", "WON", "LOST"]),
   sortOrder: z.coerce.number().int().min(1),
+  requiredFields: z.array(z.string().trim().min(1).max(120)).default([]),
+  staleDays: z.coerce.number().int().min(0).nullable().optional(),
 });
 
 export const customPropertySchema = z.object({
-  objectType: z.enum(["CONTACT", "COMPANY", "DEAL"]),
+  objectType: z.enum(["CONTACT", "COMPANY", "DEAL", "DEAL_LINE_ITEM"]),
+  businessUnitId: optionalUuid,
   name: z
     .string()
     .trim()
@@ -261,6 +283,8 @@ export const customPropertySchema = z.object({
     "TEXT",
     "TEXTAREA",
     "NUMBER",
+    "CURRENCY",
+    "PERCENTAGE",
     "DATE",
     "DATETIME",
     "SELECT",
@@ -273,7 +297,11 @@ export const customPropertySchema = z.object({
   options: z.array(z.string().trim().min(1).max(120)).default([]),
   isRequired: z.boolean().default(false),
   isUnique: z.boolean().default(false),
+  isSearchable: z.boolean().default(false),
+  isFilterable: z.boolean().default(false),
+  isReportable: z.boolean().default(false),
   sortOrder: z.coerce.number().int().min(0).default(0),
+  productIds: z.array(z.string().uuid()).default([]),
 });
 
 export const savedViewSchema = z.object({
@@ -418,6 +446,20 @@ export const metricQuerySchema = z.object({
   periodEnd: optionalDate,
 });
 
+export const reportQuerySchema = metricQuerySchema.extend({
+  productId: optionalUuid,
+  productKind: z
+    .enum(["CORE", "ADD_ON", "OPTIONAL", "CROSS_SELL"])
+    .nullable()
+    .optional(),
+  pipelineId: optionalUuid,
+  forecastCategoryId: optionalUuid,
+  dealStatus: z
+    .enum(["OPEN", "WON", "LOST", "CANCELLED", "INVALID", "NURTURE"])
+    .nullable()
+    .optional(),
+});
+
 export const metricDefinitionSchema = z.object({
   key: z
     .string()
@@ -519,6 +561,131 @@ export const kpiTargetSchema = z.object({
   periodStart: z.coerce.date(),
   periodEnd: z.coerce.date(),
   targetValue: z.coerce.number().min(0),
+});
+
+export const productSchema = z.object({
+  name: z.string().trim().min(1, "商品名を入力してください。").max(160),
+  sku: optionalText(80),
+  description: optionalText(2000),
+  category: optionalText(120),
+  status: z.enum(["ACTIVE", "INACTIVE", "ARCHIVED"]).default("ACTIVE"),
+  businessUnitIds: z.array(z.string().uuid()).default([]),
+  productKindByBusinessUnit: z
+    .record(z.enum(["CORE", "ADD_ON", "OPTIONAL", "CROSS_SELL"]))
+    .default({}),
+});
+
+export const priceBookEntrySchema = z.object({
+  productId: optionalUuid,
+  businessUnitId: optionalUuid,
+  name: z.string().trim().min(1, "価格名を入力してください。").max(160),
+  currency: z.string().trim().length(3).default("JPY"),
+  unitPriceAmount: optionalNumber,
+  initialFee: optionalNumber,
+  recurringFee: optionalNumber,
+  revenueAmount: optionalNumber,
+  grossProfitAmount: optionalNumber,
+  effectiveFrom: optionalDate,
+  effectiveUntil: optionalDate,
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+});
+
+export const dealLineItemSchema = z
+  .object({
+    productId: optionalUuid,
+    priceBookEntryId: optionalUuid,
+    businessUnitId: optionalUuid,
+    name: z.string().trim().min(1, "商品明細名を入力してください。").max(180),
+    quantity: z.coerce.number().positive("数量は1以上で入力してください。").default(1),
+    unitPriceAmount: optionalNumber,
+    initialFee: optionalNumber,
+    recurringFee: optionalNumber,
+    revenueAmount: optionalNumber,
+    grossProfitAmount: optionalNumber,
+    expectedRevenueAmount: optionalNumber,
+    expectedGrossProfitAmount: optionalNumber,
+    collectedAmount: optionalNumber,
+    contractedAt: optionalDate,
+    collectedAt: optionalDate,
+    billingStartedAt: optionalDate,
+    cancelledAt: optionalDate,
+    status: z
+      .enum(["PROPOSED", "WON", "LOST", "CANCELLED", "NOT_SELECTED"])
+      .default("PROPOSED"),
+    lossReasonId: optionalUuid,
+    lossReasonNote: optionalText(2000),
+    customFields: customFieldValues.default({}),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      ["LOST", "CANCELLED", "NOT_SELECTED"].includes(value.status) &&
+      !value.lossReasonId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["lossReasonId"],
+        message: "商品明細を失注・キャンセル・不採用にする場合は理由を選択してください。",
+      });
+    }
+  });
+
+export const attachmentRuleSchema = z.object({
+  businessUnitId: optionalUuid,
+  name: z.string().trim().min(1, "付帯ルール名を入力してください。").max(160),
+  attachedProductId: z.string().uuid("付帯商品を選択してください。"),
+  denominatorMode: z.enum([
+    "ALL_WON_DEALS",
+    "DEALS_WITH_BASE_PRODUCT",
+    "DEALS_MATCHING_FILTER",
+  ]),
+  baseProductIds: z.array(z.string().uuid()).default([]),
+  dateBasis: z
+    .enum(["WON_AT", "CONTRACTED_AT", "COLLECTED_AT", "BILLING_STARTED_AT"])
+    .nullable()
+    .optional(),
+  targetRate: z.coerce.number().min(0).max(1).nullable().optional(),
+  eligibilityFilter: z.record(z.unknown()).default({}),
+  isActive: z.boolean().default(true),
+  displayOrder: z.coerce.number().int().min(0).default(0),
+});
+
+export const lossReasonSchema = z.object({
+  businessUnitId: optionalUuid,
+  productId: optionalUuid,
+  code: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9][a-z0-9_]*$/)
+    .max(80),
+  name: z.string().trim().min(1, "失注理由名を入力してください。").max(160),
+  category: optionalText(120),
+  applicableScope: z.enum(["DEAL", "DEAL_LINE_ITEM", "BOTH"]).default("BOTH"),
+  applicableStatus: z
+    .array(z.enum(["LOST", "CANCELLED", "INVALID", "NOT_SELECTED"]))
+    .default(["LOST", "CANCELLED", "INVALID", "NOT_SELECTED"]),
+  requiresNote: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+  displayOrder: z.coerce.number().int().min(0).default(0),
+});
+
+export const dealAlertRuleSchema = z.object({
+  businessUnitId: optionalUuid,
+  pipelineId: optionalUuid,
+  stageId: optionalUuid,
+  type: z.enum([
+    "MEETING_OVERDUE",
+    "NEXT_ACTION_OVERDUE",
+    "NO_ACTIVITY_DAYS",
+    "STAGE_STALE_DAYS",
+    "MISSING_LINE_ITEMS",
+    "MISSING_CLOSER",
+    "MISSING_FORECAST_CATEGORY",
+    "MISSING_EXPECTED_AMOUNT",
+  ]),
+  name: z.string().trim().min(1).max(160),
+  thresholdDays: z.coerce.number().int().min(0).nullable().optional(),
+  config: z.record(z.unknown()).default({}),
+  isActive: z.boolean().default(true),
 });
 
 export const referralSchema = z.object({

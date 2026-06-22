@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { RecordDetail } from "@/components/crm/record-detail";
+import { DealLineItemManager } from "@/components/deals/deal-line-item-manager";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getRecordActivities } from "@/lib/crm";
@@ -21,11 +22,72 @@ export default async function DealDetailPage({
     include: { owner: { select: { name: true } }, pipeline: true, stage: true },
   });
   if (!item) notFound();
-  const [activities, related, options, customFields] = await Promise.all([
+  const [
+    activities,
+    related,
+    options,
+    customFields,
+    lineItems,
+    products,
+    businessUnits,
+    lossReasons,
+    lineItemProperties,
+    propertyScopes,
+  ] = await Promise.all([
     getRecordActivities(context.organization.id, "DEAL", id),
     getRelatedRecords(context.organization.id, "DEAL", id),
     getAssociationOptions(context.organization.id),
     getCustomFieldDetails(context.organization.id, "DEAL", item.customFields),
+    prisma.dealLineItem.findMany({
+      where: { organizationId: context.organization.id, dealId: id },
+      include: { product: { select: { name: true } }, priceBookEntry: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.product.findMany({
+      where: {
+        organizationId: context.organization.id,
+        status: { not: "ARCHIVED" },
+      },
+      include: {
+        priceBookEntries: {
+          where: { status: "ACTIVE" },
+          orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+        },
+        businessUnitProducts: {
+          where: item.businessUnitId
+            ? { businessUnitId: item.businessUnitId }
+            : {},
+          select: { productKind: true },
+        },
+      },
+      orderBy: { name: "asc" },
+    }),
+    prisma.businessUnit.findMany({
+      where: { organizationId: context.organization.id, status: "ACTIVE" },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+      select: { id: true, name: true },
+    }),
+    prisma.lossReasonDefinition.findMany({
+      where: {
+        organizationId: context.organization.id,
+        isActive: true,
+        applicableScope: { in: ["DEAL_LINE_ITEM", "BOTH"] },
+      },
+      orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
+      select: { id: true, name: true, requiresNote: true },
+    }),
+    prisma.customProperty.findMany({
+      where: {
+        organizationId: context.organization.id,
+        objectType: "DEAL_LINE_ITEM",
+        OR: [{ businessUnitId: item.businessUnitId }, { businessUnitId: null }],
+      },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+    }),
+    prisma.customPropertyProductScope.findMany({
+      where: { organizationId: context.organization.id },
+      select: { customPropertyId: true, productId: true },
+    }),
   ]);
   const canEdit =
     hasPermission(context.membership.role, Permission.CRM_WRITE) &&
@@ -92,6 +154,17 @@ export default async function DealDetailPage({
           context.membership.role,
           Permission.CRM_DELETE,
         )}
+      />
+      <DealLineItemManager
+        dealId={id}
+        lineItems={lineItems}
+        products={products}
+        businessUnits={businessUnits}
+        lossReasons={lossReasons}
+        properties={lineItemProperties}
+        propertyScopes={propertyScopes}
+        defaultBusinessUnitId={item.businessUnitId}
+        canEdit={canEdit}
       />
     </div>
   );

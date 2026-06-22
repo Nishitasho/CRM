@@ -1,11 +1,15 @@
 import {
   ActionPlanPriority,
   ActionPlanStatus,
+  AmountMetricBasis,
+  AttachmentDenominatorMode,
+  ConfirmedAmountDateBasis,
   CustomFieldType,
   CustomPropertyObjectType,
   DailyMetricSource,
   DailyMetricStatus,
   DealLineItemStatus,
+  DealAlertRuleType,
   DealParticipantRole,
   DecisionMakerStatus,
   FieldVisitStatus,
@@ -20,6 +24,7 @@ import {
   PriceBookStatus,
   Prisma,
   PrismaClient,
+  ProductKind,
   ProductStatus,
   QualificationResult,
   ReferralStatus,
@@ -27,19 +32,73 @@ import {
   SalesPerformanceEventType,
   StageType,
   WorkFunction,
+  LossReasonScope,
+  LossReasonStatus,
 } from "@prisma/client";
 import { hash } from "bcryptjs";
 
 const prisma = new PrismaClient();
 
 const stages = [
-  { name: "新規リード", probability: 10, stageType: StageType.OPEN },
-  { name: "アポ獲得", probability: 20, stageType: StageType.OPEN },
-  { name: "商談予定", probability: 35, stageType: StageType.OPEN },
-  { name: "提案中", probability: 55, stageType: StageType.OPEN },
-  { name: "契約確認中", probability: 80, stageType: StageType.OPEN },
-  { name: "受注", probability: 100, stageType: StageType.WON },
-  { name: "失注", probability: 0, stageType: StageType.LOST },
+  {
+    name: "新規リード",
+    probability: 10,
+    stageType: StageType.OPEN,
+    requiredFields: [],
+    staleDays: 5,
+  },
+  {
+    name: "アポ獲得",
+    probability: 20,
+    stageType: StageType.OPEN,
+    requiredFields: ["next_action", "next_action_date"],
+    staleDays: 3,
+  },
+  {
+    name: "商談予定",
+    probability: 35,
+    stageType: StageType.OPEN,
+    requiredFields: ["line_items", "forecast_category", "next_action_date"],
+    staleDays: 3,
+  },
+  {
+    name: "提案中",
+    probability: 55,
+    stageType: StageType.OPEN,
+    requiredFields: [
+      "proposed_line_items",
+      "expected_amount",
+      "forecast_category",
+      "next_action",
+    ],
+    staleDays: 5,
+  },
+  {
+    name: "契約確認中",
+    probability: 80,
+    stageType: StageType.OPEN,
+    requiredFields: ["proposed_line_items", "expected_amount", "closer"],
+    staleDays: 5,
+  },
+  {
+    name: "受注",
+    probability: 100,
+    stageType: StageType.WON,
+    requiredFields: [
+      "won_line_items",
+      "confirmed_amount",
+      "contracted_at",
+      "closer",
+    ],
+    staleDays: null,
+  },
+  {
+    name: "失注",
+    probability: 0,
+    stageType: StageType.LOST,
+    requiredFields: ["loss_reason"],
+    staleDays: null,
+  },
 ];
 
 const june2026Start = new Date(Date.UTC(2026, 5, 1));
@@ -105,6 +164,8 @@ async function main() {
       description: "IS / FSで営業活動を管理する初期事業部",
       status: "ACTIVE",
       displayOrder: 1,
+      amountMetricBasis: AmountMetricBasis.GROSS_PROFIT,
+      confirmedAmountDateBasis: ConfirmedAmountDateBasis.WON_AT,
     },
     create: {
       organizationId: organization.id,
@@ -112,6 +173,8 @@ async function main() {
       slug: "first",
       description: "IS / FSで営業活動を管理する初期事業部",
       displayOrder: 1,
+      amountMetricBasis: AmountMetricBasis.GROSS_PROFIT,
+      confirmedAmountDateBasis: ConfirmedAmountDateBasis.WON_AT,
     },
   });
   const hdBusinessUnit = await prisma.businessUnit.upsert({
@@ -126,6 +189,8 @@ async function main() {
       description: "IS / FS / CSで営業から制作進行まで管理する初期事業部",
       status: "ACTIVE",
       displayOrder: 2,
+      amountMetricBasis: AmountMetricBasis.GROSS_PROFIT,
+      confirmedAmountDateBasis: ConfirmedAmountDateBasis.BILLING_STARTED_AT,
     },
     create: {
       organizationId: organization.id,
@@ -133,6 +198,8 @@ async function main() {
       slug: "hd",
       description: "IS / FS / CSで営業から制作進行まで管理する初期事業部",
       displayOrder: 2,
+      amountMetricBasis: AmountMetricBasis.GROSS_PROFIT,
+      confirmedAmountDateBasis: ConfirmedAmountDateBasis.BILLING_STARTED_AT,
     },
   });
 
@@ -409,11 +476,28 @@ async function main() {
   await prisma.salesPerformanceEvent.deleteMany({
     where: { organizationId: organization.id },
   });
-  await prisma.referral.deleteMany({ where: { organizationId: organization.id } });
+  await prisma.referral.deleteMany({
+    where: { organizationId: organization.id },
+  });
   await prisma.fieldVisit.deleteMany({
     where: { organizationId: organization.id },
   });
   await prisma.legacySourceLink.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.productAttachmentRuleBaseProduct.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.productAttachmentRule.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.customPropertyProductScope.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.lossReasonDefinition.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.dealAlertRule.deleteMany({
     where: { organizationId: organization.id },
   });
   await prisma.dealParticipant.deleteMany({
@@ -428,7 +512,9 @@ async function main() {
   await prisma.businessUnitProduct.deleteMany({
     where: { organizationId: organization.id },
   });
-  await prisma.product.deleteMany({ where: { organizationId: organization.id } });
+  await prisma.product.deleteMany({
+    where: { organizationId: organization.id },
+  });
   await prisma.forecastCategory.deleteMany({
     where: { organizationId: organization.id },
   });
@@ -532,14 +618,49 @@ async function main() {
   }
 
   const productSeeds = [
-    { name: "RN", category: "HD", grossProfit: 64500 },
-    { name: "menu", category: "HD", grossProfit: 64000 },
-    { name: "エネパル", category: "HD", grossProfit: 80000 },
-    { name: "プラリー", category: "HD", grossProfit: 17000 },
-    { name: "口コミットくん", category: "HD", grossProfit: 61000 },
-    { name: "ドメイン", category: "HD", grossProfit: 12000 },
-    { name: "第1 営業支援", category: "第1", grossProfit: 235000 },
-    { name: "第1 既存顧客支援", category: "第1", grossProfit: 180000 },
+    { name: "RN", category: "HD", grossProfit: 64500, kind: ProductKind.CORE },
+    {
+      name: "menu",
+      category: "HD",
+      grossProfit: 64000,
+      kind: ProductKind.CORE,
+    },
+    {
+      name: "エネパル",
+      category: "HD",
+      grossProfit: 80000,
+      kind: ProductKind.CORE,
+    },
+    {
+      name: "プラリー",
+      category: "HD",
+      grossProfit: 17000,
+      kind: ProductKind.ADD_ON,
+    },
+    {
+      name: "口コミットくん",
+      category: "HD",
+      grossProfit: 61000,
+      kind: ProductKind.ADD_ON,
+    },
+    {
+      name: "ドメイン",
+      category: "HD",
+      grossProfit: 12000,
+      kind: ProductKind.ADD_ON,
+    },
+    {
+      name: "第1 営業支援",
+      category: "第1",
+      grossProfit: 235000,
+      kind: ProductKind.CORE,
+    },
+    {
+      name: "第1 既存顧客支援",
+      category: "第1",
+      grossProfit: 180000,
+      kind: ProductKind.CROSS_SELL,
+    },
   ];
   const products = new Map<string, { id: string; name: string }>();
   for (const [index, item] of productSeeds.entries()) {
@@ -565,11 +686,17 @@ async function main() {
           organizationId: organization.id,
           businessUnitId: unit.id,
           productId: product.id,
+          productKind: item.kind,
           displayOrder: index + 1,
           status: ProductStatus.ACTIVE,
         },
       });
     }
+    const revenueAmount = Math.round(item.grossProfit * 1.35);
+    const recurringFee =
+      item.kind === ProductKind.ADD_ON
+        ? Math.round(item.grossProfit * 0.25)
+        : 0;
     await prisma.priceBookEntry.create({
       data: {
         organizationId: organization.id,
@@ -577,13 +704,201 @@ async function main() {
         businessUnitId:
           item.category === "第1" ? firstBusinessUnit.id : hdBusinessUnit.id,
         name: `${item.name} 標準価格`,
-        revenueAmount: item.grossProfit,
+        unitPriceAmount: revenueAmount,
+        initialFee: revenueAmount - recurringFee,
+        recurringFee,
+        revenueAmount,
         grossProfitAmount: item.grossProfit,
         effectiveFrom: june2026Start,
         status: PriceBookStatus.ACTIVE,
       },
     });
   }
+
+  const lineItemPropertySeeds = [
+    {
+      name: "plan",
+      label: "プラン",
+      fieldType: CustomFieldType.SELECT,
+      options: ["ライト", "スタンダード", "プレミアム"],
+      businessUnitId: hdBusinessUnit.id,
+      productNames: ["RN", "menu", "エネパル"],
+      sortOrder: 1,
+      isRequired: true,
+    },
+    {
+      name: "target_store_count",
+      label: "対象店舗数",
+      fieldType: CustomFieldType.NUMBER,
+      options: [],
+      businessUnitId: hdBusinessUnit.id,
+      productNames: ["口コミットくん", "プラリー"],
+      sortOrder: 2,
+      isRequired: false,
+    },
+    {
+      name: "domain_name",
+      label: "ドメイン名",
+      fieldType: CustomFieldType.TEXT,
+      options: [],
+      businessUnitId: hdBusinessUnit.id,
+      productNames: ["ドメイン"],
+      sortOrder: 3,
+      isRequired: true,
+    },
+    {
+      name: "desired_launch_date",
+      label: "希望公開日",
+      fieldType: CustomFieldType.DATE,
+      options: [],
+      businessUnitId: null,
+      productNames: [],
+      sortOrder: 4,
+      isRequired: false,
+    },
+  ];
+  for (const property of lineItemPropertySeeds) {
+    const created = await prisma.customProperty.upsert({
+      where: {
+        organizationId_objectType_name: {
+          organizationId: organization.id,
+          objectType: CustomPropertyObjectType.DEAL_LINE_ITEM,
+          name: property.name,
+        },
+      },
+      update: {
+        label: property.label,
+        fieldType: property.fieldType,
+        options: property.options,
+        businessUnitId: property.businessUnitId,
+        isRequired: property.isRequired,
+        isSearchable: true,
+        isFilterable: true,
+        isReportable: true,
+        sortOrder: property.sortOrder,
+      },
+      create: {
+        organizationId: organization.id,
+        objectType: CustomPropertyObjectType.DEAL_LINE_ITEM,
+        name: property.name,
+        label: property.label,
+        fieldType: property.fieldType,
+        options: property.options,
+        businessUnitId: property.businessUnitId,
+        isRequired: property.isRequired,
+        isSearchable: true,
+        isFilterable: true,
+        isReportable: true,
+        sortOrder: property.sortOrder,
+      },
+      select: { id: true },
+    });
+    for (const productName of property.productNames) {
+      const product = products.get(productName);
+      if (!product) continue;
+      await prisma.customPropertyProductScope.create({
+        data: {
+          organizationId: organization.id,
+          customPropertyId: created.id,
+          productId: product.id,
+        },
+      });
+    }
+  }
+
+  const lossReasonSeeds = [
+    ["price_high", "金額が高い", "価格", false],
+    ["budget_shortage", "予算不足", "予算", false],
+    ["timing_mismatch", "タイミングが合わない", "時期", false],
+    ["no_needs", "ニーズなし", "要件", false],
+    ["approval_failed", "決裁者承認が得られない", "決裁", false],
+    ["non_decision_maker", "非決裁者との商談", "決裁", false],
+    ["competitor", "競合に決定", "競合", false],
+    ["continue_existing", "既存サービスを継続", "競合", false],
+    ["condition_mismatch", "条件不一致", "要件", false],
+    ["area_out", "エリア対象外", "要件", false],
+    ["no_contact", "連絡不通", "顧客都合", false],
+    ["schedule_failed", "日程調整不可", "顧客都合", false],
+    ["internal_reason", "社内都合", "社内", false],
+    ["customer_reason", "顧客都合", "顧客都合", false],
+    ["cancel_after_won", "受注後キャンセル", "キャンセル", false],
+    ["duplicate", "重複案件", "データ品質", false],
+    ["invalid_deal", "無効商談", "データ品質", false],
+    ["other", "その他", "その他", true],
+  ] as const;
+  const lossReasons = new Map<string, { id: string }>();
+  for (const [index, reason] of lossReasonSeeds.entries()) {
+    const [code, name, category, requiresNote] = reason;
+    const created = await prisma.lossReasonDefinition.create({
+      data: {
+        organizationId: organization.id,
+        code,
+        name,
+        category,
+        applicableScope: LossReasonScope.BOTH,
+        applicableStatus: [
+          LossReasonStatus.LOST,
+          LossReasonStatus.CANCELLED,
+          LossReasonStatus.INVALID,
+          LossReasonStatus.NOT_SELECTED,
+        ],
+        requiresNote,
+        displayOrder: index + 1,
+      },
+      select: { id: true },
+    });
+    lossReasons.set(code, created);
+  }
+
+  const domainProduct = products.get("ドメイン");
+  if (domainProduct) {
+    const rule = await prisma.productAttachmentRule.create({
+      data: {
+        organizationId: organization.id,
+        businessUnitId: hdBusinessUnit.id,
+        name: "HD主商材へのドメイン付帯率",
+        attachedProductId: domainProduct.id,
+        denominatorMode: AttachmentDenominatorMode.DEALS_WITH_BASE_PRODUCT,
+        dateBasis: ConfirmedAmountDateBasis.BILLING_STARTED_AT,
+        targetRate: new Prisma.Decimal("0.70"),
+        eligibilityFilter: {},
+        displayOrder: 1,
+      },
+      select: { id: true },
+    });
+    for (const productName of ["RN", "menu", "エネパル"]) {
+      const baseProduct = products.get(productName);
+      if (!baseProduct) continue;
+      await prisma.productAttachmentRuleBaseProduct.create({
+        data: {
+          organizationId: organization.id,
+          ruleId: rule.id,
+          productId: baseProduct.id,
+        },
+      });
+    }
+  }
+
+  await prisma.dealAlertRule.createMany({
+    data: [
+      {
+        organizationId: organization.id,
+        name: "次回アクション期限超過",
+        type: DealAlertRuleType.NEXT_ACTION_OVERDUE,
+        thresholdDays: 0,
+      },
+      {
+        organizationId: organization.id,
+        name: "CLOSER未設定",
+        type: DealAlertRuleType.MISSING_CLOSER,
+      },
+      {
+        organizationId: organization.id,
+        name: "見込金額未設定",
+        type: DealAlertRuleType.MISSING_EXPECTED_AMOUNT,
+      },
+    ],
+  });
 
   const organizationCalendar = await prisma.businessCalendar.create({
     data: {
@@ -713,24 +1028,25 @@ async function main() {
     })),
   });
 
-  const [companies, contacts, pipelineStages, hdPipelineStages] = await Promise.all([
-    prisma.company.findMany({
-      where: { organizationId: organization.id },
-      orderBy: { name: "asc" },
-    }),
-    prisma.contact.findMany({
-      where: { organizationId: organization.id },
-      orderBy: { email: "asc" },
-    }),
-    prisma.pipelineStage.findMany({
-      where: { pipelineId: pipeline.id },
-      orderBy: { sortOrder: "asc" },
-    }),
-    prisma.pipelineStage.findMany({
-      where: { pipelineId: hdPipeline.id },
-      orderBy: { sortOrder: "asc" },
-    }),
-  ]);
+  const [companies, contacts, pipelineStages, hdPipelineStages] =
+    await Promise.all([
+      prisma.company.findMany({
+        where: { organizationId: organization.id },
+        orderBy: { name: "asc" },
+      }),
+      prisma.contact.findMany({
+        where: { organizationId: organization.id },
+        orderBy: { email: "asc" },
+      }),
+      prisma.pipelineStage.findMany({
+        where: { pipelineId: pipeline.id },
+        orderBy: { sortOrder: "asc" },
+      }),
+      prisma.pipelineStage.findMany({
+        where: { pipelineId: hdPipeline.id },
+        orderBy: { sortOrder: "asc" },
+      }),
+    ]);
 
   const publicForm = await prisma.form.upsert({
     where: { slug: "sample-contact" },
@@ -924,6 +1240,31 @@ async function main() {
         closeDate: stage.stageType === "WON" ? new Date() : null,
         wonAt: stage.stageType === "WON" ? new Date() : null,
         lostAt: stage.stageType === "LOST" ? new Date() : null,
+        primaryLossReasonId:
+          stage.stageType === StageType.LOST
+            ? lossReasons.get(
+                index % 2 === 0 ? "budget_shortage" : "competitor",
+              )?.id
+            : null,
+        lossReasonNote:
+          stage.stageType === StageType.LOST ? "seed失注理由" : null,
+        lostByUserId: stage.stageType === StageType.LOST ? superAdmin.id : null,
+        nextAction:
+          stage.stageType === StageType.OPEN
+            ? index % 4 === 0
+              ? null
+              : "提案内容の確認連絡"
+            : null,
+        nextActionDate:
+          stage.stageType === StageType.OPEN
+            ? dayOfJune(Math.min(28, 6 + index))
+            : null,
+        nextActionOwnerId:
+          stage.stageType === StageType.OPEN
+            ? index % 3 === 0
+              ? member.id
+              : superAdmin.id
+            : null,
         decisionMakerStatus:
           index % 4 === 0
             ? DecisionMakerStatus.NON_DECISION_MAKER
@@ -976,6 +1317,31 @@ async function main() {
         closeDate: stage.stageType === "WON" ? dayOfJune(8 + index) : null,
         wonAt: stage.stageType === "WON" ? dayOfJune(8 + index) : null,
         lostAt: stage.stageType === "LOST" ? dayOfJune(8 + index) : null,
+        primaryLossReasonId:
+          stage.stageType === StageType.LOST
+            ? lossReasons.get(
+                index % 2 === 0 ? "condition_mismatch" : "price_high",
+              )?.id
+            : null,
+        lossReasonNote:
+          stage.stageType === StageType.LOST ? "seed失注理由" : null,
+        lostByUserId: stage.stageType === StageType.LOST ? superAdmin.id : null,
+        nextAction:
+          stage.stageType === StageType.OPEN
+            ? index % 3 === 0
+              ? null
+              : "導入可否の確認"
+            : null,
+        nextActionDate:
+          stage.stageType === StageType.OPEN
+            ? dayOfJune(Math.min(28, 4 + index))
+            : null,
+        nextActionOwnerId:
+          stage.stageType === StageType.OPEN
+            ? index % 2 === 0
+              ? superAdmin.id
+              : member.id
+            : null,
         decisionMakerStatus:
           index % 3 === 0
             ? DecisionMakerStatus.NON_DECISION_MAKER
@@ -1016,6 +1382,7 @@ async function main() {
     const isHd = deal.businessUnitId === hdBusinessUnit.id;
     const appointmentSetterId = index % 2 === 0 ? member.id : superAdmin.id;
     const closerId = deal.ownerUserId ?? superAdmin.id;
+    const sharedClose = index % 7 === 0;
     await prisma.dealParticipant.createMany({
       data: [
         {
@@ -1034,9 +1401,26 @@ async function main() {
           userId: closerId,
           workFunction: WorkFunction.FS,
           role: DealParticipantRole.CLOSER,
+          creditShare: sharedClose ? 60 : 100,
           creditedAt: deal.closeDate ?? deal.createdAt,
-          snapshotUserName: closerId === member.id ? member.name : superAdmin.name,
+          snapshotUserName:
+            closerId === member.id ? member.name : superAdmin.name,
         },
+        ...(sharedClose
+          ? [
+              {
+                organizationId: organization.id,
+                dealId: deal.id,
+                userId: closerId === member.id ? superAdmin.id : member.id,
+                workFunction: WorkFunction.FS,
+                role: DealParticipantRole.CLOSER,
+                creditShare: 40,
+                creditedAt: deal.closeDate ?? deal.createdAt,
+                snapshotUserName:
+                  closerId === member.id ? superAdmin.name : member.name,
+              },
+            ]
+          : []),
       ],
     });
 
@@ -1052,15 +1436,26 @@ async function main() {
     for (const itemName of itemNames) {
       const product = products.get(itemName);
       const grossProfit = productGrossProfit.get(itemName) ?? 0;
+      const revenueAmount = Math.round(grossProfit * 1.35);
       const priceBookEntry = product
         ? priceBookByProductId.get(product.id)
         : undefined;
       const lineStatus =
-        deal.status === "WON"
-          ? DealLineItemStatus.WON
-          : deal.status === "LOST"
-            ? DealLineItemStatus.LOST
-            : DealLineItemStatus.PROPOSED;
+        deal.status === "WON" &&
+        itemName === "口コミットくん" &&
+        index % 5 === 0
+          ? DealLineItemStatus.NOT_SELECTED
+          : deal.status === "WON"
+            ? DealLineItemStatus.WON
+            : deal.status === "LOST"
+              ? DealLineItemStatus.LOST
+              : DealLineItemStatus.PROPOSED;
+      const lineLossReasonId =
+        lineStatus === DealLineItemStatus.LOST
+          ? lossReasons.get("budget_shortage")?.id
+          : lineStatus === DealLineItemStatus.NOT_SELECTED
+            ? lossReasons.get("continue_existing")?.id
+            : null;
       const lineItem = await prisma.dealLineItem.create({
         data: {
           organizationId: organization.id,
@@ -1070,17 +1465,57 @@ async function main() {
           businessUnitId: deal.businessUnitId,
           name: itemName,
           quantity: 1,
-          unitPriceAmount: grossProfit,
-          revenueAmount: grossProfit,
+          unitPriceAmount: revenueAmount,
+          initialFee: priceBookEntry?.initialFee ?? revenueAmount,
+          recurringFee: priceBookEntry?.recurringFee ?? 0,
+          revenueAmount:
+            lineStatus === DealLineItemStatus.WON ? revenueAmount : null,
           grossProfitAmount:
             lineStatus === DealLineItemStatus.WON ? grossProfit : null,
+          expectedRevenueAmount: revenueAmount,
           expectedGrossProfitAmount: grossProfit,
+          collectedAmount:
+            lineStatus === DealLineItemStatus.WON ? revenueAmount : null,
+          contractedAt:
+            lineStatus === DealLineItemStatus.WON
+              ? (deal.closeDate ?? june2026Start)
+              : null,
+          collectedAt:
+            lineStatus === DealLineItemStatus.WON
+              ? dayOfJune(Math.min(28, 12 + (index % 10)))
+              : null,
           billingStartedAt:
             lineStatus === DealLineItemStatus.WON
               ? (deal.closeDate ?? june2026Start)
               : null,
+          lossReasonId: lineLossReasonId,
+          lossReasonNote:
+            lineStatus === DealLineItemStatus.NOT_SELECTED
+              ? "既存サービス継続のため不採用"
+              : lineStatus === DealLineItemStatus.LOST
+                ? "予算都合で見送り"
+                : null,
+          lostAt:
+            lineStatus === DealLineItemStatus.LOST ||
+            lineStatus === DealLineItemStatus.NOT_SELECTED
+              ? (deal.lostAt ?? deal.closeDate ?? new Date())
+              : null,
           status: lineStatus,
           source: "seed",
+          customFields:
+            itemName === "ドメイン"
+              ? {
+                  domain_name: `sample-${index + 1}.jp`,
+                  desired_launch_date: "2026-07-01",
+                }
+              : itemName === "口コミットくん" || itemName === "プラリー"
+                ? {
+                    target_store_count: 3 + (index % 4),
+                    desired_launch_date: "2026-07-15",
+                  }
+                : isHd
+                  ? { plan: index % 2 === 0 ? "スタンダード" : "ライト" }
+                  : { desired_launch_date: "2026-07-10" },
           metadata: {
             legacyProgress: deal.legacyProgress,
             duplicateSafeCountUnit: "deal",
@@ -1266,7 +1701,8 @@ async function main() {
       dateField: "billingStartedAt",
       isPrimary: true,
       queryDefinition: { field: "grossProfitAmount", status: ["WON"] },
-      description: "受注済みの商品明細の粗利合計です。商談数とは分けて集計します。",
+      description:
+        "受注済みの商品明細の粗利合計です。商談数とは分けて集計します。",
     },
     {
       key: "executive_weighted_forecast_gross_profit",
@@ -1277,8 +1713,12 @@ async function main() {
       aggregation: MetricAggregation.SUM,
       dateField: "expectedCloseDate",
       isPrimary: true,
-      queryDefinition: { field: "expectedGrossProfitAmount", weightedByForecast: true },
-      description: "商品明細の見込粗利にForecastCategoryの確度を掛けて計算します。",
+      queryDefinition: {
+        field: "expectedGrossProfitAmount",
+        weightedByForecast: true,
+      },
+      description:
+        "商品明細の見込粗利にForecastCategoryの確度を掛けて計算します。",
     },
     {
       key: "first_fs_gross_profit",
@@ -1308,7 +1748,8 @@ async function main() {
       attributionRole: DealParticipantRole.CLOSER,
       isPrimary: true,
       queryDefinition: { status: ["WON"], distinct: "dealId" },
-      description: "受注商談の件数です。商品明細数ではなく商談単位で重複排除します。",
+      description:
+        "受注商談の件数です。商品明細数ではなく商談単位で重複排除します。",
     },
     {
       key: "first_fs_valid_meetings",
@@ -1350,9 +1791,13 @@ async function main() {
       isPrimary: true,
       numeratorMetricId: "first_fs_won_deals",
       denominatorMetricId: "first_fs_valid_meetings",
-      queryDefinition: { numerator: "first_fs_won_deals", denominator: "first_fs_valid_meetings" },
+      queryDefinition: {
+        numerator: "first_fs_won_deals",
+        denominator: "first_fs_valid_meetings",
+      },
       minSampleSize: 3,
-      description: "受注数 ÷ 有効商談数。分母が0の場合は未計算として表示します。",
+      description:
+        "受注数 ÷ 有効商談数。分母が0の場合は未計算として表示します。",
     },
     {
       key: "first_is_calls",
@@ -1401,7 +1846,8 @@ async function main() {
       sourceType: MetricSourceType.MANUAL_DAILY,
       aggregation: MetricAggregation.SUM,
       dateField: "targetDate",
-      description: "初期定義のフル条件を満たした件数です。定義は管理画面で変更できます。",
+      description:
+        "初期定義のフル条件を満たした件数です。定義は管理画面で変更できます。",
     },
     {
       key: "first_is_appointments",
@@ -1427,7 +1873,10 @@ async function main() {
       aggregation: MetricAggregation.RATE,
       numeratorMetricId: "first_is_connections",
       denominatorMetricId: "first_is_calls",
-      queryDefinition: { numerator: "first_is_connections", denominator: "first_is_calls" },
+      queryDefinition: {
+        numerator: "first_is_connections",
+        denominator: "first_is_calls",
+      },
       minSampleSize: 30,
       description: "接続数 ÷ 架電数です。",
     },
@@ -1597,7 +2046,10 @@ async function main() {
       aggregation: MetricAggregation.RATE,
       numeratorMetricId: "hd_is_appointments",
       denominatorMetricId: "hd_is_calls",
-      queryDefinition: { numerator: "hd_is_appointments", denominator: "hd_is_calls" },
+      queryDefinition: {
+        numerator: "hd_is_appointments",
+        denominator: "hd_is_calls",
+      },
       minSampleSize: 30,
       description: "アポ数 ÷ 架電数です。",
     },
@@ -1652,7 +2104,11 @@ async function main() {
     });
   }
 
-  for (const key of ["first_fs_win_rate", "first_is_call_to_connection_rate", "hd_is_call_to_appointment_rate"]) {
+  for (const key of [
+    "first_fs_win_rate",
+    "first_is_call_to_connection_rate",
+    "hd_is_call_to_appointment_rate",
+  ]) {
     const metric = metricDefinitions.get(key);
     if (!metric) continue;
     await prisma.metricValidationRule.create({
@@ -1670,16 +2126,34 @@ async function main() {
 
   const targetSeeds = [
     ["executive_confirmed_gross_profit", null, null, null, 10560000],
-    ["first_fs_gross_profit", firstBusinessUnit.id, null, WorkFunction.FS, 4800000],
+    [
+      "first_fs_gross_profit",
+      firstBusinessUnit.id,
+      null,
+      WorkFunction.FS,
+      4800000,
+    ],
     ["first_fs_won_deals", firstBusinessUnit.id, null, WorkFunction.FS, 20],
     ["first_is_calls", firstBusinessUnit.id, member.id, WorkFunction.IS, 2800],
-    ["first_is_appointments", firstBusinessUnit.id, member.id, WorkFunction.IS, 70],
+    [
+      "first_is_appointments",
+      firstBusinessUnit.id,
+      member.id,
+      WorkFunction.IS,
+      70,
+    ],
     ["hd_fs_gross_profit", hdBusinessUnit.id, null, WorkFunction.FS, 5760000],
     ["hd_fs_won_deals", hdBusinessUnit.id, null, WorkFunction.FS, 40],
     ["hd_is_calls", hdBusinessUnit.id, member.id, WorkFunction.IS, 3600],
     ["hd_is_appointments", hdBusinessUnit.id, member.id, WorkFunction.IS, 90],
   ] as const;
-  for (const [key, businessUnitId, userId, workFunction, targetValue] of targetSeeds) {
+  for (const [
+    key,
+    businessUnitId,
+    userId,
+    workFunction,
+    targetValue,
+  ] of targetSeeds) {
     const metric = metricDefinitions.get(key);
     if (!metric) continue;
     await prisma.kpiTarget.create({
@@ -1747,7 +2221,8 @@ async function main() {
           targetDate,
           value,
           source: DailyMetricSource.MANUAL,
-          status: day < 15 ? DailyMetricStatus.APPROVED : DailyMetricStatus.DRAFT,
+          status:
+            day < 15 ? DailyMetricStatus.APPROVED : DailyMetricStatus.DRAFT,
           submittedAt: day < 15 ? new Date() : null,
           approvedAt: day < 15 ? new Date() : null,
           approvedByUserId: day < 15 ? superAdmin.id : null,
@@ -1774,7 +2249,8 @@ async function main() {
         status,
         referredAt: dayOfJune(index + 3),
         appointmentSetAt:
-          status === ReferralStatus.APPOINTMENT_SET || status === ReferralStatus.WON
+          status === ReferralStatus.APPOINTMENT_SET ||
+          status === ReferralStatus.WON
             ? dayOfJune(index + 4)
             : null,
         wonAt: status === ReferralStatus.WON ? dayOfJune(index + 8) : null,
@@ -1844,7 +2320,9 @@ async function main() {
     });
   }
 
-  const grossProfitMetric = metricDefinitions.get("executive_confirmed_gross_profit");
+  const grossProfitMetric = metricDefinitions.get(
+    "executive_confirmed_gross_profit",
+  );
   const target = grossProfitMetric
     ? await prisma.kpiTarget.findFirst({
         where: {

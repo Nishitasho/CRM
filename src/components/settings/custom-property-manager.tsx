@@ -3,11 +3,13 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
-type ObjectType = "CONTACT" | "COMPANY" | "DEAL";
+type ObjectType = "CONTACT" | "COMPANY" | "DEAL" | "DEAL_LINE_ITEM";
 type FieldType =
   | "TEXT"
   | "TEXTAREA"
   | "NUMBER"
+  | "CURRENCY"
+  | "PERCENTAGE"
   | "DATE"
   | "DATETIME"
   | "SELECT"
@@ -26,6 +28,9 @@ type Property = {
   options: unknown;
   isRequired: boolean;
   isUnique: boolean;
+  isSearchable: boolean;
+  isFilterable: boolean;
+  isReportable: boolean;
   sortOrder: number;
 };
 
@@ -33,12 +38,15 @@ const objectLabels: Record<ObjectType, string> = {
   CONTACT: "担当者",
   COMPANY: "会社",
   DEAL: "商談",
+  DEAL_LINE_ITEM: "商品明細",
 };
 
 const fieldLabels: Record<FieldType, string> = {
   TEXT: "1行テキスト",
   TEXTAREA: "複数行テキスト",
   NUMBER: "数値",
+  CURRENCY: "通貨",
+  PERCENTAGE: "割合",
   DATE: "日付",
   DATETIME: "日時",
   SELECT: "単一選択",
@@ -77,6 +85,9 @@ export function CustomPropertyManager({
       options,
       isRequired: form.get("isRequired") === "on",
       isUnique: form.get("isUnique") === "on",
+      isSearchable: form.get("isSearchable") === "on",
+      isFilterable: form.get("isFilterable") === "on",
+      isReportable: form.get("isReportable") === "on",
       sortOrder: Number(form.get("sortOrder") ?? 0),
     };
 
@@ -232,6 +243,30 @@ export function CustomPropertyManager({
                 />
                 一意
               </label>
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input
+                  name="isSearchable"
+                  type="checkbox"
+                  defaultChecked={editing?.isSearchable}
+                />
+                検索
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input
+                  name="isFilterable"
+                  type="checkbox"
+                  defaultChecked={editing?.isFilterable}
+                />
+                フィルター
+              </label>
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input
+                  name="isReportable"
+                  type="checkbox"
+                  defaultChecked={editing?.isReportable}
+                />
+                レポート
+              </label>
             </div>
           </div>
           <div className="mt-5 flex items-center gap-4">
@@ -286,6 +321,9 @@ export function CustomPropertyManager({
                     {[
                       property.isRequired && "必須",
                       property.isUnique && "一意",
+                      property.isSearchable && "検索",
+                      property.isFilterable && "フィルター",
+                      property.isReportable && "レポート",
                     ]
                       .filter(Boolean)
                       .join(" / ") || "任意"}

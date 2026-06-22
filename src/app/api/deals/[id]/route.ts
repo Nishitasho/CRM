@@ -12,6 +12,7 @@ import {
 } from "@/lib/crm";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { validateDealStageRequirements } from "@/lib/sales-ops";
 import { dealSchema } from "@/lib/validation";
 type Params = { params: Promise<{ id: string }> };
 const findDeal = (organizationId: string, id: string) =>
@@ -99,9 +100,41 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 403 },
       );
     }
-    if (stage.stageType === "LOST" && !input.lostReason)
+    if (stage.stageType === "LOST" && !input.primaryLossReasonId && !input.lostReason)
       return NextResponse.json(
-        { message: "失注理由を入力してください。" },
+        { message: "失注理由を選択してください。" },
+        { status: 400 },
+      );
+    if (input.primaryLossReasonId) {
+      const reason = await prisma.lossReasonDefinition.findFirst({
+        where: {
+          id: input.primaryLossReasonId,
+          organizationId: context.organization.id,
+          isActive: true,
+        },
+      });
+      if (!reason)
+        return NextResponse.json(
+          { message: "失注理由が見つかりません。" },
+          { status: 400 },
+        );
+      if (reason.requiresNote && !input.lossReasonNote)
+        return NextResponse.json(
+          { message: "この失注理由では補足を入力してください。" },
+          { status: 400 },
+        );
+    }
+    const missing = await validateDealStageRequirements({
+      organizationId: context.organization.id,
+      dealId: id,
+      stageId: stage.id,
+    });
+    const effectiveMissing = missing.filter(
+      (item) => !(item === "失注理由" && input.primaryLossReasonId),
+    );
+    if (effectiveMissing.length)
+      return NextResponse.json(
+        { message: `不足項目があります: ${effectiveMissing.join("、")}` },
         { status: 400 },
       );
     const item = await prisma.$transaction(async (tx) => {
@@ -112,6 +145,9 @@ export async function PATCH(request: Request, { params }: Params) {
           businessUnitId: stage.pipeline.businessUnitId,
           probability: stage.probability,
           status: stage.stageType,
+          lostAt:
+            stage.stageType === "LOST" ? current.lostAt ?? new Date() : null,
+          lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"
               ? (input.closeDate ?? current.closeDate ?? new Date())

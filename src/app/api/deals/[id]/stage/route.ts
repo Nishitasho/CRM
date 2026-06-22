@@ -3,6 +3,7 @@ import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canEditRecord, canViewRecord, createRecordActivity } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
+import { validateDealStageRequirements } from "@/lib/sales-ops";
 import { dealStageSchema } from "@/lib/validation";
 
 type Params = { params: Promise<{ id: string }> };
@@ -50,9 +51,41 @@ export async function PATCH(request: Request, { params }: Params) {
         { message: "ステージが正しくありません。" },
         { status: 400 },
       );
-    if (stage.stageType === "LOST" && !input.lostReason)
+    if (stage.stageType === "LOST" && !input.primaryLossReasonId && !input.lostReason)
       return NextResponse.json(
-        { message: "失注理由を入力してください。" },
+        { message: "失注理由を選択してください。" },
+        { status: 400 },
+      );
+    if (input.primaryLossReasonId) {
+      const reason = await prisma.lossReasonDefinition.findFirst({
+        where: {
+          id: input.primaryLossReasonId,
+          organizationId: context.organization.id,
+          isActive: true,
+        },
+      });
+      if (!reason)
+        return NextResponse.json(
+          { message: "失注理由が見つかりません。" },
+          { status: 400 },
+        );
+      if (reason.requiresNote && !input.lossReasonNote)
+        return NextResponse.json(
+          { message: "この失注理由では補足を入力してください。" },
+          { status: 400 },
+        );
+    }
+    const missing = await validateDealStageRequirements({
+      organizationId: context.organization.id,
+      dealId: id,
+      stageId: stage.id,
+    });
+    const effectiveMissing = missing.filter(
+      (item) => !(item === "失注理由" && input.primaryLossReasonId),
+    );
+    if (effectiveMissing.length)
+      return NextResponse.json(
+        { message: `不足項目があります: ${effectiveMissing.join("、")}` },
         { status: 400 },
       );
 
@@ -64,6 +97,12 @@ export async function PATCH(request: Request, { params }: Params) {
           probability: stage.probability,
           status: stage.stageType,
           lostReason: stage.stageType === "LOST" ? input.lostReason : null,
+          primaryLossReasonId:
+            stage.stageType === "LOST" ? input.primaryLossReasonId ?? null : null,
+          lossReasonNote:
+            stage.stageType === "LOST" ? input.lossReasonNote ?? null : null,
+          lostAt: stage.stageType === "LOST" ? current.lostAt ?? new Date() : null,
+          lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"
               ? (current.closeDate ?? new Date())

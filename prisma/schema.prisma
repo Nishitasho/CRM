@@ -75,12 +75,76 @@ enum PriceBookStatus {
 }
 
 enum DealLineItemStatus {
-  PROPOSED  @map("proposed")
-  WON       @map("won")
-  LOST      @map("lost")
-  CANCELLED @map("cancelled")
+  PROPOSED     @map("proposed")
+  WON          @map("won")
+  LOST         @map("lost")
+  CANCELLED    @map("cancelled")
+  NOT_SELECTED @map("not_selected")
 
   @@map("deal_line_item_status")
+}
+
+enum AmountMetricBasis {
+  REVENUE      @map("revenue")
+  GROSS_PROFIT @map("gross_profit")
+
+  @@map("amount_metric_basis")
+}
+
+enum ConfirmedAmountDateBasis {
+  WON_AT             @map("won_at")
+  CONTRACTED_AT      @map("contracted_at")
+  COLLECTED_AT       @map("collected_at")
+  BILLING_STARTED_AT @map("billing_started_at")
+
+  @@map("confirmed_amount_date_basis")
+}
+
+enum ProductKind {
+  CORE       @map("core")
+  ADD_ON     @map("add_on")
+  OPTIONAL   @map("optional")
+  CROSS_SELL @map("cross_sell")
+
+  @@map("product_kind")
+}
+
+enum AttachmentDenominatorMode {
+  ALL_WON_DEALS           @map("all_won_deals")
+  DEALS_WITH_BASE_PRODUCT @map("deals_with_base_product")
+  DEALS_MATCHING_FILTER   @map("deals_matching_filter")
+
+  @@map("attachment_denominator_mode")
+}
+
+enum LossReasonScope {
+  DEAL           @map("deal")
+  DEAL_LINE_ITEM @map("deal_line_item")
+  BOTH           @map("both")
+
+  @@map("loss_reason_scope")
+}
+
+enum LossReasonStatus {
+  LOST         @map("lost")
+  CANCELLED    @map("cancelled")
+  INVALID      @map("invalid")
+  NOT_SELECTED @map("not_selected")
+
+  @@map("loss_reason_status")
+}
+
+enum DealAlertRuleType {
+  MEETING_OVERDUE           @map("meeting_overdue")
+  NEXT_ACTION_OVERDUE       @map("next_action_overdue")
+  NO_ACTIVITY_DAYS          @map("no_activity_days")
+  STAGE_STALE_DAYS          @map("stage_stale_days")
+  MISSING_LINE_ITEMS        @map("missing_line_items")
+  MISSING_CLOSER            @map("missing_closer")
+  MISSING_FORECAST_CATEGORY @map("missing_forecast_category")
+  MISSING_EXPECTED_AMOUNT   @map("missing_expected_amount")
+
+  @@map("deal_alert_rule_type")
 }
 
 enum ForecastCategoryStatus {
@@ -361,9 +425,10 @@ enum ObjectType {
 }
 
 enum CustomPropertyObjectType {
-  CONTACT @map("contact")
-  COMPANY @map("company")
-  DEAL    @map("deal")
+  CONTACT        @map("contact")
+  COMPANY        @map("company")
+  DEAL           @map("deal")
+  DEAL_LINE_ITEM @map("deal_line_item")
 
   @@map("custom_property_object_type")
 }
@@ -372,6 +437,8 @@ enum CustomFieldType {
   TEXT         @map("text")
   TEXTAREA     @map("textarea")
   NUMBER       @map("number")
+  CURRENCY     @map("currency")
+  PERCENTAGE   @map("percentage")
   DATE         @map("date")
   DATETIME     @map("datetime")
   SELECT       @map("select")
@@ -497,15 +564,17 @@ model OrganizationMember {
 }
 
 model BusinessUnit {
-  id             String             @id @default(uuid()) @db.Uuid
-  organizationId String             @map("organization_id") @db.Uuid
-  name           String             @db.VarChar(160)
-  slug           String             @db.VarChar(80)
-  description    String?
-  status         BusinessUnitStatus @default(ACTIVE)
-  displayOrder   Int                @default(0) @map("display_order")
-  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                       String                    @id @default(uuid()) @db.Uuid
+  organizationId           String                    @map("organization_id") @db.Uuid
+  name                     String                    @db.VarChar(160)
+  slug                     String                    @db.VarChar(80)
+  description              String?
+  status                   BusinessUnitStatus        @default(ACTIVE)
+  displayOrder             Int                       @default(0) @map("display_order")
+  amountMetricBasis        AmountMetricBasis?        @map("amount_metric_basis")
+  confirmedAmountDateBasis ConfirmedAmountDateBasis? @map("confirmed_amount_date_basis")
+  createdAt                DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   memberships        BusinessUnitMembership[]
@@ -680,6 +749,8 @@ model PipelineStage {
   sortOrder      Int       @map("order")
   probability    Int       @default(0)
   stageType      StageType @default(OPEN) @map("stage_type")
+  requiredFields Json      @default("[]") @map("required_fields") @db.JsonB
+  staleDays      Int?      @map("stale_days")
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -710,6 +781,12 @@ model Deal {
   decisionMakerStatus DecisionMakerStatus @default(UNKNOWN) @map("decision_maker_status")
   qualificationResult QualificationResult @default(UNDETERMINED) @map("qualification_result")
   lostReason          String?             @map("lost_reason")
+  primaryLossReasonId String?             @map("primary_loss_reason_id") @db.Uuid
+  lossReasonNote      String?             @map("loss_reason_note")
+  lostByUserId        String?             @map("lost_by_user_id") @db.Uuid
+  nextAction          String?             @map("next_action") @db.VarChar(240)
+  nextActionDate      DateTime?           @map("next_action_date") @db.Date
+  nextActionOwnerId   String?             @map("next_action_owner_id") @db.Uuid
   source              String?             @db.VarChar(120)
   externalId          String?             @map("external_id") @db.VarChar(160)
   legacyProgress      String?             @map("legacy_progress") @db.VarChar(160)
@@ -803,6 +880,7 @@ model Task {
 model CustomProperty {
   id             String                   @id @default(uuid()) @db.Uuid
   organizationId String                   @map("organization_id") @db.Uuid
+  businessUnitId String?                  @map("business_unit_id") @db.Uuid
   objectType     CustomPropertyObjectType @map("object_type")
   name           String                   @db.VarChar(80)
   label          String                   @db.VarChar(120)
@@ -810,6 +888,9 @@ model CustomProperty {
   options        Json                     @default("[]") @db.JsonB
   isRequired     Boolean                  @default(false) @map("is_required")
   isUnique       Boolean                  @default(false) @map("is_unique")
+  isSearchable   Boolean                  @default(false) @map("is_searchable")
+  isFilterable   Boolean                  @default(false) @map("is_filterable")
+  isReportable   Boolean                  @default(false) @map("is_reportable")
   sortOrder      Int                      @default(0) @map("order")
   createdAt      DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -817,7 +898,7 @@ model CustomProperty {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, objectType, name])
-  @@index([organizationId, objectType, sortOrder])
+  @@index([organizationId, businessUnitId, objectType, sortOrder])
   @@map("custom_properties")
 }
 
@@ -1056,6 +1137,7 @@ model BusinessUnitProduct {
   organizationId String        @map("organization_id") @db.Uuid
   businessUnitId String        @map("business_unit_id") @db.Uuid
   productId      String        @map("product_id") @db.Uuid
+  productKind    ProductKind?  @map("product_kind")
   status         ProductStatus @default(ACTIVE)
   displayOrder   Int           @default(0) @map("display_order")
   metadata       Json          @default("{}") @db.JsonB
@@ -1067,7 +1149,7 @@ model BusinessUnitProduct {
   product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, businessUnitId, productId])
-  @@index([organizationId, businessUnitId, status, displayOrder])
+  @@index([organizationId, businessUnitId, productKind, status, displayOrder])
   @@map("business_unit_products")
 }
 
@@ -1079,6 +1161,8 @@ model PriceBookEntry {
   name              String          @db.VarChar(160)
   currency          String          @default("JPY") @db.VarChar(3)
   unitPriceAmount   Decimal?        @map("unit_price_amount") @db.Decimal(18, 2)
+  initialFee        Decimal?        @map("initial_fee") @db.Decimal(18, 2)
+  recurringFee      Decimal?        @map("recurring_fee") @db.Decimal(18, 2)
   revenueAmount     Decimal?        @map("revenue_amount") @db.Decimal(18, 2)
   grossProfitAmount Decimal?        @map("gross_profit_amount") @db.Decimal(18, 2)
   effectiveFrom     DateTime?       @map("effective_from") @db.Date
@@ -1131,12 +1215,23 @@ model DealLineItem {
   name                      String             @db.VarChar(180)
   quantity                  Decimal            @default(1) @db.Decimal(18, 4)
   unitPriceAmount           Decimal?           @map("unit_price_amount") @db.Decimal(18, 2)
+  initialFee                Decimal?           @map("initial_fee") @db.Decimal(18, 2)
+  recurringFee              Decimal?           @map("recurring_fee") @db.Decimal(18, 2)
   revenueAmount             Decimal?           @map("revenue_amount") @db.Decimal(18, 2)
   grossProfitAmount         Decimal?           @map("gross_profit_amount") @db.Decimal(18, 2)
+  expectedRevenueAmount     Decimal?           @map("expected_revenue_amount") @db.Decimal(18, 2)
   expectedGrossProfitAmount Decimal?           @map("expected_gross_profit_amount") @db.Decimal(18, 2)
+  collectedAmount           Decimal?           @map("collected_amount") @db.Decimal(18, 2)
+  contractedAt              DateTime?          @map("contracted_at") @db.Date
+  collectedAt               DateTime?          @map("collected_at") @db.Date
   billingStartedAt          DateTime?          @map("billing_started_at") @db.Date
+  cancelledAt               DateTime?          @map("cancelled_at") @db.Date
   status                    DealLineItemStatus @default(PROPOSED)
+  lossReasonId              String?            @map("loss_reason_id") @db.Uuid
+  lossReasonNote            String?            @map("loss_reason_note")
+  lostAt                    DateTime?          @map("lost_at") @db.Timestamptz(3)
   source                    String?            @db.VarChar(120)
+  customFields              Json               @default("{}") @map("custom_fields") @db.JsonB
   metadata                  Json               @default("{}") @db.JsonB
   createdAt                 DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt                 DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -1149,6 +1244,9 @@ model DealLineItem {
   @@index([organizationId, businessUnitId, status])
   @@index([organizationId, dealId])
   @@index([organizationId, productId])
+  @@index([organizationId, lossReasonId])
+  @@index([organizationId, contractedAt])
+  @@index([organizationId, collectedAt])
   @@index([organizationId, billingStartedAt])
   @@map("deal_line_items")
 }
@@ -1162,6 +1260,7 @@ model DealParticipant {
   role               DealParticipantRole
   status             DealParticipantStatus @default(ACTIVE)
   contributionWeight Decimal               @default(1) @map("contribution_weight") @db.Decimal(5, 2)
+  creditShare        Decimal?              @map("credit_share") @db.Decimal(5, 2)
   creditedAt         DateTime?             @map("credited_at") @db.Timestamptz(3)
   snapshotUserName   String?               @map("snapshot_user_name") @db.VarChar(120)
   metadata           Json                  @default("{}") @db.JsonB
@@ -1497,4 +1596,87 @@ model LegacySourceLink {
   @@index([organizationId, targetObjectType, targetObjectId])
   @@index([organizationId, workbookFingerprint, sheetName])
   @@map("legacy_source_links")
+}
+
+model CustomPropertyProductScope {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  customPropertyId String   @map("custom_property_id") @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([customPropertyId, productId])
+  @@index([organizationId, productId])
+  @@map("custom_property_product_scopes")
+}
+
+model ProductAttachmentRule {
+  id                String                    @id @default(uuid()) @db.Uuid
+  organizationId    String                    @map("organization_id") @db.Uuid
+  businessUnitId    String?                   @map("business_unit_id") @db.Uuid
+  name              String                    @db.VarChar(160)
+  attachedProductId String                    @map("attached_product_id") @db.Uuid
+  denominatorMode   AttachmentDenominatorMode @map("denominator_mode")
+  dateBasis         ConfirmedAmountDateBasis? @map("date_basis")
+  targetRate        Decimal?                  @map("target_rate") @db.Decimal(8, 4)
+  eligibilityFilter Json                      @default("{}") @map("eligibility_filter") @db.JsonB
+  isActive          Boolean                   @default(true) @map("is_active")
+  displayOrder      Int                       @default(0) @map("display_order")
+  createdAt         DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([organizationId, businessUnitId, isActive, displayOrder])
+  @@index([organizationId, attachedProductId])
+  @@map("product_attachment_rules")
+}
+
+model ProductAttachmentRuleBaseProduct {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  ruleId         String   @map("rule_id") @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([ruleId, productId])
+  @@index([organizationId, productId])
+  @@map("product_attachment_rule_base_products")
+}
+
+model LossReasonDefinition {
+  id               String             @id @default(uuid()) @db.Uuid
+  organizationId   String             @map("organization_id") @db.Uuid
+  businessUnitId   String?            @map("business_unit_id") @db.Uuid
+  productId        String?            @map("product_id") @db.Uuid
+  code             String             @db.VarChar(80)
+  name             String             @db.VarChar(160)
+  category         String?            @db.VarChar(120)
+  applicableScope  LossReasonScope    @default(BOTH) @map("applicable_scope")
+  applicableStatus LossReasonStatus[] @default([]) @map("applicable_status")
+  requiresNote     Boolean            @default(false) @map("requires_note")
+  isActive         Boolean            @default(true) @map("is_active")
+  displayOrder     Int                @default(0) @map("display_order")
+  createdAt        DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([organizationId, businessUnitId, productId, code])
+  @@index([organizationId, businessUnitId, productId, isActive, displayOrder])
+  @@map("loss_reason_definitions")
+}
+
+model DealAlertRule {
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  businessUnitId String?           @map("business_unit_id") @db.Uuid
+  pipelineId     String?           @map("pipeline_id") @db.Uuid
+  stageId        String?           @map("stage_id") @db.Uuid
+  type           DealAlertRuleType
+  name           String            @db.VarChar(160)
+  thresholdDays  Int?              @map("threshold_days")
+  config         Json              @default("{}") @db.JsonB
+  isActive       Boolean           @default(true) @map("is_active")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([organizationId, businessUnitId, pipelineId, stageId, isActive])
+  @@map("deal_alert_rules")
 }

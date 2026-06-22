@@ -16,7 +16,9 @@ export async function GET(request: Request) {
     const items = await prisma.customProperty.findMany({
       where: {
         organizationId: context.organization.id,
-        ...(type ? { objectType: type as "CONTACT" | "COMPANY" | "DEAL" } : {}),
+        ...(type
+          ? { objectType: type as "CONTACT" | "COMPANY" | "DEAL" | "DEAL_LINE_ITEM" }
+          : {}),
       },
       orderBy: [{ objectType: "asc" }, { sortOrder: "asc" }],
     });
@@ -38,9 +40,20 @@ export async function POST(request: Request) {
       Permission.MANAGE_CUSTOM_PROPERTIES,
     );
     const input = customPropertySchema.parse(await request.json());
+    const { productIds, ...propertyInput } = input;
     const item = await prisma.customProperty.create({
-      data: { organizationId: context.organization.id, ...input },
+      data: { organizationId: context.organization.id, ...propertyInput },
     });
+    if (productIds.length) {
+      await prisma.customPropertyProductScope.createMany({
+        data: productIds.map((productId) => ({
+          organizationId: context.organization.id,
+          customPropertyId: item.id,
+          productId,
+        })),
+        skipDuplicates: true,
+      });
+    }
     return NextResponse.json({ item }, { status: 201 });
   } catch (error) {
     return apiError(error);

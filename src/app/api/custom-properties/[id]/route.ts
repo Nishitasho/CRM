@@ -27,9 +27,26 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 404 },
       );
     const input = customPropertySchema.parse(await request.json());
-    const item = await prisma.customProperty.update({
-      where: { id },
-      data: input,
+    const { productIds, ...propertyInput } = input;
+    const item = await prisma.$transaction(async (tx) => {
+      const property = await tx.customProperty.update({
+        where: { id },
+        data: propertyInput,
+      });
+      await tx.customPropertyProductScope.deleteMany({
+        where: { organizationId: context.organization.id, customPropertyId: id },
+      });
+      if (productIds.length) {
+        await tx.customPropertyProductScope.createMany({
+          data: productIds.map((productId) => ({
+            organizationId: context.organization.id,
+            customPropertyId: id,
+            productId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+      return property;
     });
     return NextResponse.json({ item });
   } catch (error) {
@@ -49,8 +66,13 @@ export async function DELETE(_: Request, { params }: Params) {
       Permission.MANAGE_CUSTOM_PROPERTIES,
     );
     const { id } = await params;
-    const deleted = await prisma.customProperty.deleteMany({
-      where: { id, organizationId: context.organization.id },
+    const deleted = await prisma.$transaction(async (tx) => {
+      await tx.customPropertyProductScope.deleteMany({
+        where: { customPropertyId: id, organizationId: context.organization.id },
+      });
+      return tx.customProperty.deleteMany({
+        where: { id, organizationId: context.organization.id },
+      });
     });
     if (!deleted.count)
       return NextResponse.json(

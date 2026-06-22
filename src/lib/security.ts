@@ -4,8 +4,16 @@ export function createOpaqueToken(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
+function tokenHashSecret() {
+  return process.env.SESSION_SECRET ?? "local-development-session-secret";
+}
+
 export function hashToken(token: string) {
-  return createHash("sha256").update(token).digest("hex");
+  return createHash("sha256")
+    .update(tokenHashSecret())
+    .update(":")
+    .update(token)
+    .digest("hex");
 }
 
 export function normalizeEmail(email: string) {

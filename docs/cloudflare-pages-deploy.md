@@ -4,9 +4,17 @@ This CRM is a dynamic Next.js App Router application. It uses route handlers,
 authentication, cookies, and Prisma-backed server logic, so do not deploy it as
 a static `out` export.
 
+## Current Status
+
+Cloudflare Pages deployment is paused for the production Google Calendar
+validation. `next build` succeeds, but `@cloudflare/next-on-pages` currently
+requires dynamic App Router/API routes to be compatible with the Edge runtime.
+This CRM uses the standard Node.js runtime with Prisma/PostgreSQL, so deploy it
+to Vercel for the temporary validation environment. See `docs/deploy-vercel.md`.
+
 ## Cloudflare Pages Settings
 
-Use these values in Cloudflare Pages:
+If Cloudflare Pages work resumes later, start from these values:
 
 | Setting | Value |
 | --- | --- |
@@ -59,6 +67,6 @@ Do not put `APP_ENCRYPTION_KEY=` inside the value field.
 ## Important Note
 
 As of the current Cloudflare documentation, Cloudflare recommends Workers with
-the OpenNext adapter for full-stack SSR Next.js apps. If this Pages deployment
-hits adapter/runtime limitations, migrate the deploy target to Workers using
-`@opennextjs/cloudflare` rather than changing this CRM to a static export.
+the OpenNext adapter for full-stack SSR Next.js apps. When Cloudflare work
+resumes, prefer a Workers/OpenNext migration over changing this CRM to a static
+export.

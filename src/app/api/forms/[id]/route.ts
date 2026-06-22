@@ -29,6 +29,12 @@ export async function PATCH(request: Request, { params }: Params) {
       );
     const input = crmFormSchema.parse(await request.json());
     const businessUnitId = input.businessUnitId ?? exists.businessUnitId;
+    if (!businessUnitId) {
+      return NextResponse.json(
+        { message: "フォームには事業部の設定が必要です。" },
+        { status: 400 },
+      );
+    }
     if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
       return NextResponse.json(
         { message: "この事業部のフォームを編集する権限がありません。" },
@@ -40,10 +46,27 @@ export async function PATCH(request: Request, { params }: Params) {
       data: {
         businessUnitId,
         name: input.name,
+        description: input.description,
         slug: input.slug,
         submitButtonText: input.submitButtonText,
+        completionMessage: input.completionMessage,
         redirectUrl: input.redirectUrl,
+        targetProductId: input.targetProductId,
+        pipelineId: input.pipelineId,
+        stageId: input.stageId,
+        meetingLinkId: input.meetingLinkId,
+        assignmentMode: input.assignmentMode,
+        fixedAssigneeUserId: input.fixedAssigneeUserId,
+        teamId: input.teamId,
+        workFunction: input.workFunction,
+        appointmentCreditPolicy: input.appointmentCreditPolicy,
+        appointmentCreditFixedUserId: input.appointmentCreditFixedUserId,
+        privacyConsentVersion: input.privacyConsentVersion,
+        googleFallbackMode: input.googleFallbackMode,
         fields: input.fields as Prisma.InputJsonValue,
+        mappingSchema: input.mappingSchema as Prisma.InputJsonValue,
+        routingConfig: input.routingConfig as Prisma.InputJsonValue,
+        schedulingConfig: input.schedulingConfig as Prisma.InputJsonValue,
       },
     });
     return NextResponse.json({ item });

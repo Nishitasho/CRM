@@ -27,7 +27,21 @@ export default async function FormsPage() {
         description={`${businessUnitSelection.selectedBusinessUnitName}の公開フォームから担当者情報を登録し、送信内容をタイムラインへ記録します。`}
       />
       <FormManager
-        forms={forms}
+        forms={forms.map((form) => ({
+          id: form.id,
+          name: form.name,
+          description: form.description,
+          slug: form.slug,
+          status: form.status,
+          fields: form.fields,
+          mappingSchema: form.mappingSchema,
+          routingConfig: form.routingConfig,
+          schedulingConfig: form.schedulingConfig,
+          submitButtonText: form.submitButtonText,
+          completionMessage: form.completionMessage,
+          redirectUrl: form.redirectUrl,
+          _count: form._count,
+        }))}
         appUrl={process.env.APP_URL ?? "http://localhost:3000"}
         selectedBusinessUnitId={businessUnitSelection.selectedBusinessUnitId}
       />

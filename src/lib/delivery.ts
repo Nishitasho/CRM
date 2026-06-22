@@ -1098,8 +1098,8 @@ export async function createCrossSellDeal(input: {
         skipDuplicates: true,
       });
     }
-    await tx.salesPerformanceEvent.create({
-      data: {
+    await tx.salesPerformanceEvent.createMany({
+      data: [{
         organizationId: input.organizationId,
         businessUnitId: project.businessUnitId,
         dealId: deal.id,
@@ -1110,9 +1110,10 @@ export async function createCrossSellDeal(input: {
         source: "SYSTEM",
         occurredAt: new Date(),
         quantity: 1,
-        idempotencyKey: `cross-sell-created:${deal.id}`,
+        idempotencyKey: `cross-sell-created:${deal.id}:${input.actorUserId}`,
         metadata: inputJson({ originProjectId: project.id, originDealId: project.sourceDealId }),
-      },
+      }],
+      skipDuplicates: true,
     });
     await tx.activity.create({
       data: {

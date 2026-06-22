@@ -258,6 +258,13 @@ export const pipelineSchema = z.object({
   isDefault: z.boolean().default(false),
 });
 
+export const deliveryPipelineSchema = z.object({
+  businessUnitId: optionalUuid,
+  name: z.string().trim().min(1, "制作パイプライン名を入力してください。").max(160),
+  isDefault: z.boolean().default(false),
+  isActive: z.boolean().default(true),
+});
+
 export const pipelineStageSchema = z.object({
   name: z.string().trim().min(1, "ステージ名を入力してください。").max(120),
   probability: z.coerce.number().int().min(0).max(100),
@@ -265,6 +272,21 @@ export const pipelineStageSchema = z.object({
   sortOrder: z.coerce.number().int().min(1),
   requiredFields: z.array(z.string().trim().min(1).max(120)).default([]),
   staleDays: z.coerce.number().int().min(0).nullable().optional(),
+});
+
+export const deliveryPipelineStageSchema = z.object({
+  pipelineId: z.string().uuid("制作パイプラインを選択してください。"),
+  name: z.string().trim().min(1, "ステージ名を入力してください。").max(120),
+  sortOrder: z.coerce.number().int().min(1),
+  color: optionalText(40),
+  stageType: z
+    .enum(["NORMAL", "PUBLISHED", "COMPLETED", "PAUSED"])
+    .default("NORMAL"),
+  staleDays: z.coerce.number().int().min(0).nullable().optional(),
+  requiredFields: z.array(z.string().trim().min(1).max(120)).default([]),
+  taskTemplates: z.array(z.record(z.unknown())).default([]),
+  isCompleted: z.boolean().default(false),
+  isPaused: z.boolean().default(false),
 });
 
 export const customPropertySchema = z.object({
@@ -313,25 +335,49 @@ export const savedViewSchema = z.object({
   isShared: z.boolean().default(false),
 });
 
-const publicFieldName = z.enum([
-  "firstName",
-  "lastName",
-  "email",
-  "phone",
-  "jobTitle",
-  "message",
-]);
-
 export const formFieldSchema = z.object({
-  name: publicFieldName,
+  name: z
+    .string()
+    .trim()
+    .regex(/^[a-zA-Z][a-zA-Z0-9_]*$/)
+    .max(80),
   label: z.string().trim().min(1).max(120),
-  type: z.enum(["text", "email", "tel", "textarea"]),
+  type: z.enum([
+    "text",
+    "textarea",
+    "number",
+    "currency",
+    "date",
+    "datetime",
+    "select",
+    "multi_select",
+    "checkbox",
+    "radio",
+    "email",
+    "phone",
+    "tel",
+    "url",
+    "hidden",
+    "consent",
+  ]),
   required: z.boolean().default(false),
+  description: optionalText(1000),
+  placeholder: optionalText(160),
+  defaultValue: z.unknown().optional(),
+  options: z.array(z.string().trim().min(1).max(160)).default([]),
+  min: z.coerce.number().nullable().optional(),
+  max: z.coerce.number().nullable().optional(),
+  regex: optionalText(240),
+  sortOrder: z.coerce.number().int().min(0).default(0),
+  conditional: z.record(z.unknown()).default({}),
+  mapping: z.record(z.unknown()).default({}),
+  useForScheduling: z.boolean().default(false),
 });
 
 export const crmFormSchema = z
   .object({
     name: z.string().trim().min(1, "フォーム名を入力してください。").max(160),
+    description: optionalText(4000),
     businessUnitId: optionalUuid,
     slug: z
       .string()
@@ -342,7 +388,11 @@ export const crmFormSchema = z
       )
       .max(100),
     fields: z.array(formFieldSchema).min(1, "項目を1つ以上選択してください。"),
+    mappingSchema: z.record(z.unknown()).default({}),
+    routingConfig: z.record(z.unknown()).default({}),
+    schedulingConfig: z.record(z.unknown()).default({}),
     submitButtonText: z.string().trim().min(1).max(80).default("送信する"),
+    completionMessage: optionalText(4000),
     redirectUrl: z.preprocess(
       (value) => (value === "" ? null : value),
       z
@@ -351,18 +401,82 @@ export const crmFormSchema = z
         .nullable()
         .optional(),
     ),
+    targetProductId: optionalUuid,
+    pipelineId: optionalUuid,
+    stageId: optionalUuid,
+    meetingLinkId: optionalUuid,
+    assignmentMode: z
+      .enum(["FIXED_USER", "ROUND_ROBIN", "TEAM_ROUND_ROBIN"])
+      .default("ROUND_ROBIN"),
+    fixedAssigneeUserId: optionalUuid,
+    teamId: optionalUuid,
+    workFunction: z.enum(["IS", "FS", "CS"]).nullable().optional(),
+    appointmentCreditPolicy: z
+      .enum(["ASSIGNED_USER", "FORM_OWNER", "NO_IS_CREDIT", "FIXED_USER"])
+      .default("ASSIGNED_USER"),
+    appointmentCreditFixedUserId: optionalUuid,
+    privacyConsentVersion: optionalText(80),
+    googleFallbackMode: z
+      .enum(["crm_only", "hide_scheduler", "admin_owner", "reassign_connected"])
+      .default("crm_only"),
   })
   .refine((value) => value.fields.some((field) => field.name === "email"), {
     message: "メールアドレス項目は必須です。",
   });
 
+export const formPublishSchema = z.object({
+  note: optionalText(1000),
+});
+
+export const formDuplicateSchema = z.object({
+  name: optionalText(160),
+  slug: z
+    .string()
+    .trim()
+    .regex(/^[a-z0-9][a-z0-9-]*$/)
+    .max(100)
+    .optional(),
+});
+
+const publicScalar = z.union([
+  z.string().max(10000),
+  z.number(),
+  z.boolean(),
+  z.array(z.string().max(1000)).max(50),
+  z.null(),
+]);
+
 export const publicFormSubmissionSchema = z.object({
-  firstName: optionalText(120),
-  lastName: optionalText(120),
-  email: z.string().trim().email("正しいメールアドレスを入力してください。"),
-  phone: optionalText(40),
-  jobTitle: optionalText(120),
-  message: optionalText(10000),
+  idempotencyKey: z.string().trim().max(240).optional(),
+  honeypot: z.string().max(240).optional(),
+  payload: z.record(publicScalar).default({}),
+  consentAccepted: z.boolean().default(false),
+}).passthrough();
+
+export const routingRuleSchema = z.object({
+  businessUnitId: optionalUuid,
+  formId: optionalUuid,
+  name: z.string().trim().min(1, "ルール名を入力してください。").max(160),
+  priority: z.coerce.number().int().min(0).default(100),
+  status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+  conditionJoin: z.enum(["AND", "OR"]).default("AND"),
+  conditions: z.array(z.record(z.unknown())).default([]),
+  actions: z.array(z.record(z.unknown())).default([]),
+  stopProcessing: z.boolean().default(true),
+  assignmentMode: z
+    .enum(["FIXED_USER", "ROUND_ROBIN", "TEAM_ROUND_ROBIN"])
+    .nullable()
+    .optional(),
+  fixedUserId: optionalUuid,
+  teamId: optionalUuid,
+  workFunction: z.enum(["IS", "FS", "CS"]).nullable().optional(),
+  fallbackConfig: z.record(z.unknown()).default({}),
+});
+
+export const routingRuleTestSchema = z.object({
+  formId: optionalUuid,
+  businessUnitId: optionalUuid,
+  payload: z.record(z.unknown()).default({}),
 });
 
 export const availabilitySchema = z.object({
@@ -390,8 +504,44 @@ export const meetingLinkSchema = z.object({
       "公開URLは英小文字・数字・ハイフンで入力してください。",
     )
     .max(100),
+  businessUnitId: optionalUuid,
+  ownerUserId: optionalUuid,
+  assignmentMode: z
+    .enum(["FIXED_USER", "ROUND_ROBIN", "TEAM_ROUND_ROBIN"])
+    .default("FIXED_USER"),
+  teamId: optionalUuid,
+  workFunction: z.enum(["IS", "FS", "CS"]).nullable().optional(),
   durationMinutes: z.coerce.number().int().min(15).max(180),
+  bufferBeforeMinutes: z.coerce.number().int().min(0).max(240).default(0),
+  bufferAfterMinutes: z.coerce.number().int().min(0).max(240).default(0),
+  minimumNoticeMinutes: z.coerce.number().int().min(0).max(10080).default(60),
+  bookingHorizonDays: z.coerce.number().int().min(1).max(365).default(14),
+  timezone: z.string().trim().min(1).max(80).default("Asia/Tokyo"),
+  locationType: z
+    .enum(["PHONE", "IN_PERSON", "GOOGLE_MEET", "CUSTOM_URL", "OTHER"])
+    .default("GOOGLE_MEET"),
+  locationValue: optionalText(500),
+  availableWeekdays: z.array(z.number().int().min(0).max(6)).default([1, 2, 3, 4, 5]),
+  availableStartMinutes: z.coerce.number().int().min(0).max(1439).default(600),
+  availableEndMinutes: z.coerce.number().int().min(1).max(1440).default(1080),
+  slotIntervalMinutes: z.coerce.number().int().min(5).max(180).default(30),
+  maxBookingsPerDay: z.coerce.number().int().min(1).max(50).nullable().optional(),
+  cancellationDeadlineMinutes: z.coerce.number().int().min(0).nullable().optional(),
+  rescheduleDeadlineMinutes: z.coerce.number().int().min(0).nullable().optional(),
+  status: z.enum(["ACTIVE", "INACTIVE", "PAUSED"]).default("ACTIVE"),
   isActive: z.boolean().default(true),
+  googleCalendarEnabled: z.boolean().default(false),
+  titleTemplate: optionalText(240),
+  holdMinutes: z.coerce.number().int().min(1).max(60).default(5),
+  appointmentCreditPolicy: z
+    .enum(["ASSIGNED_USER", "FORM_OWNER", "NO_IS_CREDIT", "FIXED_USER"])
+    .default("ASSIGNED_USER"),
+  appointmentCreditFixedUserId: optionalUuid,
+  googleFallbackMode: z
+    .enum(["crm_only", "hide_scheduler", "admin_owner", "reassign_connected"])
+    .default("crm_only"),
+}).refine((value) => value.availableStartMinutes < value.availableEndMinutes, {
+  message: "予約可能時間の開始は終了より前にしてください。",
 });
 
 export const meetingBookingSchema = z.object({
@@ -401,6 +551,36 @@ export const meetingBookingSchema = z.object({
     .trim()
     .email("正しいメールアドレスを入力してください。"),
   startsAt: z.coerce.date(),
+  idempotencyKey: z.string().trim().max(240).optional(),
+  holdToken: z.string().trim().max(240).optional(),
+  guestPhone: optionalText(40),
+  companyName: optionalText(200),
+  notes: optionalText(2000),
+});
+
+export const publicAvailabilityQuerySchema = z.object({
+  from: optionalDate,
+  days: z.coerce.number().int().min(1).max(60).default(14),
+});
+
+export const bookingHoldSchema = z.object({
+  startsAt: z.coerce.date(),
+  hostUserId: optionalUuid,
+});
+
+export const bookingMutationSchema = z.object({
+  startsAt: z.coerce.date().optional(),
+  reason: optionalText(500),
+});
+
+export const googleCalendarSelectionSchema = z.object({
+  writeCalendarId: z.string().trim().min(1).max(240),
+  busyCalendarIds: z.array(z.string().trim().min(1).max(240)).default([]),
+});
+
+export const googleCalendarWebhookSchema = z.object({
+  channelId: z.string().trim().max(240).optional(),
+  resourceId: z.string().trim().max(240).optional(),
 });
 
 export const emailTemplateSchema = z.object({

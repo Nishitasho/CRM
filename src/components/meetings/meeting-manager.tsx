@@ -9,9 +9,32 @@ type LinkItem = {
   name: string;
   slug: string;
   durationMinutes: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  minimumNoticeMinutes: number;
+  bookingHorizonDays: number;
+  status: "ACTIVE" | "INACTIVE" | "PAUSED";
+  googleCalendarEnabled: boolean;
   isActive: boolean;
   _count: { bookings: number };
 };
+type BookingItem = {
+  id: string;
+  guestName: string;
+  guestEmail: string;
+  startsAt: string;
+  endsAt: string;
+  bookingStatus: string;
+  syncStatus: string;
+  googleEventHtmlLink: string | null;
+  meetingLink: { name: string };
+  contact: { firstName: string | null; lastName: string | null; email: string | null } | null;
+};
+type GoogleConnection = {
+  status: string;
+  selectedWriteCalendarName: string | null;
+  lastConnectedAt: string | null;
+} | null;
 const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
 const minutesToTime = (minutes: number) =>
   `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
@@ -23,10 +46,14 @@ const timeToMinutes = (value: FormDataEntryValue | null) => {
 export function MeetingManager({
   rules,
   links,
+  bookings,
+  googleConnection,
   appUrl,
 }: {
   rules: Rule[];
   links: LinkItem[];
+  bookings: BookingItem[];
+  googleConnection: GoogleConnection;
   appUrl: string;
 }) {
   const router = useRouter();
@@ -67,6 +94,11 @@ export function MeetingManager({
         slug: data.get("slug"),
         durationMinutes: data.get("durationMinutes"),
         isActive: true,
+        bufferBeforeMinutes: data.get("bufferBeforeMinutes"),
+        bufferAfterMinutes: data.get("bufferAfterMinutes"),
+        minimumNoticeMinutes: data.get("minimumNoticeMinutes"),
+        bookingHorizonDays: data.get("bookingHorizonDays"),
+        googleCalendarEnabled: data.get("googleCalendarEnabled") === "on",
       }),
     });
     const result = await response.json();
@@ -83,7 +115,34 @@ export function MeetingManager({
     router.refresh();
   }
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
+    <div className="space-y-6">
+      <section className="card flex flex-col justify-between gap-4 p-6 md:flex-row md:items-center">
+        <div>
+          <h2 className="text-lg font-bold">Google Calendar</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            {googleConnection?.status === "CONNECTED"
+              ? `接続済み${googleConnection.selectedWriteCalendarName ? ` / ${googleConnection.selectedWriteCalendarName}` : ""}`
+              : "未接続です。Google Calendarだけを認可します。"}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <a
+            className="primary-button"
+            href="/api/integrations/google-calendar/connect?redirectPath=/meetings"
+          >
+            接続する
+          </a>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => fetch("/api/integrations/google-calendar/test", { method: "POST" })}
+          >
+            接続テスト
+          </button>
+        </div>
+      </section>
+
+      <div className="grid gap-6 xl:grid-cols-2">
       <form className="card p-6" onSubmit={saveAvailability}>
         <h2 className="text-lg font-bold">予約可能時間</h2>
         <p className="mt-1 text-sm text-slate-500">日本時間で設定します。</p>
@@ -147,6 +206,20 @@ export function MeetingManager({
                 <option value="60">60分</option>
               </select>
             </label>
+            <label>
+              <span className="field-label">前後バッファ</span>
+              <div className="grid grid-cols-2 gap-2">
+                <input className="text-field" name="bufferBeforeMinutes" type="number" min="0" defaultValue="0" />
+                <input className="text-field" name="bufferAfterMinutes" type="number" min="0" defaultValue="0" />
+              </div>
+            </label>
+            <label>
+              <span className="field-label">最短受付/受付期間</span>
+              <div className="grid grid-cols-2 gap-2">
+                <input className="text-field" name="minimumNoticeMinutes" type="number" min="0" defaultValue="60" />
+                <input className="text-field" name="bookingHorizonDays" type="number" min="1" defaultValue="14" />
+              </div>
+            </label>
             <label className="sm:col-span-2">
               <span className="field-label">公開URL</span>
               <div className="flex items-center rounded-xl border border-line bg-white pl-4">
@@ -158,6 +231,10 @@ export function MeetingManager({
                   required
                 />
               </div>
+            </label>
+            <label className="flex items-center gap-2 text-sm font-bold text-slate-600">
+              <input name="googleCalendarEnabled" type="checkbox" />
+              Google Calendarへ同期
             </label>
           </div>
           <button className="primary-button mt-5">作成する</button>
@@ -187,7 +264,7 @@ export function MeetingManager({
                       {appUrl}/meet/{link.slug}
                     </a>
                     <p className="mt-1 text-xs text-slate-500">
-                      予約 {link._count.bookings}件
+                      予約 {link._count.bookings}件 · {link.status} · {link.googleCalendarEnabled ? "Google同期" : "CRMのみ"}
                     </p>
                   </div>
                   <button
@@ -208,6 +285,57 @@ export function MeetingManager({
           </div>
         </section>
       </div>
+    </div>
+      <section className="card overflow-hidden">
+        <div className="border-b border-line px-6 py-4 font-bold">予約一覧</div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[920px] text-left text-sm">
+            <thead className="bg-canvas text-xs text-slate-500">
+              <tr>
+                <th className="px-6 py-3">日時</th>
+                <th className="px-6 py-3">顧客</th>
+                <th className="px-6 py-3">リンク</th>
+                <th className="px-6 py-3">予約状態</th>
+                <th className="px-6 py-3">同期状態</th>
+                <th className="px-6 py-3">Google</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {bookings.map((booking) => (
+                <tr key={booking.id}>
+                  <td className="px-6 py-4">
+                    {new Intl.DateTimeFormat("ja-JP", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                      timeZone: "Asia/Tokyo",
+                    }).format(new Date(booking.startsAt))}
+                  </td>
+                  <td className="px-6 py-4 font-bold">{booking.guestName}</td>
+                  <td className="px-6 py-4">{booking.meetingLink.name}</td>
+                  <td className="px-6 py-4">{booking.bookingStatus}</td>
+                  <td className="px-6 py-4">{booking.syncStatus}</td>
+                  <td className="px-6 py-4">
+                    {booking.googleEventHtmlLink ? (
+                      <a className="text-brand-700" href={booking.googleEventHtmlLink} target="_blank" rel="noreferrer">
+                        イベント
+                      </a>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!bookings.length ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-10 text-center text-slate-500">
+                    予約はまだありません。
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }

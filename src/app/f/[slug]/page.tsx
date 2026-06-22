@@ -13,23 +13,38 @@ export default async function PublicFormPage({
     where: { slug },
     include: { organization: { select: { name: true } } },
   });
-  if (!form) notFound();
-  const fields = Array.isArray(form.fields)
-    ? form.fields.map((field) => formFieldSchema.parse(field))
+  if (!form || form.status === "PAUSED" || form.status === "ARCHIVED") notFound();
+  const version = form.publishedVersionId
+    ? await prisma.formVersion.findFirst({
+        where: { id: form.publishedVersionId, formId: form.id },
+      })
+    : null;
+  const fieldSchema = version?.fieldSchema ?? form.fields;
+  const fields = Array.isArray(fieldSchema)
+    ? fieldSchema.map((field) => formFieldSchema.parse(field))
     : [];
   return (
-    <main className="min-h-screen bg-canvas px-4 py-10">
+    <main className="min-h-screen bg-white px-4 py-8 md:py-12">
       <div className="mx-auto max-w-xl">
-        <div className="card p-7 md:p-10">
-          <p className="eyebrow">{form.organization.name}</p>
-          <h1 className="mb-2 mt-3 text-3xl font-bold">{form.name}</h1>
-          <p className="mb-8 text-sm text-slate-500">
-            必要事項をご入力ください。
+        <div className="border-b border-line pb-6">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-brand-600">
+            {form.organization.name}
           </p>
+          <h1 className="mt-3 text-3xl font-bold text-slate-950">
+            {version?.nameSnapshot ?? form.name}
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-slate-500">
+            {version?.descriptionSnapshot ?? form.description ?? "必要事項をご入力ください。"}
+          </p>
+        </div>
+        <div className="py-8">
           <PublicForm
             slug={slug}
             fields={fields}
-            buttonText={form.submitButtonText}
+            buttonText={version?.submitButtonTextSnapshot ?? form.submitButtonText}
+            completionMessage={
+              version?.completionMessageSnapshot ?? form.completionMessage
+            }
           />
         </div>
       </div>

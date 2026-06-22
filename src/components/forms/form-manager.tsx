@@ -9,13 +9,20 @@ type FormField = {
   label: string;
   type: string;
   required: boolean;
+  sortOrder?: number;
 };
 type CrmForm = {
   id: string;
   name: string;
+  description: string | null;
   slug: string;
+  status: "DRAFT" | "PUBLISHED" | "PAUSED" | "ARCHIVED";
   fields: unknown;
+  mappingSchema: unknown;
+  routingConfig: unknown;
+  schedulingConfig: unknown;
   submitButtonText: string;
+  completionMessage: string | null;
   redirectUrl: string | null;
   _count: { submissions: number };
 };
@@ -48,6 +55,16 @@ export function FormManager({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  function jsonText(value: unknown) {
+    return JSON.stringify(value ?? {}, null, 2);
+  }
+
+  function parseJson(value: FormDataEntryValue | null) {
+    const text = String(value ?? "").trim();
+    if (!text) return {};
+    return JSON.parse(text);
+  }
+
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -65,7 +82,19 @@ export function FormManager({
         type:
           currentFields.find((current) => current.name === field.name)?.type ??
           field.type,
+        sortOrder: availableFields.findIndex((item) => item.name === field.name),
       }));
+    let mappingSchema: unknown;
+    let routingConfig: unknown;
+    let schedulingConfig: unknown;
+    try {
+      mappingSchema = parseJson(data.get("mappingSchema"));
+      routingConfig = parseJson(data.get("routingConfig"));
+      schedulingConfig = parseJson(data.get("schedulingConfig"));
+    } catch {
+      setError("JSON設定の形式を確認してください。");
+      return;
+    }
     const response = await fetch(
       editing ? `/api/forms/${editing.id}` : "/api/forms",
       {
@@ -73,10 +102,15 @@ export function FormManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: data.get("name"),
+          description: data.get("description"),
           slug: data.get("slug"),
           businessUnitId: selectedBusinessUnitId,
           fields,
+          mappingSchema,
+          routingConfig,
+          schedulingConfig,
           submitButtonText: data.get("submitButtonText"),
+          completionMessage: data.get("completionMessage"),
           redirectUrl: data.get("redirectUrl"),
         }),
       },
@@ -88,6 +122,18 @@ export function FormManager({
     setError("");
     setMessage("フォームを保存しました。");
     form.reset();
+    router.refresh();
+  }
+
+  async function publish(item: CrmForm) {
+    const response = await fetch(`/api/forms/${item.id}/publish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const result = await response.json();
+    if (!response.ok) return setError(result.message ?? "公開できませんでした。");
+    setMessage("フォームを公開しました。");
     router.refresh();
   }
 
@@ -145,6 +191,14 @@ export function FormManager({
             />
           </label>
           <label>
+            <span className="field-label">説明文</span>
+            <input
+              className="text-field"
+              name="description"
+              defaultValue={editing?.description ?? ""}
+            />
+          </label>
+          <label>
             <span className="field-label">公開URL</span>
             <div className="flex items-center rounded-xl border border-line bg-white pl-4 focus-within:border-brand-500">
               <span className="text-sm text-slate-400">/f/</span>
@@ -173,6 +227,14 @@ export function FormManager({
               name="redirectUrl"
               type="url"
               defaultValue={editing?.redirectUrl ?? ""}
+            />
+          </label>
+          <label className="md:col-span-2">
+            <span className="field-label">完了メッセージ</span>
+            <textarea
+              className="text-field min-h-24"
+              name="completionMessage"
+              defaultValue={editing?.completionMessage ?? ""}
             />
           </label>
         </div>
@@ -225,6 +287,32 @@ export function FormManager({
             })}
           </div>
         </div>
+        <div className="mt-6 grid gap-4 lg:grid-cols-3">
+          <label>
+            <span className="field-label">CRM項目マッピング(JSON)</span>
+            <textarea
+              className="text-field min-h-44 font-mono text-xs"
+              name="mappingSchema"
+              defaultValue={jsonText(editing?.mappingSchema)}
+            />
+          </label>
+          <label>
+            <span className="field-label">振り分け設定(JSON)</span>
+            <textarea
+              className="text-field min-h-44 font-mono text-xs"
+              name="routingConfig"
+              defaultValue={jsonText(editing?.routingConfig)}
+            />
+          </label>
+          <label>
+            <span className="field-label">日程調整設定(JSON)</span>
+            <textarea
+              className="text-field min-h-44 font-mono text-xs"
+              name="schedulingConfig"
+              defaultValue={jsonText(editing?.schedulingConfig)}
+            />
+          </label>
+        </div>
         {error ? <p className="mt-4 text-sm text-red-600">{error}</p> : null}
         {message ? (
           <p className="mt-4 text-sm text-brand-700">{message}</p>
@@ -248,6 +336,9 @@ export function FormManager({
                 <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
                   <div>
                     <h3 className="font-bold">{item.name}</h3>
+                    <p className="mt-1 text-xs font-bold text-slate-400">
+                      {item.status === "PUBLISHED" ? "公開中" : "下書き"}
+                    </p>
                     <a
                       className="mt-1 block text-sm text-brand-700 hover:underline"
                       href={publicUrl}
@@ -268,6 +359,13 @@ export function FormManager({
                     >
                       送信履歴
                     </Link>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => publish(item)}
+                    >
+                      公開
+                    </button>
                     <button
                       className="secondary-button"
                       type="button"

@@ -16,6 +16,22 @@ export async function POST(request: Request) {
     requirePermission(context.membership.role, Permission.CRM_WRITE);
     const input = availabilitySchema.parse(await request.json());
     await prisma.$transaction(async (tx) => {
+      const schedule = await tx.availabilitySchedule.upsert({
+        where: {
+          organizationId_userId_name: {
+            organizationId: context.organization.id,
+            userId: context.user.id,
+            name: "標準営業時間",
+          },
+        },
+        create: {
+          organizationId: context.organization.id,
+          userId: context.user.id,
+          name: "標準営業時間",
+          isDefault: true,
+        },
+        update: { isDefault: true },
+      });
       await tx.availabilityRule.deleteMany({
         where: {
           organizationId: context.organization.id,
@@ -28,6 +44,7 @@ export async function POST(request: Request) {
           data: enabled.map((rule) => ({
             organizationId: context.organization.id,
             userId: context.user.id,
+            scheduleId: schedule.id,
             weekday: rule.weekday,
             startMinutes: rule.startMinutes,
             endMinutes: rule.endMinutes,

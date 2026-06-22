@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import { syncCrossSellPerformanceEvents } from "@/lib/cross-sell-events";
 import { canEditRecord, canViewRecord, createRecordActivity } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
 import { validateDealStageRequirements } from "@/lib/sales-ops";
@@ -102,6 +103,7 @@ export async function PATCH(request: Request, { params }: Params) {
           lossReasonNote:
             stage.stageType === "LOST" ? input.lossReasonNote ?? null : null,
           lostAt: stage.stageType === "LOST" ? current.lostAt ?? new Date() : null,
+          wonAt: stage.stageType === "WON" ? current.wonAt ?? new Date() : null,
           lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"
@@ -128,6 +130,11 @@ export async function PATCH(request: Request, { params }: Params) {
             after: { stageId: stage.id, stageName: stage.name },
           },
         });
+
+      await syncCrossSellPerformanceEvents(tx, {
+        organizationId: context.organization.id,
+        dealId: id,
+      });
 
       return updated;
     });

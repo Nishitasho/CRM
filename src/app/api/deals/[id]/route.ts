@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { assertBusinessUnitAccess } from "@/lib/business-units";
+import { syncCrossSellPerformanceEvents } from "@/lib/cross-sell-events";
 import {
   canEditRecord,
   canViewRecord,
@@ -147,6 +148,8 @@ export async function PATCH(request: Request, { params }: Params) {
           status: stage.stageType,
           lostAt:
             stage.stageType === "LOST" ? current.lostAt ?? new Date() : null,
+          wonAt:
+            stage.stageType === "WON" ? current.wonAt ?? new Date() : null,
           lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"
@@ -171,6 +174,10 @@ export async function PATCH(request: Request, { params }: Params) {
           before: { stageId: current.stageId, name: current.name },
           after: { stageId: input.stageId, name: input.name },
         },
+      });
+      await syncCrossSellPerformanceEvents(tx, {
+        organizationId: context.organization.id,
+        dealId: id,
       });
       return updated;
     });

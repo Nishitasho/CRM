@@ -50,8 +50,13 @@ export async function POST(request: Request) {
     const businessUnitId =
       input.businessUnitId ??
       businessUnitSelection.selectedBusinessUnitId ??
-      businessUnitSelection.units[0]?.id ??
-      null;
+      businessUnitSelection.units[0]?.id;
+    if (!businessUnitId) {
+      return NextResponse.json(
+        { message: "フォームには事業部の設定が必要です。" },
+        { status: 400 },
+      );
+    }
     if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
       return NextResponse.json(
         { message: "この事業部へフォームを作成する権限がありません。" },
@@ -63,10 +68,28 @@ export async function POST(request: Request) {
         organizationId: context.organization.id,
         businessUnitId,
         name: input.name,
+        description: input.description,
         slug: input.slug,
+        status: "DRAFT",
         submitButtonText: input.submitButtonText,
+        completionMessage: input.completionMessage,
         redirectUrl: input.redirectUrl,
+        targetProductId: input.targetProductId,
+        pipelineId: input.pipelineId,
+        stageId: input.stageId,
+        meetingLinkId: input.meetingLinkId,
+        assignmentMode: input.assignmentMode,
+        fixedAssigneeUserId: input.fixedAssigneeUserId,
+        teamId: input.teamId,
+        workFunction: input.workFunction,
+        appointmentCreditPolicy: input.appointmentCreditPolicy,
+        appointmentCreditFixedUserId: input.appointmentCreditFixedUserId,
+        privacyConsentVersion: input.privacyConsentVersion,
+        googleFallbackMode: input.googleFallbackMode,
         fields: input.fields as Prisma.InputJsonValue,
+        mappingSchema: input.mappingSchema as Prisma.InputJsonValue,
+        routingConfig: input.routingConfig as Prisma.InputJsonValue,
+        schedulingConfig: input.schedulingConfig as Prisma.InputJsonValue,
       },
     });
     return NextResponse.json({ item }, { status: 201 });

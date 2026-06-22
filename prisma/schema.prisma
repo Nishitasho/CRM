@@ -172,14 +172,103 @@ enum QualificationResult {
 }
 
 enum DealParticipantRole {
-  OWNER              @map("owner")
-  APPOINTMENT_SETTER @map("appointment_setter")
-  CLOSER             @map("closer")
-  REFERRER           @map("referrer")
-  WALK_IN_OWNER      @map("walk_in_owner")
-  SUPPORT            @map("support")
+  OWNER                 @map("owner")
+  APPOINTMENT_SETTER    @map("appointment_setter")
+  CLOSER                @map("closer")
+  REFERRER              @map("referrer")
+  WALK_IN_OWNER         @map("walk_in_owner")
+  SUPPORT               @map("support")
+  CROSS_SELL_ORIGINATOR @map("cross_sell_originator")
+  MEETING_OWNER         @map("meeting_owner")
 
   @@map("deal_participant_role")
+}
+
+enum DealType {
+  NEW_BUSINESS @map("new_business")
+  CROSS_SELL   @map("cross_sell")
+
+  @@map("deal_type")
+}
+
+enum FulfillmentType {
+  NONE              @map("none")
+  PROJECT           @map("project")
+  RECURRING_SERVICE @map("recurring_service")
+
+  @@map("fulfillment_type")
+}
+
+enum ProjectGroupingMode {
+  GROUP_BY_DEAL         @map("group_by_deal")
+  SEPARATE_BY_LINE_ITEM @map("separate_by_line_item")
+
+  @@map("project_grouping_mode")
+}
+
+enum DeliveryProjectStatus {
+  NOT_STARTED @map("not_started")
+  IN_PROGRESS @map("in_progress")
+  PAUSED      @map("paused")
+  PUBLISHED   @map("published")
+  COMPLETED   @map("completed")
+  CANCELLED   @map("cancelled")
+
+  @@map("delivery_project_status")
+}
+
+enum DeliveryHealthStatus {
+  ON_TRACK  @map("on_track")
+  AT_RISK   @map("at_risk")
+  OFF_TRACK @map("off_track")
+  BLOCKED   @map("blocked")
+
+  @@map("delivery_health_status")
+}
+
+enum DeliveryPriority {
+  LOW    @map("low")
+  MEDIUM @map("medium")
+  HIGH   @map("high")
+  URGENT @map("urgent")
+
+  @@map("delivery_priority")
+}
+
+enum DeliveryHandoffStatus {
+  DRAFT     @map("draft")
+  READY     @map("ready")
+  ACCEPTED  @map("accepted")
+  REJECTED  @map("rejected")
+  COMPLETED @map("completed")
+
+  @@map("delivery_handoff_status")
+}
+
+enum ScopeSyncStatus {
+  SYNCED          @map("synced")
+  SOURCE_CHANGED  @map("source_changed")
+  REVIEW_REQUIRED @map("review_required")
+
+  @@map("scope_sync_status")
+}
+
+enum DeliveryItemStatus {
+  NOT_STARTED @map("not_started")
+  IN_PROGRESS @map("in_progress")
+  DELIVERED   @map("delivered")
+  CANCELLED   @map("cancelled")
+
+  @@map("delivery_item_status")
+}
+
+enum DeliveryStageType {
+  NORMAL    @map("normal")
+  PUBLISHED @map("published")
+  COMPLETED @map("completed")
+  PAUSED    @map("paused")
+
+  @@map("delivery_stage_type")
 }
 
 enum DealParticipantStatus {
@@ -227,6 +316,10 @@ enum SalesPerformanceEventType {
   FIELD_VISIT_WON              @map("field_visit_won")
   FIELD_VISIT_SAME_DAY_WON     @map("field_visit_same_day_won")
   DOMAIN_ATTACHMENT            @map("domain_attachment")
+  CROSS_SELL_CREATED           @map("cross_sell_created")
+  CROSS_SELL_MEETING_SET       @map("cross_sell_meeting_set")
+  CROSS_SELL_WON               @map("cross_sell_won")
+  CROSS_SELL_ORIGINATED_GP     @map("cross_sell_originated_gp")
 
   @@map("sales_performance_event_type")
 }
@@ -787,6 +880,9 @@ model Deal {
   nextAction          String?             @map("next_action") @db.VarChar(240)
   nextActionDate      DateTime?           @map("next_action_date") @db.Date
   nextActionOwnerId   String?             @map("next_action_owner_id") @db.Uuid
+  dealType            DealType            @default(NEW_BUSINESS) @map("deal_type")
+  originProjectId     String?             @map("origin_project_id") @db.Uuid
+  originDealId        String?             @map("origin_deal_id") @db.Uuid
   source              String?             @db.VarChar(120)
   externalId          String?             @map("external_id") @db.VarChar(160)
   legacyProgress      String?             @map("legacy_progress") @db.VarChar(160)
@@ -812,6 +908,7 @@ model Deal {
   @@index([organizationId, businessUnitId, status, closeDate])
   @@index([organizationId, forecastCategoryId])
   @@index([organizationId, ownerUserId])
+  @@index([organizationId, dealType, originProjectId])
   @@map("deals")
 }
 
@@ -839,6 +936,7 @@ model Activity {
   id             String       @id @default(uuid()) @db.Uuid
   organizationId String       @map("organization_id") @db.Uuid
   actorUserId    String?      @map("actor_user_id") @db.Uuid
+  deliveryProjectId String?   @map("delivery_project_id") @db.Uuid
   type           ActivityType
   title          String       @db.VarChar(200)
   body           String?
@@ -851,6 +949,7 @@ model Activity {
   actor        User?        @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, occurredAt])
+  @@index([organizationId, deliveryProjectId, occurredAt])
   @@map("activities")
 }
 
@@ -859,6 +958,9 @@ model Task {
   organizationId  String       @map("organization_id") @db.Uuid
   ownerUserId     String       @map("owner_user_id") @db.Uuid
   createdByUserId String       @map("created_by_user_id") @db.Uuid
+  deliveryProjectId String?    @map("delivery_project_id") @db.Uuid
+  sourceDeliveryStageId String? @map("source_delivery_stage_id") @db.Uuid
+  autoTaskKey     String?      @map("auto_task_key") @db.VarChar(240)
   title           String       @db.VarChar(200)
   description     String?
   dueDate         DateTime?    @map("due_date") @db.Timestamptz(3)
@@ -874,6 +976,8 @@ model Task {
   createdBy    User         @relation("TaskCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
 
   @@index([organizationId, ownerUserId, status, dueDate])
+  @@index([organizationId, deliveryProjectId, status, dueDate])
+  @@index([organizationId, deliveryProjectId, autoTaskKey])
   @@map("tasks")
 }
 
@@ -1117,6 +1221,7 @@ model Product {
   sku            String?       @db.VarChar(80)
   description    String?
   category       String?       @db.VarChar(120)
+  fulfillmentType FulfillmentType? @map("fulfillment_type")
   status         ProductStatus @default(ACTIVE)
   metadata       Json          @default("{}") @db.JsonB
   createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -1138,6 +1243,10 @@ model BusinessUnitProduct {
   businessUnitId String        @map("business_unit_id") @db.Uuid
   productId      String        @map("product_id") @db.Uuid
   productKind    ProductKind?  @map("product_kind")
+  fulfillmentType FulfillmentType? @map("fulfillment_type")
+  autoCreateDeliveryProject Boolean @default(false) @map("auto_create_delivery_project")
+  defaultDeliveryProjectTemplateId String? @map("default_delivery_project_template_id") @db.Uuid
+  projectGroupingMode ProjectGroupingMode @default(GROUP_BY_DEAL) @map("project_grouping_mode")
   status         ProductStatus @default(ACTIVE)
   displayOrder   Int           @default(0) @map("display_order")
   metadata       Json          @default("{}") @db.JsonB
@@ -1149,6 +1258,7 @@ model BusinessUnitProduct {
   product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, businessUnitId, productId])
+  @@index([organizationId, businessUnitId, fulfillmentType, autoCreateDeliveryProject])
   @@index([organizationId, businessUnitId, productKind, status, displayOrder])
   @@map("business_unit_products")
 }
@@ -1679,4 +1789,205 @@ model DealAlertRule {
 
   @@index([organizationId, businessUnitId, pipelineId, stageId, isActive])
   @@map("deal_alert_rules")
+}
+
+model DeliveryPipeline {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  businessUnitId String?  @map("business_unit_id") @db.Uuid
+  name           String   @db.VarChar(160)
+  isDefault      Boolean  @default(false) @map("is_default")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  stages DeliveryPipelineStage[]
+
+  @@unique([organizationId, businessUnitId, name])
+  @@index([organizationId, businessUnitId, isDefault])
+  @@map("delivery_pipelines")
+}
+
+model DeliveryPipelineStage {
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @map("organization_id") @db.Uuid
+  businessUnitId String?           @map("business_unit_id") @db.Uuid
+  pipelineId     String            @map("pipeline_id") @db.Uuid
+  name           String            @db.VarChar(120)
+  sortOrder      Int               @map("order")
+  color          String?           @db.VarChar(40)
+  stageType      DeliveryStageType @default(NORMAL) @map("stage_type")
+  staleDays      Int?              @map("stale_days")
+  requiredFields Json              @default("[]") @map("required_fields") @db.JsonB
+  taskTemplates  Json              @default("[]") @map("task_templates") @db.JsonB
+  isCompleted    Boolean           @default(false) @map("is_completed")
+  isPaused       Boolean           @default(false) @map("is_paused")
+  createdAt      DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  pipeline DeliveryPipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@unique([pipelineId, sortOrder])
+  @@unique([pipelineId, name])
+  @@index([organizationId, businessUnitId, pipelineId, sortOrder])
+  @@map("delivery_pipeline_stages")
+}
+
+model DeliveryProjectTemplate {
+  id                         String   @id @default(uuid()) @db.Uuid
+  organizationId             String   @map("organization_id") @db.Uuid
+  businessUnitId             String?  @map("business_unit_id") @db.Uuid
+  name                       String   @db.VarChar(160)
+  description                String?
+  pipelineId                 String?  @map("pipeline_id") @db.Uuid
+  defaultCsTeamId            String?  @map("default_cs_team_id") @db.Uuid
+  defaultCsUserId            String?  @map("default_cs_user_id") @db.Uuid
+  defaultDueBusinessDays     Int?     @map("default_due_business_days")
+  autoCreate                 Boolean  @default(false) @map("auto_create")
+  handoffRequiredFields      Json     @default("[]") @map("handoff_required_fields") @db.JsonB
+  defaultScope               Json     @default("{}") @map("default_scope") @db.JsonB
+  initialTaskTemplates       Json     @default("[]") @map("initial_task_templates") @db.JsonB
+  stageTaskTemplates         Json     @default("{}") @map("stage_task_templates") @db.JsonB
+  isActive                   Boolean  @default(true) @map("is_active")
+  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@unique([organizationId, businessUnitId, name])
+  @@index([organizationId, businessUnitId, isActive])
+  @@map("delivery_project_templates")
+}
+
+model DeliveryProjectTemplateProduct {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  templateId     String   @map("template_id") @db.Uuid
+  productId      String   @map("product_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([templateId, productId])
+  @@index([organizationId, productId])
+  @@map("delivery_project_template_products")
+}
+
+model DeliveryProject {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  organizationId      String                 @map("organization_id") @db.Uuid
+  businessUnitId      String?                @map("business_unit_id") @db.Uuid
+  companyId           String?                @map("company_id") @db.Uuid
+  primaryContactId    String?                @map("primary_contact_id") @db.Uuid
+  sourceDealId        String?                @map("source_deal_id") @db.Uuid
+  templateId          String?                @map("template_id") @db.Uuid
+  pipelineId          String?                @map("pipeline_id") @db.Uuid
+  stageId             String?                @map("stage_id") @db.Uuid
+  idempotencyKey      String                 @map("idempotency_key") @db.VarChar(240)
+  name                String                 @db.VarChar(200)
+  status              DeliveryProjectStatus  @default(NOT_STARTED)
+  healthStatus        DeliveryHealthStatus   @default(ON_TRACK) @map("health_status")
+  priority            DeliveryPriority       @default(MEDIUM)
+  ownerUserId         String?                @map("owner_user_id") @db.Uuid
+  createdByUserId     String?                @map("created_by_user_id") @db.Uuid
+  expectedStartDate   DateTime?              @map("expected_start_date") @db.Date
+  kickoffDate         DateTime?              @map("kickoff_date") @db.Date
+  expectedPublishDate DateTime?              @map("expected_publish_date") @db.Date
+  actualPublishDate   DateTime?              @map("actual_publish_date") @db.Date
+  completedAt         DateTime?              @map("completed_at") @db.Timestamptz(3)
+  pausedAt            DateTime?              @map("paused_at") @db.Timestamptz(3)
+  pauseReason         String?                @map("pause_reason")
+  nextAction          String?                @map("next_action") @db.VarChar(240)
+  nextActionDate      DateTime?              @map("next_action_date") @db.Date
+  nextActionOwnerId   String?                @map("next_action_owner_id") @db.Uuid
+  blocker             String?
+  lastActivityAt      DateTime?              @map("last_activity_at") @db.Timestamptz(3)
+  handoffStatus       DeliveryHandoffStatus  @default(DRAFT) @map("handoff_status")
+  scopeVersion        Int                    @default(1) @map("scope_version")
+  scopeSyncStatus     ScopeSyncStatus        @default(SYNCED) @map("scope_sync_status")
+  scopeSnapshot       Json                   @default("{}") @map("scope_snapshot") @db.JsonB
+  handoffChecklist    Json                   @default("{}") @map("handoff_checklist") @db.JsonB
+  createdAt           DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt           DateTime?              @map("deleted_at") @db.Timestamptz(3)
+
+  items        DeliveryProjectItem[]
+  handoffs     DeliveryHandoff[]
+  stageHistory DeliveryProjectStageHistory[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, businessUnitId, status, deletedAt])
+  @@index([organizationId, ownerUserId, status])
+  @@index([organizationId, sourceDealId])
+  @@index([organizationId, expectedPublishDate])
+  @@map("delivery_projects")
+}
+
+model DeliveryProjectItem {
+  id                         String             @id @default(uuid()) @db.Uuid
+  organizationId             String             @map("organization_id") @db.Uuid
+  businessUnitId             String?            @map("business_unit_id") @db.Uuid
+  deliveryProjectId          String             @map("delivery_project_id") @db.Uuid
+  sourceDealLineItemId       String?            @map("source_deal_line_item_id") @db.Uuid
+  splitKey                   String             @default("default") @map("split_key") @db.VarChar(80)
+  productId                  String?            @map("product_id") @db.Uuid
+  productCodeSnapshot        String?            @map("product_code_snapshot") @db.VarChar(80)
+  productNameSnapshot        String             @map("product_name_snapshot") @db.VarChar(180)
+  quantitySnapshot           Decimal            @map("quantity_snapshot") @db.Decimal(18, 4)
+  revenueAmountSnapshot      Decimal?           @map("revenue_amount_snapshot") @db.Decimal(18, 2)
+  grossProfitAmountSnapshot  Decimal?           @map("gross_profit_amount_snapshot") @db.Decimal(18, 2)
+  customFieldsSnapshot       Json               @default("{}") @map("custom_fields_snapshot") @db.JsonB
+  deliveryStatus             DeliveryItemStatus @default(NOT_STARTED) @map("delivery_status")
+  createdAt                  DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                  DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  deliveryProject DeliveryProject @relation(fields: [deliveryProjectId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, sourceDealLineItemId, splitKey])
+  @@index([organizationId, deliveryProjectId])
+  @@index([organizationId, productId])
+  @@map("delivery_project_items")
+}
+
+model DeliveryHandoff {
+  id                String                @id @default(uuid()) @db.Uuid
+  organizationId    String                @map("organization_id") @db.Uuid
+  businessUnitId    String?               @map("business_unit_id") @db.Uuid
+  deliveryProjectId String                @map("delivery_project_id") @db.Uuid
+  submittedByUserId String?               @map("submitted_by_user_id") @db.Uuid
+  assignedCsUserId  String?               @map("assigned_cs_user_id") @db.Uuid
+  status            DeliveryHandoffStatus @default(DRAFT)
+  handoffSnapshot   Json                  @default("{}") @map("handoff_snapshot") @db.JsonB
+  checklistSnapshot Json                  @default("{}") @map("checklist_snapshot") @db.JsonB
+  submittedAt       DateTime?             @map("submitted_at") @db.Timestamptz(3)
+  acceptedAt        DateTime?             @map("accepted_at") @db.Timestamptz(3)
+  acceptedByUserId  String?               @map("accepted_by_user_id") @db.Uuid
+  rejectedAt        DateTime?             @map("rejected_at") @db.Timestamptz(3)
+  rejectedByUserId  String?               @map("rejected_by_user_id") @db.Uuid
+  rejectionReason   String?               @map("rejection_reason")
+  version           Int                   @default(1)
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  deliveryProject DeliveryProject @relation(fields: [deliveryProjectId], references: [id], onDelete: Cascade)
+
+  @@unique([deliveryProjectId, version])
+  @@index([organizationId, businessUnitId, status])
+  @@map("delivery_handoffs")
+}
+
+model DeliveryProjectStageHistory {
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  businessUnitId    String?   @map("business_unit_id") @db.Uuid
+  deliveryProjectId String    @map("delivery_project_id") @db.Uuid
+  fromStageId       String?   @map("from_stage_id") @db.Uuid
+  toStageId         String?   @map("to_stage_id") @db.Uuid
+  changedByUserId   String?   @map("changed_by_user_id") @db.Uuid
+  enteredAt         DateTime  @default(now()) @map("entered_at") @db.Timestamptz(3)
+  exitedAt          DateTime? @map("exited_at") @db.Timestamptz(3)
+  durationMinutes   Int?      @map("duration_minutes")
+  note              String?
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  deliveryProject DeliveryProject @relation(fields: [deliveryProjectId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, deliveryProjectId, enteredAt])
+  @@index([organizationId, toStageId, enteredAt])
+  @@map("delivery_project_stage_histories")
 }

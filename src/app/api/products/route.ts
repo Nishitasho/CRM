@@ -45,6 +45,7 @@ export async function POST(request: Request) {
           sku: input.sku,
           description: input.description,
           category: input.category,
+          fulfillmentType: input.fulfillmentType ?? null,
           status: input.status,
         },
       });
@@ -55,6 +56,20 @@ export async function POST(request: Request) {
             businessUnitId,
             productId: product.id,
             productKind: input.productKindByBusinessUnit[businessUnitId] ?? null,
+            fulfillmentType:
+              input.fulfillmentTypeByBusinessUnit[businessUnitId] ??
+              input.fulfillmentType ??
+              null,
+            autoCreateDeliveryProject:
+              input.autoCreateDeliveryProjectByBusinessUnit[businessUnitId] ??
+              false,
+            defaultDeliveryProjectTemplateId:
+              input.defaultDeliveryProjectTemplateIdByBusinessUnit[
+                businessUnitId
+              ] || null,
+            projectGroupingMode:
+              input.projectGroupingModeByBusinessUnit[businessUnitId] ??
+              "GROUP_BY_DEAL",
           },
         });
       }

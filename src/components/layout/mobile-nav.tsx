@@ -30,6 +30,12 @@ const items = [
     activePrefixes: ["/deals"],
   },
   {
+    href: "/delivery-projects",
+    label: "制作",
+    icon: "tasks",
+    activePrefixes: ["/delivery-projects"],
+  },
+  {
     href: "/settings",
     label: "設定",
     icon: "settings",
@@ -40,7 +46,7 @@ const items = [
 export function MobileNav() {
   const pathname = usePathname();
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-line bg-white px-1 pb-[env(safe-area-inset-bottom)] lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-white px-1 pb-[env(safe-area-inset-bottom)] lg:hidden">
       {items.map((item) => (
         <Link
           key={item.href}

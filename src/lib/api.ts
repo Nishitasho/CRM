@@ -3,6 +3,13 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { AuthorizationError } from "./permissions";
 
+export class BadRequestError extends Error {
+  constructor(message = "入力内容を確認してください。") {
+    super(message);
+    this.name = "BadRequestError";
+  }
+}
+
 export function apiError(error: unknown) {
   if (error instanceof ZodError) {
     return NextResponse.json(
@@ -13,6 +20,10 @@ export function apiError(error: unknown) {
 
   if (error instanceof AuthorizationError) {
     return NextResponse.json({ message: error.message }, { status: 403 });
+  }
+
+  if (error instanceof BadRequestError) {
+    return NextResponse.json({ message: error.message }, { status: 400 });
   }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {

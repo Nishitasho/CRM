@@ -15,6 +15,7 @@ export default async function ProductSettingsPage() {
     attachmentRules,
     attachmentBaseProducts,
     lossReasons,
+    deliveryTemplates,
   ] = await Promise.all([
     prisma.product.findMany({
       where: { organizationId: context.organization.id },
@@ -43,7 +44,64 @@ export default async function ProductSettingsPage() {
       where: { organizationId: context.organization.id },
       orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
     }),
+    prisma.deliveryProjectTemplate.findMany({
+      where: { organizationId: context.organization.id },
+      orderBy: [{ isActive: "desc" }, { name: "asc" }],
+      select: { id: true, name: true, businessUnitId: true, isActive: true },
+    }),
   ]);
+  const productItems = products.map((product) => ({
+    id: product.id,
+    name: product.name,
+    sku: product.sku,
+    description: product.description,
+    category: product.category,
+    fulfillmentType: product.fulfillmentType,
+    status: product.status,
+    businessUnitProducts: product.businessUnitProducts.map((item) => ({
+      businessUnitId: item.businessUnitId,
+      productKind: item.productKind,
+      fulfillmentType: item.fulfillmentType,
+      autoCreateDeliveryProject: item.autoCreateDeliveryProject,
+      defaultDeliveryProjectTemplateId: item.defaultDeliveryProjectTemplateId,
+      projectGroupingMode: item.projectGroupingMode,
+      businessUnit: item.businessUnit,
+    })),
+    priceBookEntries: product.priceBookEntries.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      businessUnitId: entry.businessUnitId,
+      unitPriceAmount: entry.unitPriceAmount ? Number(entry.unitPriceAmount) : null,
+      initialFee: entry.initialFee ? Number(entry.initialFee) : null,
+      recurringFee: entry.recurringFee ? Number(entry.recurringFee) : null,
+      revenueAmount: entry.revenueAmount ? Number(entry.revenueAmount) : null,
+      grossProfitAmount: entry.grossProfitAmount
+        ? Number(entry.grossProfitAmount)
+        : null,
+      effectiveFrom: entry.effectiveFrom?.toISOString() ?? null,
+      status: entry.status,
+    })),
+  }));
+  const attachmentRuleItems = attachmentRules.map((rule) => ({
+    id: rule.id,
+    name: rule.name,
+    businessUnitId: rule.businessUnitId,
+    attachedProductId: rule.attachedProductId,
+    denominatorMode: rule.denominatorMode,
+    targetRate: rule.targetRate ? Number(rule.targetRate) : null,
+    isActive: rule.isActive,
+  }));
+  const lossReasonItems = lossReasons.map((reason) => ({
+    id: reason.id,
+    code: reason.code,
+    name: reason.name,
+    category: reason.category,
+    productId: reason.productId,
+    applicableScope: reason.applicableScope,
+    applicableStatus: reason.applicableStatus,
+    requiresNote: reason.requiresNote,
+    isActive: reason.isActive,
+  }));
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
@@ -53,11 +111,12 @@ export default async function ProductSettingsPage() {
       />
       <SettingsNav />
       <ProductManager
-        products={products}
+        products={productItems}
         businessUnits={businessUnits}
-        attachmentRules={attachmentRules}
+        attachmentRules={attachmentRuleItems}
         attachmentBaseProducts={attachmentBaseProducts}
-        lossReasons={lossReasons}
+        lossReasons={lossReasonItems}
+        deliveryTemplates={deliveryTemplates}
         canManage={hasPermission(
           context.membership.role,
           Permission.MANAGE_PRODUCTS,

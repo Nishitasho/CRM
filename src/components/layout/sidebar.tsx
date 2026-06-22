@@ -20,6 +20,12 @@ const navigation = [
     icon: "deals",
     activePrefixes: ["/deals/board"],
   },
+  {
+    href: "/delivery-projects",
+    label: "制作案件",
+    icon: "tasks",
+    activePrefixes: ["/delivery-projects"],
+  },
   { href: "/tasks", label: "タスク", icon: "tasks" },
   { href: "/imports", label: "インポート", icon: "import" },
   { href: "/forms", label: "フォーム", icon: "forms" },

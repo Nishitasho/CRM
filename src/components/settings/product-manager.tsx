@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 type BusinessUnit = { id: string; name: string };
 type ProductKind = "CORE" | "ADD_ON" | "OPTIONAL" | "CROSS_SELL";
 type ProductStatus = "ACTIVE" | "INACTIVE" | "ARCHIVED";
+type FulfillmentType = "NONE" | "PROJECT" | "RECURRING_SERVICE";
+type ProjectGroupingMode = "GROUP_BY_DEAL" | "SEPARATE_BY_LINE_ITEM";
 type FieldType =
   | "TEXT"
   | "TEXTAREA"
@@ -27,10 +29,15 @@ type Product = {
   sku: string | null;
   description: string | null;
   category: string | null;
+  fulfillmentType: FulfillmentType | null;
   status: ProductStatus;
   businessUnitProducts: Array<{
     businessUnitId: string;
     productKind: ProductKind | null;
+    fulfillmentType: FulfillmentType | null;
+    autoCreateDeliveryProject: boolean;
+    defaultDeliveryProjectTemplateId: string | null;
+    projectGroupingMode: ProjectGroupingMode;
     businessUnit: { name: string };
   }>;
   priceBookEntries: Array<{
@@ -71,11 +78,29 @@ type LossReason = {
   isActive: boolean;
 };
 
+type DeliveryTemplate = {
+  id: string;
+  name: string;
+  businessUnitId: string | null;
+  isActive: boolean;
+};
+
 const productKindLabels: Record<ProductKind, string> = {
   CORE: "主商材",
   ADD_ON: "付帯商材",
   OPTIONAL: "任意オプション",
   CROSS_SELL: "クロスセル",
+};
+
+const fulfillmentTypeLabels: Record<FulfillmentType, string> = {
+  NONE: "制作なし",
+  PROJECT: "制作案件",
+  RECURRING_SERVICE: "継続運用",
+};
+
+const groupingModeLabels: Record<ProjectGroupingMode, string> = {
+  GROUP_BY_DEAL: "商談ごとにまとめる",
+  SEPARATE_BY_LINE_ITEM: "商品明細ごとに分ける",
 };
 
 const fieldTypeLabels: Record<FieldType, string> = {
@@ -114,6 +139,7 @@ export function ProductManager({
   attachmentRules,
   attachmentBaseProducts,
   lossReasons,
+  deliveryTemplates,
   canManage,
 }: {
   products: Product[];
@@ -121,6 +147,7 @@ export function ProductManager({
   attachmentRules: AttachmentRule[];
   attachmentBaseProducts: BaseProduct[];
   lossReasons: LossReason[];
+  deliveryTemplates: DeliveryTemplate[];
   canManage: boolean;
 }) {
   const router = useRouter();
@@ -163,6 +190,24 @@ export function ProductManager({
     const productKindByBusinessUnit = Object.fromEntries(
       businessUnitIds.map((id) => [id, form.get(`productKind:${id}`)]),
     );
+    const fulfillmentTypeByBusinessUnit = Object.fromEntries(
+      businessUnitIds.map((id) => [id, form.get(`fulfillmentType:${id}`)]),
+    );
+    const autoCreateDeliveryProjectByBusinessUnit = Object.fromEntries(
+      businessUnitIds.map((id) => [
+        id,
+        form.get(`autoCreateDeliveryProject:${id}`) === "on",
+      ]),
+    );
+    const defaultDeliveryProjectTemplateIdByBusinessUnit = Object.fromEntries(
+      businessUnitIds.map((id) => [
+        id,
+        form.get(`defaultDeliveryProjectTemplateId:${id}`),
+      ]),
+    );
+    const projectGroupingModeByBusinessUnit = Object.fromEntries(
+      businessUnitIds.map((id) => [id, form.get(`projectGroupingMode:${id}`)]),
+    );
     const ok = await submitJson(
       editing ? `/api/products/${editing.id}` : "/api/products",
       editing ? "PATCH" : "POST",
@@ -171,9 +216,14 @@ export function ProductManager({
         sku: form.get("sku"),
         description: form.get("description"),
         category: form.get("category"),
+        fulfillmentType: form.get("fulfillmentType"),
         status: form.get("status"),
         businessUnitIds,
         productKindByBusinessUnit,
+        fulfillmentTypeByBusinessUnit,
+        autoCreateDeliveryProjectByBusinessUnit,
+        defaultDeliveryProjectTemplateIdByBusinessUnit,
+        projectGroupingModeByBusinessUnit,
       },
     );
     if (ok) {
@@ -318,6 +368,7 @@ export function ProductManager({
                 <th className="px-4 py-3">商品</th>
                 <th className="px-4 py-3">カテゴリ</th>
                 <th className="px-4 py-3">取扱</th>
+                <th className="px-4 py-3">制作</th>
                 <th className="px-4 py-3 text-right">売上</th>
                 <th className="px-4 py-3 text-right">粗利</th>
                 <th className="px-4 py-3 text-right">初期/月額</th>
@@ -341,6 +392,21 @@ export function ProductManager({
                             `${item.businessUnit.name}:${item.productKind ? productKindLabels[item.productKind] : "未設定"}`,
                         )
                         .join(" / ") || "-"}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">
+                      {product.businessUnitProducts
+                        .map(
+                          (item) =>
+                            `${item.businessUnit.name}:${
+                              fulfillmentTypeLabels[
+                                item.fulfillmentType ??
+                                  product.fulfillmentType ??
+                                  "NONE"
+                              ]
+                            }${item.autoCreateDeliveryProject ? " / 自動" : ""}`,
+                        )
+                        .join(" / ") ||
+                        fulfillmentTypeLabels[product.fulfillmentType ?? "NONE"]}
                     </td>
                     <td className="px-4 py-3 text-right">
                       {money(price?.revenueAmount)}
@@ -421,6 +487,21 @@ export function ProductManager({
                   defaultValue={editing?.category ?? ""}
                 />
               </Field>
+              <Field label="標準制作区分">
+                <select
+                  className="text-field"
+                  name="fulfillmentType"
+                  defaultValue={editing?.fulfillmentType ?? "NONE"}
+                >
+                  {Object.entries(fulfillmentTypeLabels).map(
+                    ([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </Field>
               <Field label="状態">
                 <select
                   className="text-field"
@@ -440,7 +521,7 @@ export function ProductManager({
                 />
               </Field>
               <div className="md:col-span-2">
-                <p className="field-label">取扱事業部と商品区分</p>
+                <p className="field-label">取扱事業部・商品区分・制作設定</p>
                 <div className="mt-2 grid gap-3 md:grid-cols-2">
                   {businessUnits.map((unit) => {
                     const relation = editing?.businessUnitProducts.find(
@@ -465,6 +546,69 @@ export function ProductManager({
                           defaultValue={relation?.productKind ?? "CORE"}
                         >
                           {Object.entries(productKindLabels).map(
+                            ([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ),
+                          )}
+                        </select>
+                        <select
+                          className="text-field mt-2"
+                          name={`fulfillmentType:${unit.id}`}
+                          defaultValue={
+                            relation?.fulfillmentType ??
+                            editing?.fulfillmentType ??
+                            "NONE"
+                          }
+                        >
+                          {Object.entries(fulfillmentTypeLabels).map(
+                            ([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ),
+                          )}
+                        </select>
+                        <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-600">
+                          <input
+                            name={`autoCreateDeliveryProject:${unit.id}`}
+                            type="checkbox"
+                            defaultChecked={
+                              relation?.autoCreateDeliveryProject ?? false
+                            }
+                          />
+                          受注時に制作案件を自動作成
+                        </label>
+                        <select
+                          className="text-field mt-2"
+                          name={`defaultDeliveryProjectTemplateId:${unit.id}`}
+                          defaultValue={
+                            relation?.defaultDeliveryProjectTemplateId ?? ""
+                          }
+                        >
+                          <option value="">テンプレート未指定</option>
+                          {deliveryTemplates
+                            .filter(
+                              (template) =>
+                                template.isActive &&
+                                (!template.businessUnitId ||
+                                  template.businessUnitId === unit.id),
+                            )
+                            .map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.name}
+                              </option>
+                            ))}
+                        </select>
+                        <select
+                          className="text-field mt-2"
+                          name={`projectGroupingMode:${unit.id}`}
+                          defaultValue={
+                            relation?.projectGroupingMode ?? "GROUP_BY_DEAL"
+                          }
+                        >
+                          {Object.entries(groupingModeLabels).map(
                             ([value, label]) => (
                               <option key={value} value={value}>
                                 {label}

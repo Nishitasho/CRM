@@ -11,9 +11,12 @@ import {
   DealLineItemStatus,
   DealAlertRuleType,
   DealParticipantRole,
+  DeliveryHandoffStatus,
+  DeliveryStageType,
   DecisionMakerStatus,
   FieldVisitStatus,
   ForecastCategoryStatus,
+  FulfillmentType,
   MeetingBookingStatus,
   MetricAggregation,
   MetricCategory,
@@ -26,6 +29,7 @@ import {
   PrismaClient,
   ProductKind,
   ProductStatus,
+  ProjectGroupingMode,
   QualificationResult,
   ReferralStatus,
   SalesPerformanceEventSource,
@@ -500,6 +504,30 @@ async function main() {
   await prisma.dealAlertRule.deleteMany({
     where: { organizationId: organization.id },
   });
+  await prisma.deliveryProjectStageHistory.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryHandoff.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryProjectItem.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryProject.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryProjectTemplateProduct.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryProjectTemplate.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryPipelineStage.deleteMany({
+    where: { organizationId: organization.id },
+  });
+  await prisma.deliveryPipeline.deleteMany({
+    where: { organizationId: organization.id },
+  });
   await prisma.dealParticipant.deleteMany({
     where: { organizationId: organization.id },
   });
@@ -618,48 +646,61 @@ async function main() {
   }
 
   const productSeeds = [
-    { name: "RN", category: "HD", grossProfit: 64500, kind: ProductKind.CORE },
+    {
+      name: "RN",
+      category: "HD",
+      grossProfit: 64500,
+      kind: ProductKind.CORE,
+      fulfillmentType: FulfillmentType.PROJECT,
+    },
     {
       name: "menu",
       category: "HD",
       grossProfit: 64000,
       kind: ProductKind.CORE,
+      fulfillmentType: FulfillmentType.PROJECT,
     },
     {
       name: "エネパル",
       category: "HD",
       grossProfit: 80000,
       kind: ProductKind.CORE,
+      fulfillmentType: FulfillmentType.PROJECT,
     },
     {
       name: "プラリー",
       category: "HD",
       grossProfit: 17000,
       kind: ProductKind.ADD_ON,
+      fulfillmentType: FulfillmentType.RECURRING_SERVICE,
     },
     {
       name: "口コミットくん",
       category: "HD",
       grossProfit: 61000,
       kind: ProductKind.ADD_ON,
+      fulfillmentType: FulfillmentType.RECURRING_SERVICE,
     },
     {
       name: "ドメイン",
       category: "HD",
       grossProfit: 12000,
       kind: ProductKind.ADD_ON,
+      fulfillmentType: FulfillmentType.PROJECT,
     },
     {
       name: "第1 営業支援",
       category: "第1",
       grossProfit: 235000,
       kind: ProductKind.CORE,
+      fulfillmentType: FulfillmentType.NONE,
     },
     {
       name: "第1 既存顧客支援",
       category: "第1",
       grossProfit: 180000,
       kind: ProductKind.CROSS_SELL,
+      fulfillmentType: FulfillmentType.NONE,
     },
   ];
   const products = new Map<string, { id: string; name: string }>();
@@ -670,6 +711,7 @@ async function main() {
         name: item.name,
         normalizedName: normalizedProductName(item.name),
         category: item.category,
+        fulfillmentType: item.fulfillmentType,
         status: ProductStatus.ACTIVE,
         metadata: { seedGrossProfit: item.grossProfit },
       },
@@ -687,6 +729,12 @@ async function main() {
           businessUnitId: unit.id,
           productId: product.id,
           productKind: item.kind,
+          fulfillmentType:
+            unit.id === hdBusinessUnit.id ? item.fulfillmentType : FulfillmentType.NONE,
+          autoCreateDeliveryProject:
+            unit.id === hdBusinessUnit.id &&
+            item.fulfillmentType === FulfillmentType.PROJECT,
+          projectGroupingMode: ProjectGroupingMode.GROUP_BY_DEAL,
           displayOrder: index + 1,
           status: ProductStatus.ACTIVE,
         },
@@ -711,6 +759,232 @@ async function main() {
         grossProfitAmount: item.grossProfit,
         effectiveFrom: june2026Start,
         status: PriceBookStatus.ACTIVE,
+      },
+    });
+  }
+
+  const deliveryPipeline = await prisma.deliveryPipeline.create({
+    data: {
+      organizationId: organization.id,
+      businessUnitId: hdBusinessUnit.id,
+      name: "HD制作パイプライン",
+      isDefault: true,
+    },
+  });
+  const deliveryStageSeeds = [
+    {
+      name: "受注引き継ぎ",
+      color: "#f97316",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 2,
+      requiredFields: [],
+      taskTemplates: [
+        { key: "review-handoff", title: "引き継ぎ内容を確認", dueInDays: 1 },
+      ],
+    },
+    {
+      name: "初回連絡待ち",
+      color: "#fb923c",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 2,
+      requiredFields: ["ownerUserId", "nextActionDate"],
+      taskTemplates: [
+        { key: "first-contact", title: "初回連絡", dueInDays: 1 },
+      ],
+    },
+    {
+      name: "ヒアリング",
+      color: "#0ea5e9",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 3,
+      requiredFields: ["ownerUserId", "nextAction"],
+      taskTemplates: [
+        { key: "hearing", title: "ヒアリング実施", dueInDays: 2 },
+      ],
+    },
+    {
+      name: "素材待ち",
+      color: "#f59e0b",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 5,
+      requiredFields: ["nextAction", "expectedPublishDate"],
+      taskTemplates: [
+        { key: "collect-materials", title: "素材回収", dueInDays: 3 },
+        { key: "check-domain", title: "ドメイン確認", dueInDays: 3 },
+      ],
+    },
+    {
+      name: "制作準備",
+      color: "#8b5cf6",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 3,
+      requiredFields: ["expectedPublishDate"],
+      taskTemplates: [
+        { key: "production-setup", title: "制作準備", dueInDays: 2 },
+      ],
+    },
+    {
+      name: "制作中",
+      color: "#2563eb",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 7,
+      requiredFields: ["ownerUserId", "expectedPublishDate"],
+      taskTemplates: [
+        { key: "start-production", title: "制作開始", dueInDays: 1 },
+      ],
+    },
+    {
+      name: "初稿提出",
+      color: "#0284c7",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 3,
+      requiredFields: ["nextActionDate"],
+      taskTemplates: [
+        { key: "submit-first-draft", title: "初稿提出", dueInDays: 1 },
+      ],
+    },
+    {
+      name: "修正対応",
+      color: "#7c3aed",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 5,
+      requiredFields: ["nextAction"],
+      taskTemplates: [
+        { key: "revision-check", title: "修正確認", dueInDays: 2 },
+      ],
+    },
+    {
+      name: "顧客確認",
+      color: "#0891b2",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 4,
+      requiredFields: ["nextActionDate"],
+      taskTemplates: [
+        { key: "customer-final-check", title: "顧客最終確認", dueInDays: 2 },
+      ],
+    },
+    {
+      name: "公開準備",
+      color: "#16a34a",
+      stageType: DeliveryStageType.NORMAL,
+      staleDays: 2,
+      requiredFields: ["expectedPublishDate"],
+      taskTemplates: [
+        { key: "publish-work", title: "公開作業", dueInDays: 1 },
+      ],
+    },
+    {
+      name: "公開済み",
+      color: "#15803d",
+      stageType: DeliveryStageType.PUBLISHED,
+      staleDays: 2,
+      requiredFields: ["actualPublishDate"],
+      taskTemplates: [
+        { key: "post-publish-check", title: "公開後確認", dueInDays: 1 },
+        { key: "cross-sell-check", title: "クロスセル確認", dueInDays: 3 },
+      ],
+    },
+    {
+      name: "完了",
+      color: "#0f172a",
+      stageType: DeliveryStageType.COMPLETED,
+      staleDays: null,
+      requiredFields: [],
+      taskTemplates: [],
+      isCompleted: true,
+    },
+    {
+      name: "保留",
+      color: "#64748b",
+      stageType: DeliveryStageType.PAUSED,
+      staleDays: null,
+      requiredFields: ["blocker"],
+      taskTemplates: [],
+      isPaused: true,
+    },
+  ];
+  const deliveryStages = [];
+  for (const [index, stage] of deliveryStageSeeds.entries()) {
+    deliveryStages.push(
+      await prisma.deliveryPipelineStage.create({
+        data: {
+          organizationId: organization.id,
+          businessUnitId: hdBusinessUnit.id,
+          pipelineId: deliveryPipeline.id,
+          name: stage.name,
+          sortOrder: index + 1,
+          color: stage.color,
+          stageType: stage.stageType,
+          staleDays: stage.staleDays,
+          requiredFields: stage.requiredFields,
+          taskTemplates: stage.taskTemplates,
+          isCompleted: stage.isCompleted ?? false,
+          isPaused: stage.isPaused ?? false,
+        },
+      }),
+    );
+  }
+  const deliveryTemplate = await prisma.deliveryProjectTemplate.create({
+    data: {
+      organizationId: organization.id,
+      businessUnitId: hdBusinessUnit.id,
+      name: "HD標準制作テンプレート",
+      description: "HD事業部の受注商材をCSへ引き継ぎ、公開まで進行管理する標準テンプレート",
+      pipelineId: deliveryPipeline.id,
+      defaultCsUserId: superAdmin.id,
+      defaultDueBusinessDays: 20,
+      autoCreate: true,
+      handoffRequiredFields: [
+        "customerName",
+        "primaryContactName",
+        "primaryContactPhone",
+        "primaryContactEmail",
+        "contractedProducts",
+        "contractedAmount",
+        "grossProfitAmount",
+        "contractedAt",
+        "billingStartedAt",
+        "desiredPublishDate",
+        "productionScope",
+        "customerRequests",
+        "designPreference",
+        "materialStatus",
+        "domainStatus",
+        "notes",
+        "fsUserId",
+        "csUserId",
+        "nextCustomerActionAt",
+      ],
+      defaultScope: {},
+      initialTaskTemplates: [
+        { key: "handoff-check", title: "FS引き継ぎ内容を確認", dueInDays: 1 },
+        { key: "schedule-first-contact", title: "初回連絡予定を設定", dueInDays: 1 },
+      ],
+      stageTaskTemplates: {},
+      isActive: true,
+    },
+  });
+  for (const productName of ["RN", "menu", "エネパル", "ドメイン"]) {
+    const product = products.get(productName);
+    if (!product) continue;
+    await prisma.deliveryProjectTemplateProduct.create({
+      data: {
+        organizationId: organization.id,
+        templateId: deliveryTemplate.id,
+        productId: product.id,
+      },
+    });
+    await prisma.businessUnitProduct.updateMany({
+      where: {
+        organizationId: organization.id,
+        businessUnitId: hdBusinessUnit.id,
+        productId: product.id,
+      },
+      data: {
+        fulfillmentType: FulfillmentType.PROJECT,
+        autoCreateDeliveryProject: true,
+        defaultDeliveryProjectTemplateId: deliveryTemplate.id,
+        projectGroupingMode: ProjectGroupingMode.GROUP_BY_DEAL,
       },
     });
   }
@@ -1425,7 +1699,9 @@ async function main() {
     });
 
     const itemNames = isHd
-      ? index % 3 === 0
+      ? deal.status === "WON"
+        ? ["RN", "menu", "ドメイン"]
+        : index % 3 === 0
         ? ["RN", "menu", "ドメイン"]
         : index % 3 === 1
           ? ["エネパル"]
@@ -1619,6 +1895,234 @@ async function main() {
           isPrimary: true,
         },
       ],
+    });
+  }
+
+  const deliverySourceDeals = await prisma.deal.findMany({
+    where: {
+      organizationId: organization.id,
+      businessUnitId: hdBusinessUnit.id,
+      status: "WON",
+    },
+    include: {
+      lineItems: {
+        where: { status: DealLineItemStatus.WON },
+        include: { product: true },
+      },
+    },
+    orderBy: { wonAt: "asc" },
+    take: 3,
+  });
+  const deliveryTargetProductNames = new Set(["RN", "menu", "エネパル", "ドメイン"]);
+  for (const [index, deal] of deliverySourceDeals.entries()) {
+    const targetLines = deal.lineItems.filter((line) =>
+      deliveryTargetProductNames.has(line.product?.name ?? line.name),
+    );
+    if (!targetLines.length) continue;
+    const associations = await prisma.objectAssociation.findMany({
+      where: {
+        organizationId: organization.id,
+        sourceObjectType: "DEAL",
+        sourceObjectId: deal.id,
+        targetObjectType: { in: ["COMPANY", "CONTACT"] },
+        isPrimary: true,
+      },
+    });
+    const companyId =
+      associations.find((item) => item.targetObjectType === "COMPANY")?.targetObjectId ??
+      null;
+    const primaryContactId =
+      associations.find((item) => item.targetObjectType === "CONTACT")?.targetObjectId ??
+      null;
+    const targetStage =
+      index === 0
+        ? deliveryStages[5]
+        : index === 1
+          ? deliveryStages[1]
+          : deliveryStages[3];
+    const itemSnapshots = targetLines.map((line) => ({
+      sourceDealLineItemId: line.id,
+      productId: line.productId,
+      productCodeSnapshot: line.product?.sku ?? null,
+      productNameSnapshot: line.product?.name ?? line.name,
+      quantitySnapshot: Number(line.quantity),
+      revenueAmountSnapshot: Number(line.revenueAmount ?? line.expectedRevenueAmount ?? 0),
+      grossProfitAmountSnapshot: Number(
+        line.grossProfitAmount ?? line.expectedGrossProfitAmount ?? 0,
+      ),
+      customFieldsSnapshot: line.customFields,
+      contractedAt: line.contractedAt?.toISOString().slice(0, 10) ?? null,
+      billingStartedAt: line.billingStartedAt?.toISOString().slice(0, 10) ?? null,
+    }));
+    const scopeSnapshot = {
+      sourceDealId: deal.id,
+      dealName: deal.name,
+      dealStatus: deal.status,
+      companyId,
+      primaryContactId,
+      businessUnitId: deal.businessUnitId,
+      wonAt: deal.wonAt?.toISOString().slice(0, 10) ?? null,
+      contractedProducts: itemSnapshots.map((item) => item.productNameSnapshot),
+      contractedAmount: itemSnapshots.reduce(
+        (sum, item) => sum + item.revenueAmountSnapshot,
+        0,
+      ),
+      grossProfitAmount: itemSnapshots.reduce(
+        (sum, item) => sum + item.grossProfitAmountSnapshot,
+        0,
+      ),
+      contractedAt:
+        itemSnapshots.find((item) => item.contractedAt)?.contractedAt ??
+        deal.closeDate?.toISOString().slice(0, 10) ??
+        null,
+      billingStartedAt:
+        itemSnapshots.find((item) => item.billingStartedAt)?.billingStartedAt ?? null,
+      items: itemSnapshots,
+    };
+    const project = await prisma.deliveryProject.create({
+      data: {
+        organizationId: organization.id,
+        businessUnitId: hdBusinessUnit.id,
+        companyId,
+        primaryContactId,
+        sourceDealId: deal.id,
+        templateId: deliveryTemplate.id,
+        pipelineId: deliveryPipeline.id,
+        stageId: targetStage.id,
+        idempotencyKey: `seed:delivery:${deal.id}`,
+        name: `${deal.name} 制作案件`,
+        status: index === 0 ? "IN_PROGRESS" : "NOT_STARTED",
+        healthStatus: index === 2 ? "AT_RISK" : "ON_TRACK",
+        priority: index === 0 ? "HIGH" : "MEDIUM",
+        ownerUserId: superAdmin.id,
+        createdByUserId: superAdmin.id,
+        expectedStartDate: deal.wonAt ?? dayOfJune(10 + index),
+        expectedPublishDate: dayOfJune(24 + index),
+        nextAction:
+          index === 2 ? null : index === 0 ? "初稿提出日の調整" : "初回連絡",
+        nextActionDate: index === 0 ? dayOfJune(20) : dayOfJune(12 + index),
+        nextActionOwnerId: superAdmin.id,
+        blocker: index === 2 ? "素材が一部未提出です。" : null,
+        lastActivityAt: dayOfJune(10 + index),
+        handoffStatus:
+          index === 0
+            ? DeliveryHandoffStatus.ACCEPTED
+            : index === 1
+              ? DeliveryHandoffStatus.READY
+              : DeliveryHandoffStatus.DRAFT,
+        scopeSnapshot,
+        handoffChecklist: {
+          materialChecked: index !== 2,
+          domainChecked: true,
+          scopeChecked: true,
+        },
+      },
+    });
+    for (const snapshot of itemSnapshots) {
+      await prisma.deliveryProjectItem.create({
+        data: {
+          organizationId: organization.id,
+          businessUnitId: hdBusinessUnit.id,
+          deliveryProjectId: project.id,
+          sourceDealLineItemId: snapshot.sourceDealLineItemId,
+          productId: snapshot.productId,
+          productCodeSnapshot: snapshot.productCodeSnapshot,
+          productNameSnapshot: snapshot.productNameSnapshot,
+          quantitySnapshot: snapshot.quantitySnapshot,
+          revenueAmountSnapshot: snapshot.revenueAmountSnapshot,
+          grossProfitAmountSnapshot: snapshot.grossProfitAmountSnapshot,
+          customFieldsSnapshot: snapshot.customFieldsSnapshot as Prisma.InputJsonValue,
+        },
+      });
+    }
+    await prisma.deliveryHandoff.create({
+      data: {
+        organizationId: organization.id,
+        businessUnitId: hdBusinessUnit.id,
+        deliveryProjectId: project.id,
+        submittedByUserId: deal.ownerUserId,
+        assignedCsUserId: superAdmin.id,
+        status: project.handoffStatus,
+        handoffSnapshot: {
+          ...scopeSnapshot,
+          customerName: deal.name,
+          productionScope: "初期制作、ドメイン確認、公開前チェック",
+          customerRequests: "公開前にデザイン確認を希望",
+          designPreference: "シンプルで信頼感のあるトーン",
+          materialStatus: index === 2 ? "一部未回収" : "回収済み",
+          domainStatus: "確認済み",
+          notes: "seed引き継ぎデータ",
+          fsUserId: deal.ownerUserId,
+          csUserId: superAdmin.id,
+          desiredPublishDate: "2026-07-01",
+          nextCustomerActionAt: "2026-06-24",
+        },
+        checklistSnapshot: {
+          materialChecked: index !== 2,
+          domainChecked: true,
+          scopeChecked: true,
+        },
+        submittedAt: index === 2 ? null : dayOfJune(10 + index),
+        acceptedAt: index === 0 ? dayOfJune(11) : null,
+        acceptedByUserId: index === 0 ? superAdmin.id : null,
+        version: 1,
+      },
+    });
+    await prisma.deliveryProjectStageHistory.create({
+      data: {
+        organizationId: organization.id,
+        businessUnitId: hdBusinessUnit.id,
+        deliveryProjectId: project.id,
+        toStageId: deliveryStages[0].id,
+        changedByUserId: superAdmin.id,
+        enteredAt: dayOfJune(9 + index),
+        exitedAt: targetStage.id === deliveryStages[0].id ? null : dayOfJune(10 + index),
+        durationMinutes:
+          targetStage.id === deliveryStages[0].id ? null : 24 * 60,
+        note: "受注商談から制作案件を作成しました。",
+      },
+    });
+    if (targetStage.id !== deliveryStages[0].id) {
+      await prisma.deliveryProjectStageHistory.create({
+        data: {
+          organizationId: organization.id,
+          businessUnitId: hdBusinessUnit.id,
+          deliveryProjectId: project.id,
+          fromStageId: deliveryStages[0].id,
+          toStageId: targetStage.id,
+          changedByUserId: superAdmin.id,
+          enteredAt: dayOfJune(10 + index),
+          note: `${targetStage.name}へ進行中です。`,
+        },
+      });
+    }
+    await prisma.task.createMany({
+      data: [
+        {
+          organizationId: organization.id,
+          ownerUserId: superAdmin.id,
+          createdByUserId: superAdmin.id,
+          deliveryProjectId: project.id,
+          sourceDeliveryStageId: targetStage.id,
+          autoTaskKey: `${targetStage.id}:seed-next-action`,
+          title: index === 2 ? "素材回収" : "次回顧客対応",
+          dueDate: dayOfJune(12 + index),
+          priority: index === 2 ? "HIGH" : "MEDIUM",
+          taskType: "FOLLOW_UP",
+        },
+      ],
+    });
+    await prisma.activity.create({
+      data: {
+        organizationId: organization.id,
+        actorUserId: superAdmin.id,
+        deliveryProjectId: project.id,
+        type: "SYSTEM_EVENT",
+        title: "制作案件を作成",
+        body: `元商談「${deal.name}」から制作案件を作成しました。`,
+        metadata: { sourceDealId: deal.id },
+        occurredAt: dayOfJune(10 + index),
+      },
     });
   }
 

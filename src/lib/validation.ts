@@ -568,10 +568,22 @@ export const productSchema = z.object({
   sku: optionalText(80),
   description: optionalText(2000),
   category: optionalText(120),
+  fulfillmentType: z
+    .enum(["NONE", "PROJECT", "RECURRING_SERVICE"])
+    .nullable()
+    .optional(),
   status: z.enum(["ACTIVE", "INACTIVE", "ARCHIVED"]).default("ACTIVE"),
   businessUnitIds: z.array(z.string().uuid()).default([]),
   productKindByBusinessUnit: z
     .record(z.enum(["CORE", "ADD_ON", "OPTIONAL", "CROSS_SELL"]))
+    .default({}),
+  fulfillmentTypeByBusinessUnit: z
+    .record(z.enum(["NONE", "PROJECT", "RECURRING_SERVICE"]))
+    .default({}),
+  autoCreateDeliveryProjectByBusinessUnit: z.record(z.boolean()).default({}),
+  defaultDeliveryProjectTemplateIdByBusinessUnit: z.record(z.string()).default({}),
+  projectGroupingModeByBusinessUnit: z
+    .record(z.enum(["GROUP_BY_DEAL", "SEPARATE_BY_LINE_ITEM"]))
     .default({}),
 });
 
@@ -732,4 +744,95 @@ export const legacyProgressApplySchema = z.object({
   workbookFingerprint: z.string().min(32).max(128),
   sourceName: z.string().trim().min(1).max(240),
   dryRunSummary: z.record(z.unknown()).default({}),
+});
+
+export const deliveryProjectTemplateSchema = z.object({
+  businessUnitId: optionalUuid,
+  name: z.string().trim().min(1, "テンプレート名を入力してください。").max(160),
+  description: optionalText(2000),
+  pipelineId: optionalUuid,
+  defaultCsTeamId: optionalUuid,
+  defaultCsUserId: optionalUuid,
+  defaultDueBusinessDays: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional(),
+  autoCreate: z.boolean().default(false),
+  productIds: z.array(z.string().uuid()).default([]),
+  handoffRequiredFields: z.array(z.string().trim().min(1)).default([]),
+  defaultScope: z.record(z.unknown()).default({}),
+  initialTaskTemplates: z.array(z.record(z.unknown())).default([]),
+  stageTaskTemplates: z.record(z.unknown()).default({}),
+  isActive: z.boolean().default(true),
+});
+
+export const deliveryProjectCreateSchema = z.object({
+  sourceDealId: z.string().uuid("元商談を選択してください。"),
+  templateId: optionalUuid,
+});
+
+export const deliveryProjectUpdateSchema = z.object({
+  ownerUserId: optionalUuid,
+  status: z
+    .enum([
+      "NOT_STARTED",
+      "IN_PROGRESS",
+      "PAUSED",
+      "PUBLISHED",
+      "COMPLETED",
+      "CANCELLED",
+    ])
+    .optional(),
+  healthStatus: z
+    .enum(["ON_TRACK", "AT_RISK", "OFF_TRACK", "BLOCKED"])
+    .optional(),
+  priority: z.enum(["LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+  expectedStartDate: optionalDate,
+  kickoffDate: optionalDate,
+  expectedPublishDate: optionalDate,
+  actualPublishDate: optionalDate,
+  pauseReason: optionalText(2000),
+  nextAction: optionalText(240),
+  nextActionDate: optionalDate,
+  nextActionOwnerId: optionalUuid,
+  blocker: optionalText(2000),
+  handoffChecklist: z.record(z.unknown()).optional(),
+  scopeSnapshot: z.record(z.unknown()).optional(),
+});
+
+export const deliveryTransitionSchema = z.object({
+  stageId: z.string().uuid("移動先ステージを選択してください。"),
+  note: optionalText(2000),
+});
+
+export const deliveryHandoffSubmitSchema = z.object({
+  assignedCsUserId: optionalUuid,
+  handoffSnapshot: z.record(z.unknown()).default({}),
+  checklistSnapshot: z.record(z.unknown()).default({}),
+});
+
+export const deliveryHandoffRejectSchema = z.object({
+  rejectionReason: z
+    .string()
+    .trim()
+    .min(1, "差し戻し理由を入力してください。")
+    .max(2000),
+});
+
+export const deliveryCrossSellSchema = z.object({
+  productId: optionalUuid,
+  productName: optionalText(180),
+  expectedRevenueAmount: optionalNumber,
+  expectedGrossProfitAmount: optionalNumber,
+  fsUserId: z.string().uuid("担当FSを選択してください。"),
+  pipelineId: z.string().uuid("パイプラインを選択してください。"),
+  stageId: z.string().uuid("初期ステージを選択してください。"),
+  expectedCloseDate: optionalDate,
+  title: optionalText(200),
+  proposalBackground: optionalText(4000),
+  handoffNote: optionalText(4000),
+  overrideDuplicate: z.boolean().default(false),
+  overrideReason: optionalText(1000),
 });

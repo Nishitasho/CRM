@@ -33,6 +33,7 @@ export async function PATCH(request: Request, { params }: Params) {
           sku: input.sku,
           description: input.description,
           category: input.category,
+          fulfillmentType: input.fulfillmentType ?? null,
           status: input.status,
         },
       });
@@ -46,6 +47,20 @@ export async function PATCH(request: Request, { params }: Params) {
             businessUnitId,
             productId: id,
             productKind: input.productKindByBusinessUnit[businessUnitId] ?? null,
+            fulfillmentType:
+              input.fulfillmentTypeByBusinessUnit[businessUnitId] ??
+              input.fulfillmentType ??
+              null,
+            autoCreateDeliveryProject:
+              input.autoCreateDeliveryProjectByBusinessUnit[businessUnitId] ??
+              false,
+            defaultDeliveryProjectTemplateId:
+              input.defaultDeliveryProjectTemplateIdByBusinessUnit[
+                businessUnitId
+              ] || null,
+            projectGroupingMode:
+              input.projectGroupingModeByBusinessUnit[businessUnitId] ??
+              "GROUP_BY_DEAL",
           },
         });
       }

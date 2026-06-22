@@ -27,6 +27,7 @@ and Preview as needed.
 
 ```text
 DATABASE_URL
+MIGRATE_DATABASE_URL
 SESSION_SECRET
 SESSION_COOKIE_NAME
 SESSION_TTL_DAYS
@@ -74,6 +75,10 @@ Set `DATABASE_URL` to the pooled/runtime connection string recommended by the
 provider. If the provider gives a separate direct migration URL, run migrations
 from a trusted local machine or CI with that direct URL.
 
+For Supabase, keep `DATABASE_URL` as the runtime Pooler URL if desired, but set
+`MIGRATE_DATABASE_URL` to the Direct connection URL for migration and seed. The
+bootstrap build script automatically uses `MIGRATE_DATABASE_URL` when present.
+
 ## Migration
 
 After the production `DATABASE_URL` is ready, apply migrations:
@@ -94,6 +99,10 @@ vercel deploy --prod --force --build-env BOOTSTRAP_DATABASE_ON_BUILD=true
 `BOOTSTRAP_DATABASE_ON_BUILD=true` runs `prisma migrate deploy` and
 `prisma/seed.ts` before the normal build. Do not store this flag permanently in
 the Vercel project. Use it only for the initial empty CRM database.
+
+For Supabase, this bootstrap requires `MIGRATE_DATABASE_URL` if `DATABASE_URL`
+points at the pooler endpoint. The script intentionally refuses to run
+migrations against `pooler.supabase.com` without a direct migration URL.
 
 ## Seed
 

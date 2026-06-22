@@ -3,12 +3,14 @@ import {
   BookingStatus,
   CalendarSyncStatus,
   DealParticipantRole,
+  OperationalEventType,
   Prisma,
   SalesPerformanceEventType,
 } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { apiError, BadRequestError } from "@/lib/api";
 import { createRecordActivity } from "@/lib/crm";
+import { isPublicSchedulingEnabled } from "@/lib/feature-flags";
 import { syncBookingToGoogle } from "@/lib/google-calendar";
 import { prisma } from "@/lib/prisma";
 import {
@@ -31,6 +33,9 @@ function inputJson(value: unknown) {
 
 export async function POST(request: Request, { params }: Params) {
   try {
+    if (!isPublicSchedulingEnabled()) {
+      throw new BadRequestError("公開日程調整は現在停止中です。");
+    }
     const { slug } = await params;
     const input = meetingBookingSchema.parse(await request.json());
     const link = await prisma.meetingLink.findUnique({
@@ -75,6 +80,19 @@ export async function POST(request: Request, { params }: Params) {
       ]);
       const range = { startsAt, endsAt };
       if ([...bookings, ...holds].some((busy) => rangesOverlap(range, busy))) {
+        await tx.operationalEvent.create({
+          data: {
+            organizationId: link.organizationId,
+            eventType: OperationalEventType.BOOKING_CONFLICT_PREVENTED,
+            status: "slot_unavailable",
+            metadata: inputJson({
+              meetingLinkId: link.id,
+              hostUserId,
+              startsAt: startsAt.toISOString(),
+              endsAt: endsAt.toISOString(),
+            }),
+          },
+        });
         throw new BadRequestError("選択した時間は予約できません。別の時間を選択してください。");
       }
       const contact = await upsertPublicContact(tx, {
@@ -118,11 +136,25 @@ export async function POST(request: Request, { params }: Params) {
           meetingType: input.notes,
           timezone: link.timezone,
           idempotencyKey: input.idempotencyKey ?? null,
+          externalSubmissionId: input.idempotencyKey ?? null,
           bookingHoldId: hold?.id ?? null,
           legacyMetadata: inputJson({
             companyName: input.companyName,
             notes: input.notes,
             titleTemplate: link.titleTemplate,
+          }),
+        },
+      });
+      await tx.operationalEvent.create({
+        data: {
+          organizationId: link.organizationId,
+          eventType: OperationalEventType.BOOKING_SUCCEEDED,
+          bookingId: booking.id,
+          status: "created",
+          metadata: inputJson({
+            meetingLinkId: link.id,
+            hostUserId,
+            googleCalendarEnabled: link.googleCalendarEnabled,
           }),
         },
       });

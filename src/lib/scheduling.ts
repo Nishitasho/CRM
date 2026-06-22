@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { BadRequestError } from "./api";
 import { createOpaqueToken, hashToken } from "./security";
 
 type TimeRange = { startsAt: Date; endsAt: Date };
@@ -218,6 +219,47 @@ export async function createBookingHold(
     holdMinutes?: number | null;
   },
 ) {
+  const lockKey = [
+    input.organizationId,
+    input.meetingLinkId,
+    input.hostUserId ?? "unassigned",
+  ].join(":");
+  await tx.$queryRaw`
+    SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))
+  `;
+  const link = await tx.meetingLink.findFirst({
+    where: { id: input.meetingLinkId, organizationId: input.organizationId },
+    select: {
+      bufferBeforeMinutes: true,
+      bufferAfterMinutes: true,
+    },
+  });
+  const bufferedFrom = new Date(
+    input.startsAt.getTime() - (link?.bufferBeforeMinutes ?? 0) * 60000,
+  );
+  const bufferedTo = new Date(
+    input.endsAt.getTime() + (link?.bufferAfterMinutes ?? 0) * 60000,
+  );
+  const [bookings, holds] = await Promise.all([
+    getBookingBusyRanges(tx, {
+      organizationId: input.organizationId,
+      meetingLinkId: input.meetingLinkId,
+      hostUserId: input.hostUserId,
+      from: bufferedFrom,
+      to: bufferedTo,
+    }),
+    getActiveHoldRanges(tx, {
+      organizationId: input.organizationId,
+      meetingLinkId: input.meetingLinkId,
+      hostUserId: input.hostUserId,
+      from: bufferedFrom,
+      to: bufferedTo,
+    }),
+  ]);
+  const bufferedRange = { startsAt: bufferedFrom, endsAt: bufferedTo };
+  if ([...bookings, ...holds].some((busy) => rangesOverlap(bufferedRange, busy))) {
+    throw new BadRequestError("選択した日時は予約できません。別の時間を選択してください。");
+  }
   const token = createOpaqueToken(24);
   const item = await tx.bookingHold.create({
     data: {
@@ -239,6 +281,12 @@ export async function consumeBookingHold(
 ) {
   if (!token) return null;
   const tokenHash = hashToken(token);
+  await tx.$queryRaw`
+    SELECT id
+    FROM booking_holds
+    WHERE token_hash = ${tokenHash}
+    FOR UPDATE
+  `;
   const hold = await tx.bookingHold.findUnique({ where: { tokenHash } });
   if (!hold || hold.status !== "ACTIVE" || hold.expiresAt <= new Date()) return null;
   await tx.bookingHold.update({

@@ -2,11 +2,17 @@ import { redirect } from "next/navigation";
 import { MeetingManager } from "@/components/meetings/meeting-manager";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import {
+  isGoogleCalendarIntegrationEnabled,
+  isPublicSchedulingEnabled,
+} from "@/lib/feature-flags";
 import { prisma } from "@/lib/prisma";
 
 export default async function MeetingsPage() {
   const context = await getAuthContext();
   if (!context) redirect("/login");
+  const googleCalendarEnabled = isGoogleCalendarIntegrationEnabled();
+  const publicSchedulingEnabled = isPublicSchedulingEnabled();
   const [rules, links, bookings, googleConnection] = await Promise.all([
     prisma.availabilityRule.findMany({
       where: {
@@ -74,9 +80,25 @@ export default async function MeetingsPage() {
           _count: link._count,
         }))}
         bookings={bookings.map((booking) => ({
-          ...booking,
+          id: booking.id,
+          guestName: booking.guestName,
+          guestEmail: booking.guestEmail,
           startsAt: booking.startsAt.toISOString(),
           endsAt: booking.endsAt.toISOString(),
+          bookingStatus: booking.bookingStatus,
+          syncStatus: booking.syncStatus,
+          syncErrorCode: booking.syncErrorCode,
+          syncErrorMessage: booking.syncErrorMessage,
+          syncAttemptCount: booking.syncAttemptCount,
+          nextRetryAt: booking.nextRetryAt?.toISOString() ?? null,
+          lastSyncedAt: booking.lastSyncedAt?.toISOString() ?? null,
+          externalChangeType: booking.externalChangeType,
+          externalSyncStatus: booking.externalSyncStatus,
+          externalChangeDetectedAt:
+            booking.externalChangeDetectedAt?.toISOString() ?? null,
+          googleEventHtmlLink: booking.googleEventHtmlLink,
+          meetingLink: booking.meetingLink,
+          contact: booking.contact,
         }))}
         googleConnection={
           googleConnection
@@ -89,6 +111,8 @@ export default async function MeetingsPage() {
             : null
         }
         appUrl={process.env.APP_URL ?? "http://localhost:3000"}
+        googleCalendarEnabled={googleCalendarEnabled}
+        publicSchedulingEnabled={publicSchedulingEnabled}
       />
     </div>
   );

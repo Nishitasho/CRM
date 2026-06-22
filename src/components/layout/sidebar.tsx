@@ -31,6 +31,7 @@ const navigation = [
   { href: "/forms", label: "フォーム", icon: "forms" },
   { href: "/meetings", label: "日程調整", icon: "tasks" },
   { href: "/conversations", label: "問い合わせ", icon: "contacts" },
+  { href: "/operations", label: "運用監視", icon: "reports" },
   { href: "/settings", label: "設定", icon: "settings" },
 ] as const;
 

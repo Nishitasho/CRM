@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { apiError } from "@/lib/api";
+import { apiError, BadRequestError } from "@/lib/api";
+import { isPublicSchedulingEnabled } from "@/lib/feature-flags";
 import { getGoogleBusyRanges } from "@/lib/google-calendar";
 import { prisma } from "@/lib/prisma";
 import {
@@ -13,6 +14,9 @@ type Params = { params: Promise<{ slug: string }> };
 
 export async function GET(request: Request, { params }: Params) {
   try {
+    if (!isPublicSchedulingEnabled()) {
+      throw new BadRequestError("公開日程調整は現在停止中です。");
+    }
     const { slug } = await params;
     const query = publicAvailabilityQuerySchema.parse(
       Object.fromEntries(new URL(request.url).searchParams),

@@ -417,6 +417,56 @@ enum WatchChannelStatus {
   @@map("watch_channel_status")
 }
 
+enum CalendarExternalChangeType {
+  DELETED              @map("deleted")
+  DATE_TIME_CHANGED    @map("date_time_changed")
+  PARTICIPANTS_CHANGED @map("participants_changed")
+  TITLE_CHANGED        @map("title_changed")
+  UNKNOWN              @map("unknown")
+
+  @@map("calendar_external_change_type")
+}
+
+enum CalendarSyncJobStatus {
+  PENDING    @map("pending")
+  RUNNING    @map("running")
+  SUCCEEDED  @map("succeeded")
+  FAILED     @map("failed")
+  SKIPPED    @map("skipped")
+
+  @@map("calendar_sync_job_status")
+}
+
+enum CalendarSyncJobType {
+  FULL_SYNC        @map("full_sync")
+  INCREMENTAL_SYNC @map("incremental_sync")
+  WATCH_RENEWAL    @map("watch_renewal")
+  WEBHOOK_SYNC      @map("webhook_sync")
+  MANUAL_SYNC       @map("manual_sync")
+
+  @@map("calendar_sync_job_type")
+}
+
+enum OperationalEventType {
+  FORM_SUBMISSION_SUCCEEDED       @map("form_submission_succeeded")
+  FORM_SUBMISSION_FAILED          @map("form_submission_failed")
+  BOOKING_SUCCEEDED               @map("booking_succeeded")
+  BOOKING_CONFLICT_PREVENTED      @map("booking_conflict_prevented")
+  GOOGLE_SYNC_SUCCEEDED           @map("google_sync_succeeded")
+  GOOGLE_SYNC_FAILED              @map("google_sync_failed")
+  GOOGLE_RETRY_SUCCEEDED          @map("google_retry_succeeded")
+  GOOGLE_REAUTH_REQUIRED          @map("google_reauth_required")
+  WEBHOOK_RECEIVED                @map("webhook_received")
+  WEBHOOK_REJECTED                @map("webhook_rejected")
+  WATCH_CHANNEL_EXPIRING          @map("watch_channel_expiring")
+  WATCH_CHANNEL_RENEWED           @map("watch_channel_renewed")
+  EXTERNAL_CHANGE_DETECTED        @map("external_change_detected")
+  ROUND_ROBIN_ASSIGNED            @map("round_robin_assigned")
+  ASSIGNMENT_FAILED               @map("assignment_failed")
+
+  @@map("operational_event_type")
+}
+
 enum SalesPerformanceEventType {
   CALL                         @map("call")
   CONNECTION                   @map("connection")
@@ -1307,6 +1357,7 @@ model MeetingBooking {
   dealId                      String?              @map("deal_id") @db.Uuid
   formSubmissionId            String?              @map("form_submission_id") @db.Uuid
   bookingHoldId               String?              @map("booking_hold_id") @db.Uuid
+  externalSubmissionId        String?              @map("external_submission_id") @db.VarChar(240)
   setByUserId                 String?              @map("set_by_user_id") @db.Uuid
   hostUserId                  String?              @map("host_user_id") @db.Uuid
   assignedUserId              String?              @map("assigned_user_id") @db.Uuid
@@ -1333,11 +1384,16 @@ model MeetingBooking {
   googleEventId               String?              @map("google_event_id") @db.VarChar(240)
   googleEventEtag             String?              @map("google_event_etag") @db.VarChar(240)
   googleEventHtmlLink         String?              @map("google_event_html_link")
+  googleEventICalUid          String?              @map("google_event_ical_uid") @db.VarChar(240)
   lastSyncedAt                DateTime?            @map("last_synced_at") @db.Timestamptz(3)
   syncAttemptCount            Int                  @default(0) @map("sync_attempt_count")
   nextRetryAt                 DateTime?            @map("next_retry_at") @db.Timestamptz(3)
   syncErrorCode               String?              @map("sync_error_code") @db.VarChar(120)
   syncErrorMessage            String?              @map("sync_error_message")
+  externalChangeType          CalendarExternalChangeType? @map("external_change_type")
+  externalSyncStatus          CalendarSyncStatus?   @map("external_sync_status")
+  externalChangeDetectedAt    DateTime?             @map("external_change_detected_at") @db.Timestamptz(3)
+  externalChangeSnapshot      Json                  @default("{}") @map("external_change_snapshot") @db.JsonB
   bookingOrigin               BookingOrigin        @default(INTERNAL) @map("booking_origin")
   cancelReason                String?              @map("cancel_reason") @db.VarChar(500)
   legacyMetadata              Json                 @default("{}") @map("legacy_metadata") @db.JsonB
@@ -1353,6 +1409,8 @@ model MeetingBooking {
   @@index([organizationId, setByUserId, appointmentSetAt])
   @@index([organizationId, hostUserId, startsAt])
   @@index([organizationId, bookingStatus, syncStatus])
+  @@index([organizationId, googleCalendarId, googleEventId])
+  @@index([organizationId, meetingLinkId, externalSubmissionId])
   @@index([organizationId, dealId])
   @@map("meeting_bookings")
 }
@@ -1536,6 +1594,7 @@ model GoogleCalendarConnection {
   status                GoogleCalendarConnectionStatus @default(CONNECTED)
   encryptedAccessToken  String?                        @map("encrypted_access_token")
   encryptedRefreshToken String?                        @map("encrypted_refresh_token")
+  encryptionKeyVersion  String                         @default("v1") @map("encryption_key_version") @db.VarChar(40)
   accessTokenExpiresAt  DateTime?                      @map("access_token_expires_at") @db.Timestamptz(3)
   grantedScopes         String[]                       @default([]) @map("granted_scopes")
   selectedWriteCalendarId String?                      @map("selected_write_calendar_id") @db.VarChar(240)
@@ -1562,6 +1621,13 @@ model GoogleCalendarSelection {
   isWriteCalendar   Boolean  @default(false) @map("is_write_calendar")
   useForBusyCheck   Boolean  @default(true) @map("use_for_busy_check")
   timezone          String?  @db.VarChar(80)
+  syncToken         String?  @map("sync_token")
+  syncTokenInvalidatedAt DateTime? @map("sync_token_invalidated_at") @db.Timestamptz(3)
+  lastFullSyncAt    DateTime? @map("last_full_sync_at") @db.Timestamptz(3)
+  lastIncrementalSyncAt DateTime? @map("last_incremental_sync_at") @db.Timestamptz(3)
+  lastSyncStatus    CalendarSyncJobStatus? @map("last_sync_status")
+  lastSyncErrorCode String?  @map("last_sync_error_code") @db.VarChar(120)
+  lastSyncErrorMessage String? @map("last_sync_error_message")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
@@ -1595,6 +1661,10 @@ model GoogleCalendarWatchChannel {
   syncToken              String?            @map("sync_token")
   status                 WatchChannelStatus @default(ACTIVE)
   expiresAt              DateTime?          @map("expires_at") @db.Timestamptz(3)
+  lastMessageNumber      BigInt?            @map("last_message_number")
+  notificationCount      Int                @default(0) @map("notification_count")
+  lastRenewalAttemptAt   DateTime?          @map("last_renewal_attempt_at") @db.Timestamptz(3)
+  lastRenewalError       String?            @map("last_renewal_error")
   lastNotificationAt     DateTime?          @map("last_notification_at") @db.Timestamptz(3)
   createdAt              DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt              DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -1602,6 +1672,50 @@ model GoogleCalendarWatchChannel {
   @@unique([channelId])
   @@index([connectionId, googleCalendarId, status])
   @@map("google_calendar_watch_channels")
+}
+
+model CalendarSyncJob {
+  id              String                @id @default(uuid()) @db.Uuid
+  organizationId  String                @map("organization_id") @db.Uuid
+  connectionId    String?               @map("connection_id") @db.Uuid
+  selectionId     String?               @map("selection_id") @db.Uuid
+  channelId       String?               @map("channel_id") @db.VarChar(240)
+  jobType         CalendarSyncJobType   @map("job_type")
+  status          CalendarSyncJobStatus @default(PENDING)
+  correlationId   String                @map("correlation_id") @db.VarChar(120)
+  startedAt       DateTime?             @map("started_at") @db.Timestamptz(3)
+  finishedAt      DateTime?             @map("finished_at") @db.Timestamptz(3)
+  processedCount  Int                   @default(0) @map("processed_count")
+  errorCode       String?               @map("error_code") @db.VarChar(120)
+  errorMessage    String?               @map("error_message")
+  metadata        Json                  @default("{}") @db.JsonB
+  createdAt       DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([organizationId, status, createdAt])
+  @@index([connectionId, status])
+  @@index([selectionId, status])
+  @@map("calendar_sync_jobs")
+}
+
+model OperationalEvent {
+  id               String               @id @default(uuid()) @db.Uuid
+  organizationId   String               @map("organization_id") @db.Uuid
+  eventType        OperationalEventType @map("event_type")
+  correlationId    String?              @map("correlation_id") @db.VarChar(120)
+  bookingId        String?              @map("booking_id") @db.Uuid
+  formSubmissionId String?              @map("form_submission_id") @db.Uuid
+  syncJobId        String?              @map("sync_job_id") @db.Uuid
+  channelId        String?              @map("channel_id") @db.VarChar(240)
+  status           String?              @db.VarChar(80)
+  metadata         Json                 @default("{}") @db.JsonB
+  occurredAt       DateTime             @default(now()) @map("occurred_at") @db.Timestamptz(3)
+
+  @@index([organizationId, eventType, occurredAt])
+  @@index([organizationId, bookingId])
+  @@index([organizationId, formSubmissionId])
+  @@index([organizationId, syncJobId])
+  @@map("operational_events")
 }
 
 model Conversation {

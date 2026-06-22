@@ -1,4 +1,9 @@
-import { AssignmentMode, Prisma, WorkFunction } from "@prisma/client";
+import {
+  AssignmentMode,
+  OperationalEventType,
+  Prisma,
+  WorkFunction,
+} from "@prisma/client";
 import { BadRequestError } from "./api";
 
 type Tx = Prisma.TransactionClient;
@@ -204,6 +209,20 @@ export async function assignUser(
 
   const candidates = await candidateUsers(tx, input);
   if (!candidates.length) {
+    await tx.operationalEvent.create({
+      data: {
+        organizationId: input.organizationId,
+        eventType: OperationalEventType.ASSIGNMENT_FAILED,
+        status: "no_candidates",
+        metadata: {
+          assignmentMode: mode,
+          businessUnitId: input.businessUnitId ?? null,
+          teamId: input.teamId ?? null,
+          workFunction: input.workFunction ?? null,
+          requireGoogleConnection: Boolean(input.requireGoogleConnection),
+        },
+      },
+    });
     return {
       selectedUserId: null,
       candidateUserIds: [],
@@ -234,11 +253,36 @@ export async function assignUser(
     },
     update: {},
   });
-  const nextPosition = (cursor.position + 1) % candidates.length;
+  await tx.$queryRaw`
+    SELECT id
+    FROM assignment_cursors
+    WHERE id = CAST(${cursor.id} AS uuid)
+    FOR UPDATE
+  `;
+  const lockedCursor = await tx.assignmentCursor.findUnique({
+    where: { id: cursor.id },
+  });
+  const currentPosition = lockedCursor?.position ?? -1;
+  const nextPosition = (currentPosition + 1) % candidates.length;
   const selectedUserId = candidates[nextPosition];
   await tx.assignmentCursor.update({
     where: { id: cursor.id },
     data: { position: nextPosition, lastAssignedUserId: selectedUserId },
+  });
+  await tx.operationalEvent.create({
+    data: {
+      organizationId: input.organizationId,
+      eventType: OperationalEventType.ROUND_ROBIN_ASSIGNED,
+      status: "assigned",
+      metadata: {
+        scopeKey,
+        assignmentMode: mode,
+        selectedUserId,
+        candidateUserIds: candidates,
+        previousPosition: currentPosition,
+        nextPosition,
+      },
+    },
   });
   return {
     selectedUserId,

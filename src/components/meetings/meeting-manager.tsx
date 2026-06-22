@@ -26,6 +26,14 @@ type BookingItem = {
   endsAt: string;
   bookingStatus: string;
   syncStatus: string;
+  syncErrorCode: string | null;
+  syncErrorMessage: string | null;
+  syncAttemptCount: number;
+  nextRetryAt: string | null;
+  lastSyncedAt: string | null;
+  externalChangeType: string | null;
+  externalSyncStatus: string | null;
+  externalChangeDetectedAt: string | null;
   googleEventHtmlLink: string | null;
   meetingLink: { name: string };
   contact: { firstName: string | null; lastName: string | null; email: string | null } | null;
@@ -49,12 +57,16 @@ export function MeetingManager({
   bookings,
   googleConnection,
   appUrl,
+  googleCalendarEnabled,
+  publicSchedulingEnabled,
 }: {
   rules: Rule[];
   links: LinkItem[];
   bookings: BookingItem[];
   googleConnection: GoogleConnection;
   appUrl: string;
+  googleCalendarEnabled: boolean;
+  publicSchedulingEnabled: boolean;
 }) {
   const router = useRouter();
   const [message, setMessage] = useState("");
@@ -114,30 +126,70 @@ export function MeetingManager({
     await fetch(`/api/meeting-links/${id}`, { method: "DELETE" });
     router.refresh();
   }
+  async function postAction(url: string, body?: Record<string, unknown>) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setError(result.message ?? "処理に失敗しました。");
+      return;
+    }
+    setError("");
+    setMessage("処理を実行しました。");
+    router.refresh();
+  }
   return (
     <div className="space-y-6">
       <section className="card flex flex-col justify-between gap-4 p-6 md:flex-row md:items-center">
         <div>
           <h2 className="text-lg font-bold">Google Calendar</h2>
           <p className="mt-1 text-sm text-slate-500">
-            {googleConnection?.status === "CONNECTED"
+            {!googleCalendarEnabled
+              ? "Google Calendar連携はfeature flagで停止中です。"
+              : googleConnection?.status === "CONNECTED"
               ? `接続済み${googleConnection.selectedWriteCalendarName ? ` / ${googleConnection.selectedWriteCalendarName}` : ""}`
               : "未接続です。Google Calendarだけを認可します。"}
           </p>
+          {!publicSchedulingEnabled ? (
+            <p className="mt-1 text-sm font-bold text-amber-700">
+              公開日程調整はfeature flagで停止中です。
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <a
             className="primary-button"
             href="/api/integrations/google-calendar/connect?redirectPath=/meetings"
+            aria-disabled={!googleCalendarEnabled}
           >
             接続する
           </a>
           <button
             className="secondary-button"
             type="button"
+            disabled={!googleCalendarEnabled}
             onClick={() => fetch("/api/integrations/google-calendar/test", { method: "POST" })}
           >
             接続テスト
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!googleCalendarEnabled}
+            onClick={() => postAction("/api/integrations/google-calendar/sync", { mode: "INCREMENTAL" })}
+          >
+            増分同期
+          </button>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!googleCalendarEnabled}
+            onClick={() => postAction("/api/integrations/google-calendar/watch", {})}
+          >
+            Watch再作成
           </button>
         </div>
       </section>
@@ -297,7 +349,9 @@ export function MeetingManager({
                 <th className="px-6 py-3">リンク</th>
                 <th className="px-6 py-3">予約状態</th>
                 <th className="px-6 py-3">同期状態</th>
+                <th className="px-6 py-3">エラー</th>
                 <th className="px-6 py-3">Google</th>
+                <th className="px-6 py-3">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
@@ -313,7 +367,44 @@ export function MeetingManager({
                   <td className="px-6 py-4 font-bold">{booking.guestName}</td>
                   <td className="px-6 py-4">{booking.meetingLink.name}</td>
                   <td className="px-6 py-4">{booking.bookingStatus}</td>
-                  <td className="px-6 py-4">{booking.syncStatus}</td>
+                  <td className="px-6 py-4">
+                    <div className="font-bold">{booking.syncStatus}</div>
+                    {booking.externalChangeType ? (
+                      <div className="mt-1 text-xs text-amber-700">
+                        外部変更: {booking.externalChangeType}
+                      </div>
+                    ) : null}
+                    {booking.lastSyncedAt ? (
+                      <div className="mt-1 text-xs text-slate-400">
+                        最終同期 {new Intl.DateTimeFormat("ja-JP", {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                          timeZone: "Asia/Tokyo",
+                        }).format(new Date(booking.lastSyncedAt))}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="px-6 py-4">
+                    {booking.syncErrorCode ? (
+                      <div>
+                        <p className="font-bold text-red-600">{booking.syncErrorCode}</p>
+                        <p className="mt-1 max-w-[260px] text-xs text-slate-500">
+                          {booking.syncErrorMessage}
+                        </p>
+                        {booking.nextRetryAt ? (
+                          <p className="mt-1 text-xs text-slate-400">
+                            次回 {new Intl.DateTimeFormat("ja-JP", {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                              timeZone: "Asia/Tokyo",
+                            }).format(new Date(booking.nextRetryAt))}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">-</span>
+                    )}
+                  </td>
                   <td className="px-6 py-4">
                     {booking.googleEventHtmlLink ? (
                       <a className="text-brand-700" href={booking.googleEventHtmlLink} target="_blank" rel="noreferrer">
@@ -323,11 +414,39 @@ export function MeetingManager({
                       "-"
                     )}
                   </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-wrap gap-2">
+                      <button className="secondary-button py-2 text-xs" type="button" onClick={() => postAction(`/api/bookings/${booking.id}/sync`)}>
+                        再同期
+                      </button>
+                      {booking.syncStatus === "REAUTH_REQUIRED" ? (
+                        <a className="secondary-button py-2 text-xs" href="/api/integrations/google-calendar/connect?redirectPath=/meetings">
+                          再認可
+                        </a>
+                      ) : null}
+                      {booking.externalChangeType ? (
+                        <>
+                          <button className="secondary-button py-2 text-xs" type="button" onClick={() => postAction(`/api/bookings/${booking.id}/external-change`, { action: "apply_google" })}>
+                            Googleを反映
+                          </button>
+                          <button className="secondary-button py-2 text-xs" type="button" onClick={() => postAction(`/api/bookings/${booking.id}/external-change`, { action: "overwrite_google" })}>
+                            CRMで上書き
+                          </button>
+                          <button className="secondary-button py-2 text-xs" type="button" onClick={() => postAction(`/api/bookings/${booking.id}/external-change`, { action: "unlink" })}>
+                            解除
+                          </button>
+                          <button className="secondary-button py-2 text-xs" type="button" onClick={() => postAction(`/api/bookings/${booking.id}/external-change`, { action: "ignore" })}>
+                            解決済み
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
               ))}
               {!bookings.length ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-10 text-center text-slate-500">
+                  <td colSpan={8} className="px-6 py-10 text-center text-slate-500">
                     予約はまだありません。
                   </td>
                 </tr>

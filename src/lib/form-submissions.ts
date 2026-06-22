@@ -4,6 +4,7 @@ import {
   CalendarSyncStatus,
   DealParticipantRole,
   DealStatus,
+  OperationalEventType,
   Prisma,
   SalesPerformanceEventType,
 } from "@prisma/client";
@@ -327,6 +328,20 @@ async function createBookingFromSubmission(
   ]);
   const range = { startsAt: input.startsAt, endsAt };
   if ([...bookings, ...holds].some((busy) => rangesOverlap(range, busy))) {
+    await tx.operationalEvent.create({
+      data: {
+        organizationId: input.organizationId,
+        eventType: OperationalEventType.BOOKING_CONFLICT_PREVENTED,
+        formSubmissionId: input.formSubmissionId,
+        status: "slot_unavailable",
+        metadata: inputJson({
+          meetingLinkId: link.id,
+          hostUserId,
+          startsAt: input.startsAt.toISOString(),
+          endsAt: endsAt.toISOString(),
+        }),
+      },
+    });
     throw new BadRequestError("選択した日時は予約できません。別の時間を選択してください。");
   }
   const booking = await tx.meetingBooking.create({
@@ -339,6 +354,7 @@ async function createBookingFromSubmission(
       dealId: input.dealId,
       formSubmissionId: input.formSubmissionId,
       bookingHoldId: hold?.id ?? null,
+      externalSubmissionId: input.idempotencyKey ?? null,
       hostUserId,
       assignedUserId: input.assignedUserId,
       submittedByContactId: input.contactId,
@@ -370,6 +386,20 @@ async function createBookingFromSubmission(
         formId: input.formId,
         formSubmissionId: input.formSubmissionId,
         titleTemplate: link.titleTemplate,
+      }),
+    },
+  });
+  await tx.operationalEvent.create({
+    data: {
+      organizationId: input.organizationId,
+      eventType: OperationalEventType.BOOKING_SUCCEEDED,
+      bookingId: booking.id,
+      formSubmissionId: input.formSubmissionId,
+      status: "created",
+      metadata: inputJson({
+        meetingLinkId: link.id,
+        hostUserId,
+        googleCalendarEnabled: link.googleCalendarEnabled,
       }),
     },
   });
@@ -495,6 +525,18 @@ export async function submitPublicForm(input: {
         ipAddress: input.ipAddress,
         userAgent: input.userAgent,
         honeypotValue: body.honeypot,
+      },
+    });
+    await tx.operationalEvent.create({
+      data: {
+        organizationId: form.organizationId,
+        eventType: OperationalEventType.FORM_SUBMISSION_SUCCEEDED,
+        formSubmissionId: submission.id,
+        status: "accepted",
+        metadata: inputJson({
+          formId: form.id,
+          formVersionId: version.id,
+        }),
       },
     });
     await tx.routingExecutionLog.updateMany({

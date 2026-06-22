@@ -26,6 +26,10 @@ function encryptionKey() {
   return createHash("sha256").update(raw).digest();
 }
 
+export function currentEncryptionKeyVersion() {
+  return process.env.APP_ENCRYPTION_KEY_VERSION ?? "v1";
+}
+
 export function encryptSecret(value: string | null | undefined) {
   if (!value) return null;
   const iv = randomBytes(12);
@@ -35,24 +39,35 @@ export function encryptSecret(value: string | null | undefined) {
     cipher.final(),
   ]);
   const tag = cipher.getAuthTag();
-  return [iv.toString("base64url"), tag.toString("base64url"), encrypted.toString("base64url")].join(".");
+  return [
+    currentEncryptionKeyVersion(),
+    iv.toString("base64url"),
+    tag.toString("base64url"),
+    encrypted.toString("base64url"),
+  ].join(".");
 }
 
 export function decryptSecret(value: string | null | undefined) {
   if (!value) return null;
-  const [iv, tag, encrypted] = value.split(".");
+  const parts = value.split(".");
+  const [iv, tag, encrypted] =
+    parts.length === 4 ? parts.slice(1) : parts;
   if (!iv || !tag || !encrypted) return null;
-  const decipher = createDecipheriv(
-    "aes-256-gcm",
-    encryptionKey(),
-    Buffer.from(iv, "base64url"),
-  );
-  decipher.setAuthTag(Buffer.from(tag, "base64url"));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(encrypted, "base64url")),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      encryptionKey(),
+      Buffer.from(iv, "base64url"),
+    );
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encrypted, "base64url")),
+      decipher.final(),
+    ]);
+    return decrypted.toString("utf8");
+  } catch {
+    return null;
+  }
 }
 
 export function makeOrganizationSlug(name: string) {

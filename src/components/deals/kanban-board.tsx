@@ -20,6 +20,8 @@ type Deal = {
   name: string;
   amount: number | null;
   expectedCloseDate: string | null;
+  nextAction: string | null;
+  nextActionDate: string | null;
   ownerName: string;
   companyName: string | null;
   stageId: string;
@@ -221,6 +223,13 @@ function DealCard({
   deal: Deal;
   overlay?: boolean;
 }) {
+  const nextActionDate = deal.nextActionDate
+    ? new Intl.DateTimeFormat("ja-JP", {
+        month: "short",
+        day: "numeric",
+      }).format(new Date(deal.nextActionDate))
+    : "日付未設定";
+
   return (
     <article
       className={`rounded-xl border border-line bg-white p-4 ${
@@ -242,6 +251,15 @@ function DealCard({
           ? `${deal.amount.toLocaleString("ja-JP")}円`
           : "金額未設定"}
       </p>
+      <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+        <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-500">
+          <span>ネクストアクション</span>
+          <span className="shrink-0">{nextActionDate}</span>
+        </div>
+        <p className="mt-1 max-h-10 overflow-hidden break-words text-xs leading-5 text-slate-600">
+          {deal.nextAction?.trim() || "メモ未設定"}
+        </p>
+      </div>
       <div className="mt-3 flex items-end justify-between text-xs text-slate-400">
         <span>{deal.ownerName}</span>
         <span>

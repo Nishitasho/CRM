@@ -78,6 +78,8 @@ export default async function DealBoardPage({
         name: deal.name,
         amount: deal.amount ? Number(deal.amount) : null,
         expectedCloseDate: deal.expectedCloseDate?.toISOString() ?? null,
+        nextAction: deal.nextAction,
+        nextActionDate: deal.nextActionDate?.toISOString() ?? null,
         ownerName: deal.owner?.name ?? "未設定",
         companyName: dealCompanies.get(deal.id) ?? null,
         stageId: deal.stageId,

@@ -38,7 +38,7 @@ export default async function AppointmentCaptureLinksPage() {
       <PageHeading
         eyebrow="Public appointment capture"
         title="外部IS連携リンク"
-        description="アカウント不要でアポ情報を入力できる専用リンクを管理します。"
+        description="アカウント不要でアポ情報を入力できる専用リンクを管理します。公開URLは作成時またはリンク再発行時に一覧から確認できます。"
       />
       <SettingsNav />
       <AppointmentCaptureLinkManager

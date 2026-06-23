@@ -14,6 +14,7 @@ type LinkItem = {
   maxSubmissions: number | null;
   submissionCount: number;
   lastUsedAt: Date | string | null;
+  publicUrl?: string;
 };
 
 export function AppointmentCaptureLinkManager({
@@ -57,8 +58,9 @@ export function AppointmentCaptureLinkManager({
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message ?? "作成できませんでした。");
-      setLinks((current) => [result.item, ...current]);
-      setCreatedUrl(`${location.origin}${result.url}`);
+      const publicUrl = `${location.origin}${result.url}`;
+      setLinks((current) => [{ ...result.item, publicUrl }, ...current]);
+      setCreatedUrl(publicUrl);
       form.reset();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "作成できませんでした。");
@@ -75,8 +77,9 @@ export function AppointmentCaptureLinkManager({
       const response = await fetch(`/api/appointment-capture-links/${id}/${kind}`, { method: "POST" });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.message ?? "更新できませんでした。");
-      setLinks((current) => current.map((item) => (item.id === id ? result.item : item)));
-      if (result.url) setCreatedUrl(`${location.origin}${result.url}`);
+      const publicUrl = result.url ? `${location.origin}${result.url}` : "";
+      setLinks((current) => current.map((item) => (item.id === id ? { ...result.item, publicUrl: publicUrl || item.publicUrl } : item)));
+      if (publicUrl) setCreatedUrl(publicUrl);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "更新できませんでした。");
     } finally {
@@ -132,6 +135,9 @@ export function AppointmentCaptureLinkManager({
       <section className="card overflow-hidden">
         <div className="border-b border-line px-5 py-4">
           <h2 className="font-semibold">リンク一覧</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            公開入力URLは <code className="rounded bg-slate-100 px-1">/a/[token]</code> です。tokenはDBに保存せず、作成時または再発行時だけ表示します。
+          </p>
         </div>
         <div className="divide-y divide-line">
           {links.map((link) => (
@@ -144,6 +150,24 @@ export function AppointmentCaptureLinkManager({
               <p className="mt-1 text-sm text-slate-500">
                 {businessUnits.find((unit) => unit.id === link.businessUnitId)?.name ?? "事業部不明"} / {isUsers.find((user) => user.id === link.creditedAppointmentSetterId)?.name ?? "担当者不明"}
               </p>
+              <div className="mt-3 rounded-lg bg-slate-50 p-3">
+                <p className="text-xs font-bold text-slate-400">公開入力URL</p>
+                {link.publicUrl ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <a className="break-all text-sm font-bold text-brand-700 underline" href={link.publicUrl} target="_blank" rel="noreferrer">
+                      {link.publicUrl}
+                    </a>
+                    <button className="secondary-button py-2 text-xs" type="button" onClick={() => navigator.clipboard.writeText(link.publicUrl ?? "")}>コピー</button>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-slate-500">
+                    既存リンクのtokenは復元できません。URLを確認するには「リンク再発行」を押してください。
+                  </p>
+                )}
+                <p className="mt-2 text-xs text-slate-400">
+                  外部送信API: <code>/api/public/appointments/[token]</code>
+                </p>
+              </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button className="secondary-button" type="button" disabled={pending} onClick={() => action(link.id, "rotate")}>リンク再発行</button>
                 <button className="secondary-button border-red-200 text-red-600" type="button" disabled={pending || link.status !== "ACTIVE"} onClick={() => action(link.id, "revoke")}>失効</button>

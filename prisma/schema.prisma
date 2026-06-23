@@ -1439,6 +1439,7 @@ model MeetingBooking {
   @@index([organizationId, productId, startsAt])
   @@index([organizationId, campaignId, startsAt])
   @@index([organizationId, callListId, startsAt])
+  @@unique([organizationId, idempotencyKey])
   @@map("meeting_bookings")
 }
 

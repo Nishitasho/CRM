@@ -9,7 +9,7 @@ type HeaderProps = {
   businessUnits: Array<{ id: string; name: string; slug: string }>;
   selectedBusinessUnitId: string | null;
   canSelectAllBusinessUnits: boolean;
-  showAppointmentCta: boolean;
+  canCreateInternalAppointment: boolean;
 };
 
 export function AppHeader({
@@ -19,7 +19,7 @@ export function AppHeader({
   businessUnits,
   selectedBusinessUnitId,
   canSelectAllBusinessUnits,
-  showAppointmentCta,
+  canCreateInternalAppointment,
 }: HeaderProps) {
   const initial =
     user.name.trim().charAt(0) || user.email.charAt(0).toUpperCase();
@@ -44,9 +44,10 @@ export function AppHeader({
         />
       </div>
       <div className="flex items-center gap-3">
-        {showAppointmentCta ? (
-          <Link href="/appointments/new" className="primary-button hidden sm:inline-flex">
-            ＋ アポ登録
+        {canCreateInternalAppointment ? (
+          <Link href="/appointments/new" className="primary-button inline-flex whitespace-nowrap px-3 sm:px-4">
+            <span className="sm:hidden">＋ アポ</span>
+            <span className="hidden sm:inline">＋ アポ登録</span>
           </Link>
         ) : null}
         <div className="hidden text-right sm:block">

@@ -4,6 +4,7 @@ import { ActionPlanPanel } from "@/components/kpi/action-plan-panel";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
+import { jstDateOnly, jstDayEnd } from "@/lib/jst-date";
 import { getKpiDashboardData, getMetricDrilldown } from "@/lib/kpi";
 import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -351,8 +352,8 @@ export default async function ReportsPage({ searchParams }: Props) {
     businessUnitId: businessUnitId || null,
     workFunction: workFunction || null,
     userId: userId || null,
-    periodStart: periodStart ? new Date(`${periodStart}T00:00:00Z`) : undefined,
-    periodEnd: periodEnd ? new Date(`${periodEnd}T00:00:00Z`) : undefined,
+    periodStart: periodStart ? jstDateOnly(periodStart) : undefined,
+    periodEnd: periodEnd ? jstDayEnd(periodEnd) : undefined,
   });
   const drilldown = metricId
     ? await getMetricDrilldown({
@@ -361,15 +362,15 @@ export default async function ReportsPage({ searchParams }: Props) {
         businessUnitId: businessUnitId || null,
         workFunction: workFunction || null,
         userId: userId || null,
-        periodStart: new Date(`${data.filters.periodStart}T00:00:00Z`),
-        periodEnd: new Date(`${data.filters.periodEnd}T00:00:00Z`),
+        periodStart: jstDateOnly(data.filters.periodStart),
+        periodEnd: jstDayEnd(data.filters.periodEnd),
       })
     : null;
   const reportFilter = {
     businessUnitId: businessUnitId || null,
     userId: userId || null,
-    periodStart: new Date(`${data.filters.periodStart}T00:00:00Z`),
-    periodEnd: new Date(`${data.filters.periodEnd}T00:00:00Z`),
+    periodStart: jstDateOnly(data.filters.periodStart),
+    periodEnd: jstDayEnd(data.filters.periodEnd),
   };
   const [
     salesProgress,

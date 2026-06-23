@@ -4,6 +4,7 @@ import { DailyMetricForm } from "@/components/kpi/daily-metric-form";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getAccessibleBusinessUnits } from "@/lib/business-units";
+import { jstDateOnly, jstDateString } from "@/lib/jst-date";
 import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
@@ -16,14 +17,11 @@ function one(value: string | string[] | undefined) {
 }
 
 function todayString() {
-  const today = new Date();
-  return new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()))
-    .toISOString()
-    .slice(0, 10);
+  return jstDateString();
 }
 
 function dateOnly(value: string) {
-  return new Date(`${value}T00:00:00Z`);
+  return jstDateOnly(value);
 }
 
 export default async function DailyMetricsPage({ searchParams }: Props) {

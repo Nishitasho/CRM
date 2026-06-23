@@ -43,11 +43,25 @@ const items = [
   },
 ] as const;
 
-export function MobileNav() {
+const appointmentItem = {
+  href: "/appointments/new",
+  label: "アポ",
+  icon: "forms",
+  activePrefixes: ["/appointments/new"],
+} as const;
+
+export function MobileNav({
+  canCreateInternalAppointment,
+}: {
+  canCreateInternalAppointment: boolean;
+}) {
   const pathname = usePathname();
+  const visibleItems = canCreateInternalAppointment
+    ? [...items.slice(0, 3), appointmentItem, ...items.slice(3, 5)]
+    : items;
   return (
     <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-white px-1 pb-[env(safe-area-inset-bottom)] lg:hidden">
-      {items.map((item) => (
+      {visibleItems.map((item) => (
         <Link
           key={item.href}
           href={item.href}

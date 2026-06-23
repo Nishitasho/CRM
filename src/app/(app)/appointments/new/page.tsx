@@ -3,6 +3,7 @@ import { AppointmentForm } from "@/components/appointments/appointment-form";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getAccessibleBusinessUnits } from "@/lib/business-units";
+import { canCreateInternalAppointment } from "@/lib/internal-appointments";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
 export default async function NewAppointmentPage() {
   const context = await getAuthContext();
   if (!context) redirect("/login");
+  if (!(await canCreateInternalAppointment(context))) redirect("/dashboard");
 
   const businessUnits = await getAccessibleBusinessUnits(context);
   const selectedBusinessUnitId =
@@ -99,7 +101,7 @@ export default async function NewAppointmentPage() {
     <div className="mx-auto max-w-7xl">
       <PageHeading
         eyebrow="IS appointment capture"
-        title="アポ登録"
+        title="IS連携フォーム（アポ登録）"
         description="ISのアポ登録から、会社・担当者・商談・商品明細・予約・KPIを一括作成します。"
       />
       <AppointmentForm

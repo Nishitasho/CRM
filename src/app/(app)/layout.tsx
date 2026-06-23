@@ -4,6 +4,7 @@ import { MobileNav } from "@/components/layout/mobile-nav";
 import { Sidebar } from "@/components/layout/sidebar";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
+import { canCreateInternalAppointment } from "@/lib/internal-appointments";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -22,19 +23,11 @@ export default async function ProtectedLayout({
     orderBy: { createdAt: "asc" },
   });
   const businessUnitSelection = await getBusinessUnitSelection(context);
-  const isMembership = await prisma.businessUnitMembership.findFirst({
-    where: {
-      organizationId: context.organization.id,
-      userId: context.user.id,
-      workFunction: "IS",
-      status: "ACTIVE",
-    },
-    select: { id: true },
-  });
+  const canCreateAppointment = await canCreateInternalAppointment(context);
 
   return (
     <div className="min-h-screen">
-      <Sidebar />
+      <Sidebar canCreateInternalAppointment={canCreateAppointment} />
       <AppHeader
         user={context.user}
         activeOrganizationId={context.organization.id}
@@ -42,12 +35,12 @@ export default async function ProtectedLayout({
         businessUnits={businessUnitSelection.units}
         selectedBusinessUnitId={businessUnitSelection.selectedBusinessUnitId}
         canSelectAllBusinessUnits={businessUnitSelection.canSelectAll}
-        showAppointmentCta={Boolean(isMembership)}
+        canCreateInternalAppointment={canCreateAppointment}
       />
       <main className="px-4 pb-28 pt-6 md:px-8 lg:ml-64 lg:pb-12 lg:pt-7">
         {children}
       </main>
-      <MobileNav />
+      <MobileNav canCreateInternalAppointment={canCreateAppointment} />
     </div>
   );
 }

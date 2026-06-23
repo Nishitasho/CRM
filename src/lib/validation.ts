@@ -199,6 +199,7 @@ export const dealSchema = z.object({
 });
 
 export const dealStageSchema = z.object({
+  pipelineId: optionalUuid,
   stageId: z.string().uuid("ステージを選択してください。"),
   lostReason: optionalText(1000),
   primaryLossReasonId: optionalUuid,

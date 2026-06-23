@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { RecordDetail } from "@/components/crm/record-detail";
 import { DealLineItemManager } from "@/components/deals/deal-line-item-manager";
+import { DealPipelineStageInlineEditor } from "@/components/deals/deal-pipeline-stage-inline-editor";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getRecordActivities } from "@/lib/crm";
@@ -31,6 +32,8 @@ export default async function DealDetailPage({
     products,
     businessUnits,
     lossReasons,
+    dealLossReasons,
+    pipelines,
     lineItemProperties,
     propertyScopes,
   ] = await Promise.all([
@@ -76,6 +79,27 @@ export default async function DealDetailPage({
       orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
       select: { id: true, name: true, requiresNote: true },
     }),
+    prisma.lossReasonDefinition.findMany({
+      where: {
+        organizationId: context.organization.id,
+        isActive: true,
+        applicableScope: { in: ["DEAL", "BOTH"] },
+      },
+      orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
+      select: { id: true, name: true, requiresNote: true },
+    }),
+    prisma.pipeline.findMany({
+      where: { organizationId: context.organization.id },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        stages: {
+          orderBy: { sortOrder: "asc" },
+          select: { id: true, name: true, stageType: true },
+        },
+      },
+    }),
     prisma.customProperty.findMany({
       where: {
         organizationId: context.organization.id,
@@ -116,7 +140,19 @@ export default async function DealDetailPage({
               ? `${Number(item.amount).toLocaleString("ja-JP")}円`
               : null,
           },
-          { label: "ステージ", value: item.stage.name },
+          {
+            label: "パイプライン/ステージ",
+            value: (
+              <DealPipelineStageInlineEditor
+                dealId={id}
+                canEdit={canEdit}
+                currentPipelineId={item.pipelineId}
+                currentStageId={item.stageId}
+                pipelines={pipelines}
+                lossReasons={dealLossReasons}
+              />
+            ),
+          },
           { label: "確度", value: `${item.probability}%` },
           {
             label: "ステータス",

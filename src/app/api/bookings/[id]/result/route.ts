@@ -90,6 +90,29 @@ async function upsertEvent(
   });
 }
 
+async function cancelEvent(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  idempotencyKey: string,
+) {
+  await tx.salesPerformanceEvent.updateMany({
+    where: {
+      organizationId,
+      idempotencyKey,
+      cancelledAt: null,
+    },
+    data: { cancelledAt: new Date() },
+  });
+}
+
+function previousResult(value: Prisma.JsonValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const fsResult = (value as Record<string, unknown>).fsResult;
+  if (!fsResult || typeof fsResult !== "object" || Array.isArray(fsResult)) return null;
+  const result = (fsResult as Record<string, unknown>).result;
+  return typeof result === "string" ? result : null;
+}
+
 export async function POST(request: Request, { params }: Params) {
   try {
     const context = await getAuthContext();
@@ -111,11 +134,10 @@ export async function POST(request: Request, { params }: Params) {
         { status: 404 },
       );
     }
-    const elevated = ["SUPER_ADMIN", "MANAGER"].includes(context.membership.role);
+    const elevated = ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(context.membership.role);
     const ownsBooking =
       booking.hostUserId === context.user.id ||
-      booking.assignedUserId === context.user.id ||
-      booking.setByUserId === context.user.id;
+      booking.assignedUserId === context.user.id;
     if (!elevated && !ownsBooking) {
       return NextResponse.json(
         { message: "この予約結果を更新する権限がありません。" },
@@ -137,6 +159,7 @@ export async function POST(request: Request, { params }: Params) {
           : input.result === "NO_SHOW"
             ? "無断欠席"
             : "キャンセル";
+    const priorResult = previousResult(booking.legacyMetadata);
 
     await prisma.$transaction(async (tx) => {
       await tx.meetingBooking.update({
@@ -156,10 +179,10 @@ export async function POST(request: Request, { params }: Params) {
               : attended
                 ? BookingStatus.ATTENDED
                 : booking.bookingStatus,
-          attendedAt: attended ? occurredAt : booking.attendedAt,
-          noShowAt: noShow ? occurredAt : booking.noShowAt,
-          cancelledAt: cancelled ? occurredAt : booking.cancelledAt,
-          qualificationResult: valid ? "VALID" : invalid ? "INVALID" : booking.qualificationResult,
+          attendedAt: attended ? occurredAt : null,
+          noShowAt: noShow ? occurredAt : null,
+          cancelledAt: cancelled ? occurredAt : null,
+          qualificationResult: valid ? "VALID" : invalid ? "INVALID" : "UNDETERMINED",
           legacyMetadata: {
             ...(booking.legacyMetadata &&
             typeof booking.legacyMetadata === "object" &&
@@ -183,13 +206,23 @@ export async function POST(request: Request, { params }: Params) {
         await tx.deal.update({
           where: { id: booking.dealId },
           data: {
-            qualificationResult: valid ? "VALID" : invalid ? "INVALID" : booking.qualificationResult,
+            qualificationResult: valid ? "VALID" : invalid ? "INVALID" : "UNDETERMINED",
             nextAction: input.nextAction ?? undefined,
             nextActionDate: input.nextActionDate ?? undefined,
           },
         });
       }
+      if (!attended) {
+        await cancelEvent(tx, context.organization.id, `booking-result:${booking.id}:attended`);
+        await cancelEvent(tx, context.organization.id, `booking-result:${booking.id}:valid`);
+        await cancelEvent(tx, context.organization.id, `booking-result:${booking.id}:invalid`);
+      }
       if (attended) {
+        await cancelEvent(
+          tx,
+          context.organization.id,
+          `booking-result:${booking.id}:${valid ? "invalid" : "valid"}`,
+        );
         await upsertEvent(tx, {
           organizationId: context.organization.id,
           businessUnitId: booking.businessUnitId,
@@ -233,7 +266,7 @@ export async function POST(request: Request, { params }: Params) {
           },
         });
       }
-      if (booking.dealId) {
+      if (booking.dealId && priorResult !== input.result) {
         await createRecordActivity(tx, {
           organizationId: context.organization.id,
           actorUserId: context.user.id,

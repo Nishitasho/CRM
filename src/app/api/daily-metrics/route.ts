@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { assertBusinessUnitAccess } from "@/lib/business-units";
+import { dimensionHash, dimensionsJson, normalizeDimensions } from "@/lib/dimensions";
 import {
   AuthorizationError,
   hasPermission,
@@ -11,14 +12,6 @@ import {
 } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { dailyMetricsPutSchema, metricQuerySchema } from "@/lib/validation";
-
-function dimensionHash(dimensions: Record<string, unknown>) {
-  const entries = Object.entries(dimensions)
-    .filter(([, value]) => value !== null && value !== undefined && value !== "")
-    .sort(([a], [b]) => a.localeCompare(b));
-  if (!entries.length) return "default";
-  return entries.map(([key, value]) => `${key}:${String(value)}`).join("|").slice(0, 80);
-}
 
 export async function GET(request: Request) {
   try {
@@ -76,6 +69,8 @@ export async function PUT(request: Request) {
     }
     const metadata = getRequestMetadata(request);
     const hash = dimensionHash(input.dimensions);
+    const normalizedDimensions = normalizeDimensions(input.dimensions);
+    const normalizedDimensionsJson = dimensionsJson(input.dimensions);
     const items = await prisma.$transaction(async (tx) => {
       const results = [];
       for (const entry of input.entries) {
@@ -117,7 +112,7 @@ export async function PUT(request: Request) {
               data: {
                 value: entry.value,
                 comment: entry.comment,
-                dimensions: input.dimensions as Prisma.InputJsonValue,
+                dimensions: normalizedDimensionsJson,
                 dimensionHash: hash,
                 status: existing.status === "LOCKED" ? "LOCKED" : "DRAFT",
               },
@@ -132,8 +127,9 @@ export async function PUT(request: Request) {
                 metricDefinitionId: entry.metricDefinitionId,
                 value: entry.value,
                 comment: entry.comment,
-                dimensions: input.dimensions as Prisma.InputJsonValue,
+                dimensions: normalizedDimensionsJson,
                 dimensionHash: hash,
+                metadata: { normalizedDimensions },
               },
             });
         await tx.auditLog.create({

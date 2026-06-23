@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import { assertBusinessUnitAccess } from "@/lib/business-units";
 import { syncCrossSellPerformanceEvents } from "@/lib/cross-sell-events";
 import { canEditRecord, canViewRecord, createRecordActivity } from "@/lib/crm";
 import { prisma } from "@/lib/prisma";
@@ -25,7 +26,7 @@ export async function PATCH(request: Request, { params }: Params) {
         organizationId: context.organization.id,
         deletedAt: null,
       },
-      include: { stage: true },
+      include: { pipeline: true, stage: true },
     });
     if (!current)
       return NextResponse.json(
@@ -40,10 +41,29 @@ export async function PATCH(request: Request, { params }: Params) {
     canEditRecord(context, current.ownerUserId);
 
     const input = dealStageSchema.parse(await request.json());
+    const pipelineId = input.pipelineId ?? current.pipelineId;
+    const pipeline = await prisma.pipeline.findFirst({
+      where: {
+        id: pipelineId,
+        organizationId: context.organization.id,
+      },
+      select: { id: true, name: true, businessUnitId: true },
+    });
+    if (!pipeline)
+      return NextResponse.json(
+        { message: "パイプラインが見つかりません。" },
+        { status: 400 },
+      );
+    if (!(await assertBusinessUnitAccess(context, pipeline.businessUnitId))) {
+      return NextResponse.json(
+        { message: "この事業部の商談を編集する権限がありません。" },
+        { status: 403 },
+      );
+    }
     const stage = await prisma.pipelineStage.findFirst({
       where: {
         id: input.stageId,
-        pipelineId: current.pipelineId,
+        pipelineId: pipeline.id,
         organizationId: context.organization.id,
       },
     });
@@ -63,6 +83,7 @@ export async function PATCH(request: Request, { params }: Params) {
           id: input.primaryLossReasonId,
           organizationId: context.organization.id,
           isActive: true,
+          applicableScope: { in: ["DEAL", "BOTH"] },
         },
       });
       if (!reason)
@@ -94,7 +115,9 @@ export async function PATCH(request: Request, { params }: Params) {
       const updated = await tx.deal.update({
         where: { id },
         data: {
+          pipelineId: pipeline.id,
           stageId: stage.id,
+          businessUnitId: pipeline.businessUnitId,
           probability: stage.probability,
           status: stage.stageType,
           lostReason: stage.stageType === "LOST" ? input.lostReason : null,
@@ -114,20 +137,27 @@ export async function PATCH(request: Request, { params }: Params) {
         },
       });
 
-      if (current.stageId !== stage.id)
+      if (current.stageId !== stage.id || current.pipelineId !== pipeline.id)
         await createRecordActivity(tx, {
           organizationId: context.organization.id,
           actorUserId: context.user.id,
           objectType: "DEAL",
           objectId: id,
           type: "STAGE_CHANGED",
-          title: `ステージを「${stage.name}」へ変更しました`,
+          title: `パイプライン/ステージを「${pipeline.name} ・ ${stage.name}」へ変更しました`,
           metadata: {
             before: {
+              pipelineId: current.pipelineId,
+              pipelineName: current.pipeline.name,
               stageId: current.stageId,
               stageName: current.stage.name,
             },
-            after: { stageId: stage.id, stageName: stage.name },
+            after: {
+              pipelineId: pipeline.id,
+              pipelineName: pipeline.name,
+              stageId: stage.id,
+              stageName: stage.name,
+            },
           },
         });
 

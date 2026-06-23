@@ -341,12 +341,14 @@ export async function createInternalAppointment(
   if (!(await assertBusinessUnitAccess(context, input.businessUnitId))) {
     throw new BadRequestError("事業部が見つかりません。");
   }
-  const existingSubmission = await prisma.formSubmission.findFirst({
-    where: {
-      organizationId: context.organization.id,
-      idempotencyKey: input.idempotencyKey,
-    },
-  });
+  const loadSubmission = () =>
+    prisma.formSubmission.findFirst({
+      where: {
+        organizationId: context.organization.id,
+        idempotencyKey: input.idempotencyKey,
+      },
+    });
+  const existingSubmission = await loadSubmission();
   if (existingSubmission) {
     return {
       duplicated: true,
@@ -360,8 +362,9 @@ export async function createInternalAppointment(
 
   const appointmentSetterUserId =
     input.appointmentSetterUserId ?? context.user.id;
-  const syncLater: { bookingId: string; enabled: boolean } = await prisma.$transaction(
-    async (tx) => {
+  let syncLater: { bookingId: string; enabled: boolean };
+  try {
+    syncLater = await prisma.$transaction(async (tx) => {
       const assignedFsUserId = await resolveFsUser(
         tx,
         context.organization.id,
@@ -682,8 +685,26 @@ export async function createInternalAppointment(
         occurredAt: input.appointmentAcquiredAt,
       });
       return { bookingId: booking.id, enabled: Boolean(input.googleCalendarEnabled && assignedFsUserId) };
-    },
-  );
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const duplicated = await loadSubmission();
+      if (duplicated) {
+        return {
+          duplicated: true,
+          formSubmissionId: duplicated.id,
+          companyId: duplicated.companyId,
+          contactId: duplicated.contactId,
+          dealId: duplicated.dealId,
+          meetingBookingId: duplicated.meetingBookingId,
+        };
+      }
+    }
+    throw error;
+  }
   if (syncLater.enabled) {
     await prisma.$transaction((tx) => syncBookingToGoogle(tx, syncLater.bookingId));
   }

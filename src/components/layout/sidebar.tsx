@@ -9,6 +9,12 @@ const navigation = [
   { href: "/reports", label: "レポート", icon: "reports" },
   { href: "/daily-metrics", label: "行動入力", icon: "tasks" },
   {
+    href: "/appointments/new",
+    label: "IS連携フォーム",
+    icon: "forms",
+    requiresAppointmentAccess: true,
+  },
+  {
     href: "/companies",
     label: "会社",
     icon: "contacts",
@@ -36,7 +42,11 @@ const navigation = [
   { href: "/settings", label: "設定", icon: "settings" },
 ] as const;
 
-export function Sidebar() {
+export function Sidebar({
+  canCreateInternalAppointment,
+}: {
+  canCreateInternalAppointment: boolean;
+}) {
   const pathname = usePathname();
 
   return (
@@ -48,33 +58,40 @@ export function Sidebar() {
         SalesNest
       </div>
       <nav className="flex-1 space-y-1 px-3 py-5">
-        {navigation.map((item) => {
-          const prefixes =
-            "activePrefixes" in item ? item.activePrefixes : [item.href];
-          const active =
-            prefixes.some(
-              (prefix) =>
-                pathname === prefix || pathname.startsWith(`${prefix}/`),
-            ) &&
-            !(item.href === "/deals" && pathname.startsWith("/deals/board"));
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition ${
-                active
-                  ? "bg-white/10 text-white shadow-sm ring-1 ring-white/10"
-                  : "text-white/60 hover:bg-white/10 hover:text-white"
-              }`}
-            >
-              <Icon
-                name={item.icon}
-                className={`h-[18px] w-[18px] ${active ? "text-brand-500" : ""}`}
-              />
-              {item.label}
-            </Link>
-          );
-        })}
+        {navigation
+          .filter(
+            (item) =>
+              !("requiresAppointmentAccess" in item) ||
+              !item.requiresAppointmentAccess ||
+              canCreateInternalAppointment,
+          )
+          .map((item) => {
+            const prefixes =
+              "activePrefixes" in item ? item.activePrefixes : [item.href];
+            const active =
+              prefixes.some(
+                (prefix) =>
+                  pathname === prefix || pathname.startsWith(`${prefix}/`),
+              ) &&
+              !(item.href === "/deals" && pathname.startsWith("/deals/board"));
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-semibold transition ${
+                  active
+                    ? "bg-white/10 text-white shadow-sm ring-1 ring-white/10"
+                    : "text-white/60 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Icon
+                  name={item.icon}
+                  className={`h-[18px] w-[18px] ${active ? "text-brand-500" : ""}`}
+                />
+                {item.label}
+              </Link>
+            );
+          })}
       </nav>
       <div className="m-4 rounded-lg border border-white/10 bg-white/[0.04] p-4">
         <p className="text-xs font-bold text-brand-500">CRM READY</p>

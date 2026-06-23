@@ -25,6 +25,12 @@ function todayString() {
   return jstDateString();
 }
 
+function safeDateString(value: string | undefined) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return todayString();
+  const parsed = jstDateOnly(value);
+  return Number.isNaN(parsed.getTime()) ? todayString() : value;
+}
+
 function dateOnly(value: string) {
   return jstDateOnly(value);
 }
@@ -44,7 +50,7 @@ export default async function DailyMetricsPage({ searchParams }: Props) {
   const businessUnits = scope.businessUnits;
   const selectedBusinessUnitId = scope.selectedBusinessUnitId;
   const selectedWorkFunction = scope.selectedWorkFunction;
-  const targetDate = one(params.targetDate) ?? todayString();
+  const targetDate = safeDateString(one(params.targetDate));
   if (!selectedBusinessUnitId) redirect("/dashboard");
   const userOptions = await getDailyMetricUserOptions({
     organizationId: context.organization.id,

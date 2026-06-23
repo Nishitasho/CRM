@@ -49,6 +49,8 @@ if (process.env.BOOTSTRAP_DATABASE_ON_BUILD === "true") {
   }
   console.info("Running production database migrations...");
   run(bin("prisma"), ["migrate", "deploy"], bootstrapEnv);
+  console.info("Verifying production database schema...");
+  run("node", ["scripts/verify-production-schema.mjs"], bootstrapEnv);
   if (process.env.BOOTSTRAP_SEED_ON_BUILD === "true") {
     console.info("Running production seed...");
     run(bin("tsx"), ["prisma/seed.ts"], bootstrapEnv);

@@ -34,6 +34,8 @@ export default async function DealDetailPage({
     lossReasons,
     dealLossReasons,
     pipelines,
+    ownerOptions,
+    forecastCategories,
     lineItemProperties,
     propertyScopes,
   ] = await Promise.all([
@@ -100,6 +102,16 @@ export default async function DealDetailPage({
         },
       },
     }),
+    prisma.organizationMember.findMany({
+      where: { organizationId: context.organization.id, status: "ACTIVE" },
+      select: { user: { select: { id: true, name: true } } },
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.forecastCategory.findMany({
+      where: { organizationId: context.organization.id, status: "ACTIVE" },
+      select: { id: true, name: true },
+      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
+    }),
     prisma.customProperty.findMany({
       where: {
         organizationId: context.organization.id,
@@ -133,16 +145,34 @@ export default async function DealDetailPage({
       <RecordDetail
         objectType="DEAL"
         objectId={id}
-        fields={[
+        fields={[]}
+        properties={[
           {
-            label: "金額",
-            value: item.amount
-              ? `${Number(item.amount).toLocaleString("ja-JP")}円`
-              : null,
+            key: "name",
+            label: "商談名",
+            value: item.name,
+            formattedValue: item.name,
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: true,
+            isRequired: true,
           },
           {
+            key: "amount",
+            label: "金額",
+            value: item.amount ? Number(item.amount) : null,
+            formattedValue: item.amount
+              ? `${Number(item.amount).toLocaleString("ja-JP")}円`
+              : null,
+            fieldType: "CURRENCY",
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "pipelineStage",
             label: "パイプライン/ステージ",
-            value: (
+            value: item.stageId,
+            formattedValue: (
               <DealPipelineStageInlineEditor
                 dealId={id}
                 canEdit={canEdit}
@@ -152,33 +182,59 @@ export default async function DealDetailPage({
                 lossReasons={dealLossReasons}
               />
             ),
+            fieldType: "SELECT",
+            isCustom: false,
+            isEditable: false,
           },
-          { label: "確度", value: `${item.probability}%` },
+          { key: "probability", label: "確度", value: item.probability, formattedValue: `${item.probability}%`, fieldType: "PERCENTAGE", isCustom: false, isEditable: false },
           {
+            key: "status",
             label: "ステータス",
-            value:
+            value: item.status,
+            formattedValue:
               item.status === "WON"
                 ? "受注"
                 : item.status === "LOST"
                   ? "失注"
                   : "進行中",
+            fieldType: "SELECT",
+            isCustom: false,
+            isEditable: false,
           },
           {
+            key: "expectedCloseDate",
             label: "受注予定日",
-            value: item.expectedCloseDate
+            value: item.expectedCloseDate,
+            formattedValue: item.expectedCloseDate
               ? new Intl.DateTimeFormat("ja-JP").format(item.expectedCloseDate)
               : null,
+            fieldType: "DATE",
+            isCustom: false,
+            isEditable: true,
           },
           {
+            key: "closeDate",
             label: "クローズ日",
-            value: item.closeDate
+            value: item.closeDate,
+            formattedValue: item.closeDate
               ? new Intl.DateTimeFormat("ja-JP").format(item.closeDate)
               : null,
+            fieldType: "DATE",
+            isCustom: false,
+            isEditable: true,
           },
-          { label: "失注理由", value: item.lostReason },
-          { label: "担当者", value: item.owner?.name },
-          { label: "流入元", value: item.source },
-          ...customFields,
+          { key: "ownerUserId", label: "担当者", value: item.ownerUserId, formattedValue: item.owner?.name, fieldType: "OWNER", options: ownerOptions.map((member) => ({ value: member.user.id, label: member.user.name })), isCustom: false, isEditable: true },
+          { key: "source", label: "流入元", value: item.source, formattedValue: item.source, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "decisionMakerStatus", label: "決裁者区分", value: item.decisionMakerStatus, formattedValue: item.decisionMakerStatus, fieldType: "SELECT", options: [
+            { value: "DECISION_MAKER", label: "決裁者" },
+            { value: "NON_DECISION_MAKER", label: "非決裁者" },
+            { value: "UNKNOWN", label: "不明" },
+          ], isCustom: false, isEditable: true },
+          { key: "nextAction", label: "次回アクション", value: item.nextAction, formattedValue: item.nextAction, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "nextActionDate", label: "次回アクション日", value: item.nextActionDate, formattedValue: item.nextActionDate ? new Intl.DateTimeFormat("ja-JP").format(item.nextActionDate) : null, fieldType: "DATE", isCustom: false, isEditable: true },
+          { key: "nextActionOwnerId", label: "次回アクション担当", value: item.nextActionOwnerId, formattedValue: ownerOptions.find((member) => member.user.id === item.nextActionOwnerId)?.user.name, fieldType: "OWNER", options: ownerOptions.map((member) => ({ value: member.user.id, label: member.user.name })), isCustom: false, isEditable: true },
+          { key: "forecastCategoryId", label: "Forecast", value: item.forecastCategoryId, formattedValue: forecastCategories.find((category) => category.id === item.forecastCategoryId)?.name, fieldType: "SELECT", options: forecastCategories.map((category) => ({ value: category.id, label: category.name })), isCustom: false, isEditable: true },
+          ...customFields.map((field) => field.descriptor),
         ]}
         activities={activities}
         related={related}

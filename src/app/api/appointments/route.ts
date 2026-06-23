@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     requirePermission(context.membership.role, Permission.CRM_WRITE);
     if (!(await canCreateInternalAppointment(context))) {
       return NextResponse.json(
-        { message: "IS所属ユーザーのみアポ登録できます。" },
+        { message: "アポ登録できる権限がありません。" },
         { status: 403 },
       );
     }

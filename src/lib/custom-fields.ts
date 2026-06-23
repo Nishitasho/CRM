@@ -1,4 +1,5 @@
 import { CustomPropertyObjectType } from "@prisma/client";
+import type { RecordPropertyDescriptor } from "@/components/crm/inline-property-field";
 import { prisma } from "@/lib/prisma";
 
 export async function getCustomFieldDetails(
@@ -15,10 +16,41 @@ export async function getCustomFieldDetails(
       ? (rawValues as Record<string, unknown>)
       : {};
 
-  return properties.map((property) => ({
-    label: property.label,
-    value: formatCustomValue(values[property.name], property.fieldType),
-  }));
+  return properties.map((property) => {
+    const rawValue = values[property.name] ?? null;
+    const formattedValue = formatCustomValue(rawValue, property.fieldType);
+    return {
+      label: property.label,
+      value: formattedValue,
+      descriptor: {
+        key: `customFields.${property.name}`,
+        label: property.label,
+        value: rawValue,
+        formattedValue,
+        fieldType: property.fieldType,
+        options: customOptions(property.options),
+        isCustom: true,
+        isEditable: true,
+        isRequired: property.isRequired,
+      } satisfies RecordPropertyDescriptor,
+    };
+  });
+}
+
+function customOptions(value: unknown) {
+  const items = Array.isArray(value) ? value : [];
+  return items
+    .map((item) => {
+      if (typeof item === "string") return { value: item, label: item };
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const optionValue = String(record.value ?? record.label ?? "");
+        const optionLabel = String(record.label ?? record.value ?? "");
+        return optionValue ? { value: optionValue, label: optionLabel } : null;
+      }
+      return null;
+    })
+    .filter((item) => item !== null);
 }
 
 function formatCustomValue(value: unknown, fieldType: string) {

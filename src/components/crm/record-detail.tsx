@@ -1,6 +1,7 @@
 import { ActivityComposer } from "./activity-composer";
 import { AssociationManager } from "./association-manager";
 import { EmailLogComposer } from "./email-log-composer";
+import { RecordPropertyDescriptor, RecordPropertyList } from "./inline-property-field";
 import { RecordActions } from "./record-actions";
 
 type Activity = {
@@ -25,6 +26,7 @@ export function RecordDetail({
   objectType,
   objectId,
   fields,
+  properties,
   activities,
   related,
   options,
@@ -37,6 +39,7 @@ export function RecordDetail({
   objectType: "CONTACT" | "COMPANY" | "DEAL";
   objectId: string;
   fields: Array<{ label: string; value: React.ReactNode }>;
+  properties?: RecordPropertyDescriptor[];
   activities: Activity[];
   related: Related[];
   options: Record<"CONTACT" | "COMPANY" | "DEAL", Option[]>;
@@ -59,18 +62,27 @@ export function RecordDetail({
               canDelete={canDelete}
             />
           </div>
-          <dl className="mt-5 space-y-4">
-            {fields.map((field) => (
-              <div key={field.label}>
-                <dt className="text-xs font-semibold text-slate-400">
-                  {field.label}
-                </dt>
-                <dd className="mt-1 break-words text-sm font-medium text-ink">
-                  {field.value || "未設定"}
-                </dd>
-              </div>
-            ))}
-          </dl>
+          {properties ? (
+            <RecordPropertyList
+              objectType={objectType}
+              objectId={objectId}
+              properties={properties}
+              canEdit={canEdit}
+            />
+          ) : (
+            <dl className="mt-5 space-y-4">
+              {fields.map((field) => (
+                <div key={field.label}>
+                  <dt className="text-xs font-semibold text-slate-400">
+                    {field.label}
+                  </dt>
+                  <dd className="mt-1 break-words text-sm font-medium text-ink">
+                    {field.value || "未設定"}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
         </section>
       </aside>
       <main className="space-y-4">

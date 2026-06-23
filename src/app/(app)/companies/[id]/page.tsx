@@ -52,6 +52,11 @@ export default async function CompanyDetailPage({
         orderBy: [{ isPrimary: "desc" }, { createdAt: "desc" }],
       }),
     ]);
+  const ownerOptions = await prisma.organizationMember.findMany({
+    where: { organizationId: context.organization.id, status: "ACTIVE" },
+    select: { user: { select: { id: true, name: true } } },
+    orderBy: { createdAt: "asc" },
+  });
   const contactIds = contactLinks.map((link) =>
     link.sourceObjectType === ObjectType.CONTACT
       ? link.sourceObjectId
@@ -110,33 +115,77 @@ export default async function CompanyDetailPage({
       <RecordDetail
         objectType="COMPANY"
         objectId={id}
-        fields={[
-          { label: "ドメイン", value: item.domain },
-          { label: "電話", value: item.phone },
-          { label: "業種", value: item.industry },
-          { label: "Webサイト", value: item.websiteUrl },
+        fields={[]}
+        properties={[
           {
-            label: "所在地",
-            value: [item.prefecture, item.city, item.address]
-              .filter(Boolean)
-              .join(" "),
+            key: "name",
+            label: "会社名",
+            value: item.name,
+            formattedValue: item.name,
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: true,
+            isRequired: true,
           },
           {
+            key: "domain",
+            label: "ドメイン",
+            value: item.domain,
+            formattedValue: item.domain,
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: true,
+          },
+          { key: "phone", label: "電話", value: item.phone, formattedValue: item.phone, fieldType: "PHONE", isCustom: false, isEditable: true },
+          { key: "industry", label: "業種", value: item.industry, formattedValue: item.industry, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "websiteUrl", label: "Webサイト", value: item.websiteUrl, formattedValue: item.websiteUrl, fieldType: "URL", isCustom: false, isEditable: true },
+          { key: "postalCode", label: "郵便番号", value: item.postalCode, formattedValue: item.postalCode, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "prefecture", label: "都道府県", value: item.prefecture, formattedValue: item.prefecture, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "city", label: "市区町村", value: item.city, formattedValue: item.city, fieldType: "TEXT", isCustom: false, isEditable: true },
+          { key: "address", label: "住所", value: item.address, formattedValue: item.address, fieldType: "TEXT", isCustom: false, isEditable: true },
+          {
+            key: "employeeCount",
             label: "従業員数",
-            value: item.employeeCount?.toLocaleString("ja-JP"),
+            value: item.employeeCount,
+            formattedValue: item.employeeCount?.toLocaleString("ja-JP"),
+            fieldType: "NUMBER",
+            isCustom: false,
+            isEditable: true,
           },
           {
+            key: "annualRevenue",
             label: "年間売上",
-            value: item.annualRevenue
+            value: item.annualRevenue ? Number(item.annualRevenue) : null,
+            formattedValue: item.annualRevenue
               ? `${Number(item.annualRevenue).toLocaleString("ja-JP")}円`
               : null,
+            fieldType: "CURRENCY",
+            isCustom: false,
+            isEditable: true,
           },
-          { label: "担当者", value: item.owner?.name },
           {
-            label: "作成日",
-            value: new Intl.DateTimeFormat("ja-JP").format(item.createdAt),
+            key: "ownerUserId",
+            label: "担当者",
+            value: item.ownerUserId,
+            formattedValue: item.owner?.name,
+            fieldType: "OWNER",
+            options: ownerOptions.map((member) => ({
+              value: member.user.id,
+              label: member.user.name,
+            })),
+            isCustom: false,
+            isEditable: true,
           },
-          ...customFields,
+          {
+            key: "createdAt",
+            label: "作成日",
+            value: item.createdAt,
+            formattedValue: new Intl.DateTimeFormat("ja-JP").format(item.createdAt),
+            fieldType: "DATE",
+            isCustom: false,
+            isEditable: false,
+          },
+          ...customFields.map((field) => field.descriptor),
         ]}
         activities={activities}
         related={related}

@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type Option = { id: string; name: string };
+type UserOption = Option & { businessUnitId: string };
 type ProductOption = Option & { businessUnitIds: string[] };
 type CallListOption = Option & {
   campaignId: string | null;
@@ -71,8 +72,8 @@ export function AppointmentForm({
   businessUnits: Option[];
   selectedBusinessUnitId: string;
   currentUserId: string;
-  users: Option[];
-  fsUsers: Option[];
+  users: UserOption[];
+  fsUsers: UserOption[];
   products: ProductOption[];
   industries: Option[];
   territories: Option[];
@@ -86,10 +87,30 @@ export function AppointmentForm({
   const [created, setCreated] = useState<CreatedLinks | null>(null);
   const [sourceChannel, setSourceChannel] = useState("OUTBOUND_CALL");
   const [selectedCallListId, setSelectedCallListId] = useState("");
+  const [businessUnitId, setBusinessUnitId] = useState(selectedBusinessUnitId);
+  const [appointmentSetterUserId, setAppointmentSetterUserId] = useState(currentUserId);
+  const [assignedFsUserId, setAssignedFsUserId] = useState("");
   const selectedCallList = useMemo(
     () => callLists.find((item) => item.id === selectedCallListId) ?? null,
     [callLists, selectedCallListId],
   );
+  const filteredIsUsers = useMemo(
+    () => users.filter((user) => user.businessUnitId === businessUnitId),
+    [businessUnitId, users],
+  );
+  const filteredFsUsers = useMemo(
+    () => fsUsers.filter((user) => user.businessUnitId === businessUnitId),
+    [businessUnitId, fsUsers],
+  );
+
+  useEffect(() => {
+    if (!filteredIsUsers.some((user) => user.id === appointmentSetterUserId)) {
+      setAppointmentSetterUserId(filteredIsUsers[0]?.id ?? "");
+    }
+    if (assignedFsUserId && !filteredFsUsers.some((user) => user.id === assignedFsUserId)) {
+      setAssignedFsUserId("");
+    }
+  }, [assignedFsUserId, appointmentSetterUserId, filteredFsUsers, filteredIsUsers]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -102,9 +123,9 @@ export function AppointmentForm({
       prefectures.find(([code]) => code === prefectureCode)?.[1] ?? "";
     const body = {
       idempotencyKey: value(form, "idempotencyKey"),
-      businessUnitId: value(form, "businessUnitId"),
-      appointmentSetterUserId: value(form, "appointmentSetterUserId"),
-      assignedFsUserId: value(form, "assignedFsUserId"),
+      businessUnitId,
+      appointmentSetterUserId,
+      assignedFsUserId,
       assignmentMode: value(form, "assignmentMode"),
       appointmentAcquiredAt: new Date(value(form, "appointmentAcquiredAt")).toISOString(),
       sourceChannel: value(form, "sourceChannel"),
@@ -185,6 +206,11 @@ export function AppointmentForm({
           {error}
         </p>
       ) : null}
+      {filteredIsUsers.length === 0 ? (
+        <p role="alert" className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+          この事業部にはIS担当者が設定されていません。
+        </p>
+      ) : null}
       {created ? (
         <div role="status" className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
           <p className="font-bold">
@@ -203,21 +229,42 @@ export function AppointmentForm({
         <div className="mt-5 grid gap-4 md:grid-cols-3">
           <label>
             <span className="field-label">事業部</span>
-            <select className="text-field" name="businessUnitId" defaultValue={selectedBusinessUnitId} required>
+            <select
+              className="text-field"
+              name="businessUnitId"
+              value={businessUnitId}
+              onChange={(event) => {
+                setBusinessUnitId(event.target.value);
+                setSelectedCallListId("");
+              }}
+              required
+            >
               {businessUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}
             </select>
           </label>
           <label>
             <span className="field-label">IS担当者</span>
-            <select className="text-field" name="appointmentSetterUserId" defaultValue={currentUserId}>
-              {users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+            <select
+              className="text-field"
+              name="appointmentSetterUserId"
+              value={appointmentSetterUserId}
+              onChange={(event) => setAppointmentSetterUserId(event.target.value)}
+              required
+            >
+              <option value="">選択してください</option>
+              {filteredIsUsers.map((user) => <option key={`${user.businessUnitId}:${user.id}`} value={user.id}>{user.name}</option>)}
             </select>
           </label>
           <label>
             <span className="field-label">FS担当者</span>
-            <select className="text-field" name="assignedFsUserId" defaultValue="">
+            <select
+              className="text-field"
+              name="assignedFsUserId"
+              value={assignedFsUserId}
+              onChange={(event) => setAssignedFsUserId(event.target.value)}
+            >
               <option value="">未割当/自動割当</option>
-              {fsUsers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
+              {filteredFsUsers.map((user) => <option key={`${user.businessUnitId}:${user.id}`} value={user.id}>{user.name}</option>)}
             </select>
           </label>
           <label>
@@ -464,7 +511,7 @@ export function AppointmentForm({
       </section>
 
       <div className="sticky bottom-4 flex justify-end">
-        <button className="primary-button min-w-40" disabled={pending}>
+        <button className="primary-button min-w-40" disabled={pending || filteredIsUsers.length === 0}>
           {pending ? "保存中..." : "アポ登録"}
         </button>
       </div>

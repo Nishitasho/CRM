@@ -3,7 +3,11 @@ import { AppointmentForm } from "@/components/appointments/appointment-form";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getAccessibleBusinessUnits } from "@/lib/business-units";
-import { canCreateInternalAppointment } from "@/lib/internal-appointments";
+import {
+  canAdministrateInternalAppointments,
+  canCreateInternalAppointment,
+  getInternalAppointmentUsers,
+} from "@/lib/internal-appointments";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -13,12 +17,27 @@ export default async function NewAppointmentPage() {
   if (!context) redirect("/login");
   if (!(await canCreateInternalAppointment(context))) redirect("/dashboard");
 
-  const businessUnits = await getAccessibleBusinessUnits(context);
+  const canAdminister = canAdministrateInternalAppointments(context);
+  const businessUnits = canAdminister
+    ? await getAccessibleBusinessUnits(context)
+    : (
+        await prisma.businessUnitMembership.findMany({
+          where: {
+            organizationId: context.organization.id,
+            userId: context.user.id,
+            workFunction: "IS",
+            status: "ACTIVE",
+            businessUnit: { status: "ACTIVE" },
+          },
+          select: { businessUnit: { select: { id: true, name: true, slug: true } } },
+          orderBy: [{ businessUnit: { displayOrder: "asc" } }],
+        })
+      ).map((membership) => membership.businessUnit);
   const selectedBusinessUnitId =
     context.membership.selectedBusinessUnitId ?? businessUnits[0]?.id ?? "";
   const [
-    members,
-    fsMemberships,
+    isUsers,
+    fsUsers,
     products,
     industries,
     territories,
@@ -26,19 +45,13 @@ export default async function NewAppointmentPage() {
     callLists,
     companies,
   ] = await Promise.all([
-    prisma.organizationMember.findMany({
-      where: { organizationId: context.organization.id, status: "ACTIVE" },
-      select: { user: { select: { id: true, name: true } } },
-      orderBy: { createdAt: "asc" },
+    getInternalAppointmentUsers({
+      organizationId: context.organization.id,
+      workFunction: "IS",
     }),
-    prisma.businessUnitMembership.findMany({
-      where: {
-        organizationId: context.organization.id,
-        workFunction: "FS",
-        status: "ACTIVE",
-      },
-      select: { user: { select: { id: true, name: true } } },
-      orderBy: { createdAt: "asc" },
+    getInternalAppointmentUsers({
+      organizationId: context.organization.id,
+      workFunction: "FS",
     }),
     prisma.product.findMany({
       where: { organizationId: context.organization.id, status: "ACTIVE" },
@@ -108,8 +121,8 @@ export default async function NewAppointmentPage() {
         businessUnits={businessUnits}
         selectedBusinessUnitId={selectedBusinessUnitId}
         currentUserId={context.user.id}
-        users={members.map((member) => member.user)}
-        fsUsers={fsMemberships.map((membership) => membership.user)}
+        users={isUsers}
+        fsUsers={fsUsers}
         products={products.map((product) => ({
           id: product.id,
           name: product.name,

@@ -88,7 +88,7 @@ CREATE INDEX "sales_territories_organization_id_business_unit_id_is_active_displ
   ON "sales_territories"("organization_id", "business_unit_id", "is_active", "display_order");
 ALTER TABLE "sales_territories"
   ADD CONSTRAINT "sales_territories_organization_id_fkey"
-  FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("organization_id") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 CREATE TABLE "industries" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -108,7 +108,7 @@ CREATE INDEX "industries_organization_id_parent_id_is_active_display_order_idx"
   ON "industries"("organization_id", "parent_id", "is_active", "display_order");
 ALTER TABLE "industries"
   ADD CONSTRAINT "industries_organization_id_fkey"
-  FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("organization_id") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "industries"
   ADD CONSTRAINT "industries_parent_id_fkey"
   FOREIGN KEY ("parent_id") REFERENCES "industries"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -139,7 +139,7 @@ CREATE INDEX "outbound_campaigns_organization_id_industry_id_idx"
   ON "outbound_campaigns"("organization_id", "industry_id");
 ALTER TABLE "outbound_campaigns"
   ADD CONSTRAINT "outbound_campaigns_organization_id_fkey"
-  FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("organization_id") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 CREATE TABLE "call_lists" (
   "id" UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -169,4 +169,4 @@ CREATE INDEX "call_lists_organization_id_industry_id_idx"
   ON "call_lists"("organization_id", "industry_id");
 ALTER TABLE "call_lists"
   ADD CONSTRAINT "call_lists_organization_id_fkey"
-  FOREIGN KEY ("organization_id") REFERENCES "organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  FOREIGN KEY ("organization_id") REFERENCES "Organization"("id") ON DELETE CASCADE ON UPDATE CASCADE;

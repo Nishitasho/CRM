@@ -32,6 +32,21 @@ if (process.env.BOOTSTRAP_DATABASE_ON_BUILD === "true") {
     process.exit(1);
   }
   const bootstrapEnv = { ...process.env, DATABASE_URL: databaseUrl };
+  if (process.env.PRISMA_RESOLVE_ROLLED_BACK_MIGRATION) {
+    console.info(
+      `Resolving rolled back migration ${process.env.PRISMA_RESOLVE_ROLLED_BACK_MIGRATION}...`,
+    );
+    run(
+      bin("prisma"),
+      [
+        "migrate",
+        "resolve",
+        "--rolled-back",
+        process.env.PRISMA_RESOLVE_ROLLED_BACK_MIGRATION,
+      ],
+      bootstrapEnv,
+    );
+  }
   console.info("Running production database migrations...");
   run(bin("prisma"), ["migrate", "deploy"], bootstrapEnv);
   if (process.env.BOOTSTRAP_SEED_ON_BUILD === "true") {

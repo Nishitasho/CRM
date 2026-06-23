@@ -10,6 +10,7 @@ type IconName =
   | "settings"
   | "bell"
   | "plus"
+  | "search"
   | "arrow";
 
 const paths: Record<IconName, React.ReactNode> = {
@@ -70,6 +71,12 @@ const paths: Record<IconName, React.ReactNode> = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </>
+  ),
   arrow: <path d="m9 18 6-6-6-6" />,
   reports: (
     <>

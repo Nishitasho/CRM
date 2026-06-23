@@ -15,9 +15,11 @@ type SavedView = {
 export function SavedViewBar({
   objectType,
   q,
+  filters = {},
 }: {
   objectType: ObjectType;
   q: string;
+  filters?: Record<string, string>;
 }) {
   const router = useRouter();
   const [views, setViews] = useState<SavedView[]>([]);
@@ -48,7 +50,7 @@ export function SavedViewBar({
       body: JSON.stringify({
         objectType,
         name,
-        filters: { q },
+        filters: { q, ...filters },
         columns: [],
         sort: { updatedAt: "desc" },
         isShared: false,
@@ -74,10 +76,13 @@ export function SavedViewBar({
   function open(view: SavedView) {
     const filters =
       view.filters && typeof view.filters === "object"
-        ? (view.filters as { q?: unknown })
+        ? (view.filters as Record<string, unknown>)
         : {};
-    const query = typeof filters.q === "string" ? filters.q : "";
-    router.push(query ? `?q=${encodeURIComponent(query)}` : "?");
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (typeof value === "string" && value) query.set(key, value);
+    });
+    router.push(query.toString() ? `?${query.toString()}` : "?");
   }
 
   return (

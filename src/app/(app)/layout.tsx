@@ -24,6 +24,13 @@ export default async function ProtectedLayout({
   });
   const businessUnitSelection = await getBusinessUnitSelection(context);
   const canCreateAppointment = await canCreateInternalAppointment(context);
+  const unreadNotificationCount = await prisma.notification.count({
+    where: {
+      organizationId: context.organization.id,
+      recipientUserId: context.user.id,
+      readAt: null,
+    },
+  });
 
   return (
     <div className="min-h-screen">
@@ -36,6 +43,7 @@ export default async function ProtectedLayout({
         selectedBusinessUnitId={businessUnitSelection.selectedBusinessUnitId}
         canSelectAllBusinessUnits={businessUnitSelection.canSelectAll}
         canCreateInternalAppointment={canCreateAppointment}
+        unreadNotificationCount={unreadNotificationCount}
       />
       <main className="px-4 pb-28 pt-6 md:px-8 lg:ml-64 lg:pb-12 lg:pt-7">
         {children}

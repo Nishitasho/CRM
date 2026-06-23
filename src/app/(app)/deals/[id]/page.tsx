@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { RecordDetail } from "@/components/crm/record-detail";
 import { DealLineItemManager } from "@/components/deals/deal-line-item-manager";
 import { DealPipelineStageInlineEditor } from "@/components/deals/deal-pipeline-stage-inline-editor";
+import { DealTaskCard } from "@/components/tasks/deal-task-card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getRecordActivities } from "@/lib/crm";
@@ -38,6 +39,7 @@ export default async function DealDetailPage({
     forecastCategories,
     lineItemProperties,
     propertyScopes,
+    taskLinks,
   ] = await Promise.all([
     getRecordActivities(context.organization.id, "DEAL", id),
     getRelatedRecords(context.organization.id, "DEAL", id),
@@ -124,7 +126,30 @@ export default async function DealDetailPage({
       where: { organizationId: context.organization.id },
       select: { customPropertyId: true, productId: true },
     }),
+    prisma.objectAssociation.findMany({
+      where: {
+        organizationId: context.organization.id,
+        sourceObjectType: "TASK",
+        targetObjectType: "DEAL",
+        targetObjectId: id,
+      },
+      select: { sourceObjectId: true },
+    }),
   ]);
+  const dealTasks = await prisma.task.findMany({
+    where: {
+      organizationId: context.organization.id,
+      id: { in: taskLinks.map((link) => link.sourceObjectId) },
+    },
+    include: {
+      owner: { select: { id: true, name: true } },
+      reminders: {
+        where: { status: { not: "CANCELED" } },
+        orderBy: { scheduledAt: "asc" },
+      },
+    },
+    orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
+  });
   const canEdit =
     hasPermission(context.membership.role, Permission.CRM_WRITE) &&
     (context.membership.role !== "USER" ||
@@ -186,7 +211,15 @@ export default async function DealDetailPage({
             isCustom: false,
             isEditable: false,
           },
-          { key: "probability", label: "確度", value: item.probability, formattedValue: `${item.probability}%`, fieldType: "PERCENTAGE", isCustom: false, isEditable: false },
+          {
+            key: "probability",
+            label: "確度",
+            value: item.probability,
+            formattedValue: `${item.probability}%`,
+            fieldType: "PERCENTAGE",
+            isCustom: false,
+            isEditable: false,
+          },
           {
             key: "status",
             label: "ステータス",
@@ -223,17 +256,92 @@ export default async function DealDetailPage({
             isCustom: false,
             isEditable: true,
           },
-          { key: "ownerUserId", label: "担当者", value: item.ownerUserId, formattedValue: item.owner?.name, fieldType: "OWNER", options: ownerOptions.map((member) => ({ value: member.user.id, label: member.user.name })), isCustom: false, isEditable: true },
-          { key: "source", label: "流入元", value: item.source, formattedValue: item.source, fieldType: "TEXT", isCustom: false, isEditable: true },
-          { key: "decisionMakerStatus", label: "決裁者区分", value: item.decisionMakerStatus, formattedValue: item.decisionMakerStatus, fieldType: "SELECT", options: [
-            { value: "DECISION_MAKER", label: "決裁者" },
-            { value: "NON_DECISION_MAKER", label: "非決裁者" },
-            { value: "UNKNOWN", label: "不明" },
-          ], isCustom: false, isEditable: true },
-          { key: "nextAction", label: "次回アクション", value: item.nextAction, formattedValue: item.nextAction, fieldType: "TEXT", isCustom: false, isEditable: true },
-          { key: "nextActionDate", label: "次回アクション日", value: item.nextActionDate, formattedValue: item.nextActionDate ? new Intl.DateTimeFormat("ja-JP").format(item.nextActionDate) : null, fieldType: "DATE", isCustom: false, isEditable: true },
-          { key: "nextActionOwnerId", label: "次回アクション担当", value: item.nextActionOwnerId, formattedValue: ownerOptions.find((member) => member.user.id === item.nextActionOwnerId)?.user.name, fieldType: "OWNER", options: ownerOptions.map((member) => ({ value: member.user.id, label: member.user.name })), isCustom: false, isEditable: true },
-          { key: "forecastCategoryId", label: "Forecast", value: item.forecastCategoryId, formattedValue: forecastCategories.find((category) => category.id === item.forecastCategoryId)?.name, fieldType: "SELECT", options: forecastCategories.map((category) => ({ value: category.id, label: category.name })), isCustom: false, isEditable: true },
+          {
+            key: "ownerUserId",
+            label: "担当者",
+            value: item.ownerUserId,
+            formattedValue: item.owner?.name,
+            fieldType: "OWNER",
+            options: ownerOptions.map((member) => ({
+              value: member.user.id,
+              label: member.user.name,
+            })),
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "source",
+            label: "流入元",
+            value: item.source,
+            formattedValue: item.source,
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "decisionMakerStatus",
+            label: "決裁者区分",
+            value: item.decisionMakerStatus,
+            formattedValue: item.decisionMakerStatus,
+            fieldType: "SELECT",
+            options: [
+              { value: "DECISION_MAKER", label: "決裁者" },
+              { value: "NON_DECISION_MAKER", label: "非決裁者" },
+              { value: "UNKNOWN", label: "不明" },
+            ],
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "nextAction",
+            label: "次回アクション",
+            value: item.nextAction,
+            formattedValue: item.nextAction,
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "nextActionDate",
+            label: "次回アクション日",
+            value: item.nextActionDate,
+            formattedValue: item.nextActionDate
+              ? new Intl.DateTimeFormat("ja-JP").format(item.nextActionDate)
+              : null,
+            fieldType: "DATE",
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "nextActionOwnerId",
+            label: "次回アクション担当",
+            value: item.nextActionOwnerId,
+            formattedValue: ownerOptions.find(
+              (member) => member.user.id === item.nextActionOwnerId,
+            )?.user.name,
+            fieldType: "OWNER",
+            options: ownerOptions.map((member) => ({
+              value: member.user.id,
+              label: member.user.name,
+            })),
+            isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "forecastCategoryId",
+            label: "Forecast",
+            value: item.forecastCategoryId,
+            formattedValue: forecastCategories.find(
+              (category) => category.id === item.forecastCategoryId,
+            )?.name,
+            fieldType: "SELECT",
+            options: forecastCategories.map((category) => ({
+              value: category.id,
+              label: category.name,
+            })),
+            isCustom: false,
+            isEditable: true,
+          },
           ...customFields.map((field) => field.descriptor),
         ]}
         activities={activities}
@@ -246,6 +354,15 @@ export default async function DealDetailPage({
           context.membership.role,
           Permission.CRM_DELETE,
         )}
+        timelineBefore={
+          <DealTaskCard
+            dealId={id}
+            items={dealTasks}
+            members={ownerOptions.map((member) => member.user)}
+            defaultOwnerUserId={item.ownerUserId ?? context.user.id}
+            canEdit={canEdit}
+          />
+        }
       />
       <DealLineItemManager
         dealId={id}

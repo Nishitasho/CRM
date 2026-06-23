@@ -51,6 +51,10 @@ type BookingForGoogle = Prisma.MeetingBookingGetPayload<{
   include: { meetingLink: true };
 }>;
 
+type TaskForGoogle = Prisma.TaskGetPayload<{
+  include: { owner: { select: { id: true; name: true; email: true } } };
+}>;
+
 export class GoogleApiError extends Error {
   constructor(
     public status: number,
@@ -67,7 +71,10 @@ function googleClientId() {
 }
 
 function googleClientSecret() {
-  return process.env.GOOGLE_CALENDAR_CLIENT_SECRET ?? process.env.GOOGLE_CLIENT_SECRET;
+  return (
+    process.env.GOOGLE_CALENDAR_CLIENT_SECRET ??
+    process.env.GOOGLE_CLIENT_SECRET
+  );
 }
 
 function callbackUrl() {
@@ -86,7 +93,9 @@ async function googleFetch<T>(url: string, init: RequestInit = {}) {
   if (!response.ok) {
     let code = `GOOGLE_${response.status}`;
     try {
-      const body = await response.json() as { error?: { status?: string; reason?: string; code?: number } };
+      const body = (await response.json()) as {
+        error?: { status?: string; reason?: string; code?: number };
+      };
       code = body.error?.status ?? body.error?.reason ?? code;
     } catch {
       // Avoid logging Google response bodies because they may contain PII.
@@ -101,8 +110,16 @@ export function googleEventIdForBooking(bookingId: string) {
   return `crm${createHash("sha256").update(bookingId).digest("hex").slice(0, 48)}`;
 }
 
+export function googleEventIdForTask(taskId: string) {
+  return `crmtask${createHash("sha256").update(taskId).digest("hex").slice(0, 44)}`;
+}
+
 function integrationEnvironment() {
-  return process.env.GOOGLE_CALENDAR_INTEGRATION_ENV ?? process.env.NODE_ENV ?? "development";
+  return (
+    process.env.GOOGLE_CALENDAR_INTEGRATION_ENV ??
+    process.env.NODE_ENV ??
+    "development"
+  );
 }
 
 function isRetryableGoogleError(error: unknown) {
@@ -128,7 +145,8 @@ export async function createGoogleCalendarOAuthUrl(input: {
     throw new BadRequestError("Google Calendar連携は現在停止中です。");
   }
   const clientId = googleClientId();
-  if (!clientId) throw new BadRequestError("Google Calendar OAuthのClient IDが未設定です。");
+  if (!clientId)
+    throw new BadRequestError("Google Calendar OAuthのClient IDが未設定です。");
   const state = randomBytes(24).toString("base64url");
   const verifier = randomBytes(48).toString("base64url");
   await prisma.googleOAuthState.create({
@@ -163,14 +181,20 @@ export async function completeGoogleCalendarOAuth(input: {
     throw new BadRequestError("Google Calendar連携は現在停止中です。");
   }
   const stateHash = hashToken(input.state);
-  const state = await prisma.googleOAuthState.findUnique({ where: { stateHash } });
+  const state = await prisma.googleOAuthState.findUnique({
+    where: { stateHash },
+  });
   if (!state || state.consumedAt || state.expiresAt <= new Date()) {
-    throw new BadRequestError("Google認可の状態確認に失敗しました。もう一度接続してください。");
+    throw new BadRequestError(
+      "Google認可の状態確認に失敗しました。もう一度接続してください。",
+    );
   }
   const clientId = googleClientId();
   const clientSecret = googleClientSecret();
   if (!clientId || !clientSecret) {
-    throw new BadRequestError("Google Calendar OAuthのClient Secretが未設定です。");
+    throw new BadRequestError(
+      "Google Calendar OAuthのClient Secretが未設定です。",
+    );
   }
   const body = new URLSearchParams({
     client_id: clientId,
@@ -225,7 +249,7 @@ export async function completeGoogleCalendarOAuth(input: {
         encryptedAccessToken: encryptSecret(token.access_token),
         encryptedRefreshToken: token.refresh_token
           ? encryptSecret(token.refresh_token)
-          : current?.encryptedRefreshToken ?? null,
+          : (current?.encryptedRefreshToken ?? null),
         encryptionKeyVersion: currentEncryptionKeyVersion(),
         accessTokenExpiresAt: expiresAt,
         grantedScopes: token.scope?.split(" ") ?? googleCalendarScopes,
@@ -359,14 +383,21 @@ export async function updateCalendarSelection(input: {
       },
     },
   });
-  if (!connection) throw new BadRequestError("Google Calendarが接続されていません。");
+  if (!connection)
+    throw new BadRequestError("Google Calendarが接続されていません。");
   const calendars = await listGoogleCalendars(input);
-  const writeCalendar = calendars.find((item) => item.id === input.writeCalendarId);
+  const writeCalendar = calendars.find(
+    (item) => item.id === input.writeCalendarId,
+  );
   if (!writeCalendar || !writeCalendar.writable) {
-    throw new BadRequestError("calendar.events.ownedスコープのため、所有者のカレンダーだけを書き込み先に選択できます。");
+    throw new BadRequestError(
+      "calendar.events.ownedスコープのため、所有者のカレンダーだけを書き込み先に選択できます。",
+    );
   }
   await prisma.$transaction(async (tx) => {
-    await tx.googleCalendarSelection.deleteMany({ where: { connectionId: connection.id } });
+    await tx.googleCalendarSelection.deleteMany({
+      where: { connectionId: connection.id },
+    });
     await tx.googleCalendarSelection.createMany({
       data: calendars
         .filter(
@@ -500,6 +531,340 @@ function googleEventBody(input: {
   };
 }
 
+async function getTaskDealContext(task: TaskForGoogle) {
+  const link = await prisma.objectAssociation.findFirst({
+    where: {
+      organizationId: task.organizationId,
+      sourceObjectType: "TASK",
+      sourceObjectId: task.id,
+      targetObjectType: "DEAL",
+    },
+  });
+  if (!link) return { deal: null, company: null };
+  const deal = await prisma.deal.findFirst({
+    where: {
+      id: link.targetObjectId,
+      organizationId: task.organizationId,
+      deletedAt: null,
+    },
+    select: { id: true, name: true },
+  });
+  if (!deal) return { deal: null, company: null };
+  const companyLink = await prisma.objectAssociation.findFirst({
+    where: {
+      organizationId: task.organizationId,
+      OR: [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: deal.id,
+          targetObjectType: "COMPANY",
+        },
+        {
+          sourceObjectType: "COMPANY",
+          targetObjectType: "DEAL",
+          targetObjectId: deal.id,
+        },
+      ],
+    },
+  });
+  const companyId =
+    companyLink?.sourceObjectType === "COMPANY"
+      ? companyLink.sourceObjectId
+      : companyLink?.targetObjectType === "COMPANY"
+        ? companyLink.targetObjectId
+        : null;
+  const company = companyId
+    ? await prisma.company.findFirst({
+        where: {
+          id: companyId,
+          organizationId: task.organizationId,
+          deletedAt: null,
+        },
+        select: { id: true, name: true },
+      })
+    : null;
+  return { deal, company };
+}
+
+async function googleTaskEventBody(input: {
+  eventId: string;
+  task: TaskForGoogle;
+}) {
+  if (!input.task.dueDate) {
+    throw new BadRequestError("Google Calendar同期には期限日時が必要です。");
+  }
+  const { deal, company } = await getTaskDealContext(input.task);
+  const duration = input.task.durationMinutes ?? 30;
+  const endsAt = new Date(input.task.dueDate.getTime() + duration * 60_000);
+  const baseUrl = process.env.APP_URL ?? "http://localhost:3000";
+  const dealUrl = deal ? `${baseUrl}/deals/${deal.id}` : null;
+  const reminderOverrides = await prisma.taskReminder.findMany({
+    where: {
+      taskId: input.task.id,
+      channel: "IN_APP",
+      status: { not: "CANCELED" },
+    },
+    orderBy: { scheduledAt: "asc" },
+  });
+  const overrides = reminderOverrides
+    .map((reminder) => {
+      const minutes = Math.round(
+        ((input.task.dueDate as Date).getTime() -
+          reminder.scheduledAt.getTime()) /
+          60_000,
+      );
+      return minutes >= 0 ? { method: "popup", minutes } : null;
+    })
+    .filter((item): item is { method: "popup"; minutes: number } =>
+      Boolean(item),
+    );
+  return {
+    id: input.eventId,
+    summary: `[CRMタスク] ${deal?.name ?? "商談未設定"} / ${input.task.title}`,
+    description: [
+      input.task.description,
+      `商談名: ${deal?.name ?? "-"}`,
+      `会社名: ${company?.name ?? "-"}`,
+      `CRM商談URL: ${dealUrl ?? "-"}`,
+      `CRMタスクID: ${input.task.id}`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    start: {
+      dateTime: input.task.dueDate.toISOString(),
+      timeZone: input.task.timezone,
+    },
+    end: {
+      dateTime: endsAt.toISOString(),
+      timeZone: input.task.timezone,
+    },
+    reminders: {
+      useDefault: overrides.length === 0,
+      overrides: overrides.length ? overrides : undefined,
+    },
+    extendedProperties: {
+      private: {
+        crmTaskId: input.task.id,
+        crmDealId: deal?.id ?? "",
+        organizationId: input.task.organizationId,
+        environment: integrationEnvironment(),
+        integrationVersion: "task-reminders-v1",
+      },
+    },
+  };
+}
+
+export async function syncTaskToGoogle(taskId: string) {
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: { owner: { select: { id: true, name: true, email: true } } },
+  });
+  if (!task) throw new BadRequestError("タスクが見つかりません。");
+  if (!isGoogleCalendarIntegrationEnabled() || !task.calendarSyncEnabled) {
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        calendarSyncStatus: CalendarSyncStatus.NOT_REQUIRED,
+        calendarSyncErrorCode: null,
+        calendarSyncErrorMessage: null,
+      },
+    });
+    return { status: CalendarSyncStatus.NOT_REQUIRED };
+  }
+  if (!task.dueDate) {
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        calendarSyncEnabled: false,
+        calendarSyncStatus: CalendarSyncStatus.NOT_REQUIRED,
+        googleCalendarId: null,
+        googleEventId: null,
+        googleEventHtmlLink: null,
+      },
+    });
+    return { status: CalendarSyncStatus.NOT_REQUIRED };
+  }
+  const connection = await prisma.googleCalendarConnection.findUnique({
+    where: {
+      organizationId_userId: {
+        organizationId: task.organizationId,
+        userId: task.ownerUserId,
+      },
+    },
+  });
+  if (!connection || connection.status !== "CONNECTED") {
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        calendarSyncStatus: CalendarSyncStatus.REAUTH_REQUIRED,
+        calendarSyncAttemptCount: { increment: 1 },
+        calendarSyncErrorCode: "GOOGLE_NOT_CONNECTED",
+        calendarSyncErrorMessage: "担当者のGoogle Calendarが未接続です。",
+      },
+    });
+    return { status: CalendarSyncStatus.REAUTH_REQUIRED };
+  }
+  try {
+    const accessToken = await getValidAccessToken(connection);
+    const calendarId = connection.selectedWriteCalendarId ?? "primary";
+    const eventId = task.googleEventId ?? googleEventIdForTask(task.id);
+    const eventBody = await googleTaskEventBody({ eventId, task });
+    const existing = await getGoogleEvent(accessToken, calendarId, eventId);
+    const event = existing
+      ? await googleFetch<GoogleEvent>(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(eventBody),
+          },
+        )
+      : await googleFetch<GoogleEvent>(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(eventBody),
+          },
+        ).catch(async (error) => {
+          if (error instanceof GoogleApiError && error.status === 409) {
+            const duplicate = await getGoogleEvent(
+              accessToken,
+              calendarId,
+              eventId,
+            );
+            if (duplicate) return duplicate;
+          }
+          throw error;
+        });
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        calendarSyncStatus: CalendarSyncStatus.SYNCED,
+        googleCalendarId: calendarId,
+        googleEventId: event.id ?? eventId,
+        googleEventHtmlLink: event.htmlLink ?? null,
+        calendarLastSyncedAt: new Date(),
+        calendarSyncAttemptCount: { increment: 1 },
+        calendarSyncErrorCode: null,
+        calendarSyncErrorMessage: null,
+        calendarNextRetryAt: null,
+      },
+    });
+    await createTaskCalendarActivity(
+      task.id,
+      "Google Calendar同期に成功しました",
+    );
+    return { status: CalendarSyncStatus.SYNCED };
+  } catch (error) {
+    const status = isAuthGoogleError(error)
+      ? CalendarSyncStatus.REAUTH_REQUIRED
+      : isRetryableGoogleError(error)
+        ? CalendarSyncStatus.RETRY_PENDING
+        : CalendarSyncStatus.ERROR;
+    await prisma.task.update({
+      where: { id: task.id },
+      data: {
+        calendarSyncStatus: status,
+        calendarSyncAttemptCount: { increment: 1 },
+        calendarNextRetryAt:
+          status === CalendarSyncStatus.RETRY_PENDING
+            ? new Date(Date.now() + 5 * 60 * 1000)
+            : null,
+        calendarSyncErrorCode:
+          error instanceof GoogleApiError ? error.code : "GOOGLE_SYNC_FAILED",
+        calendarSyncErrorMessage:
+          status === CalendarSyncStatus.REAUTH_REQUIRED
+            ? "Google Calendarの再認可が必要です。"
+            : "Google Calendar同期に失敗しました。",
+      },
+    });
+    await createTaskCalendarActivity(
+      task.id,
+      "Google Calendar同期に失敗しました",
+    );
+    return { status };
+  }
+}
+
+async function createTaskCalendarActivity(taskId: string, title: string) {
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  if (!task) return;
+  const link = await prisma.objectAssociation.findFirst({
+    where: {
+      organizationId: task.organizationId,
+      sourceObjectType: "TASK",
+      sourceObjectId: task.id,
+      targetObjectType: "DEAL",
+    },
+  });
+  if (!link) return;
+  const activity = await prisma.activity.create({
+    data: {
+      organizationId: task.organizationId,
+      actorUserId: null,
+      type: "SYSTEM_EVENT",
+      title,
+      metadata: { taskId: task.id },
+    },
+  });
+  await prisma.objectAssociation.create({
+    data: {
+      organizationId: task.organizationId,
+      sourceObjectType: "ACTIVITY",
+      sourceObjectId: activity.id,
+      targetObjectType: "DEAL",
+      targetObjectId: link.targetObjectId,
+    },
+  });
+}
+
+export async function deleteTaskGoogleEvent(input: {
+  organizationId: string;
+  userId: string;
+  calendarId: string | null;
+  eventId: string | null;
+}) {
+  if (
+    !input.calendarId ||
+    !input.eventId ||
+    !isGoogleCalendarIntegrationEnabled()
+  )
+    return;
+  const connection = await prisma.googleCalendarConnection.findUnique({
+    where: {
+      organizationId_userId: {
+        organizationId: input.organizationId,
+        userId: input.userId,
+      },
+    },
+  });
+  if (!connection || connection.status !== "CONNECTED") return;
+  const accessToken = await getValidAccessToken(connection);
+  try {
+    await googleFetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+  } catch (error) {
+    if (error instanceof GoogleApiError && error.status === 404) return;
+    throw error;
+  }
+}
+
+export async function retryTaskGoogleSync(taskId: string) {
+  return syncTaskToGoogle(taskId);
+}
+
 export async function syncBookingToGoogle(
   tx: Prisma.TransactionClient,
   bookingId: string,
@@ -550,7 +915,8 @@ export async function syncBookingToGoogle(
   try {
     const accessToken = await getValidAccessToken(connection);
     const calendarId = connection.selectedWriteCalendarId ?? "primary";
-    const eventId = booking.googleEventId ?? googleEventIdForBooking(booking.id);
+    const eventId =
+      booking.googleEventId ?? googleEventIdForBooking(booking.id);
     const eventBody = googleEventBody({ eventId, booking });
     const existing = await getGoogleEvent(accessToken, calendarId, eventId);
     const event = existing
@@ -577,7 +943,11 @@ export async function syncBookingToGoogle(
           },
         ).catch(async (error) => {
           if (error instanceof GoogleApiError && error.status === 409) {
-            const duplicate = await getGoogleEvent(accessToken, calendarId, eventId);
+            const duplicate = await getGoogleEvent(
+              accessToken,
+              calendarId,
+              eventId,
+            );
             if (duplicate) return duplicate;
           }
           throw error;
@@ -667,7 +1037,8 @@ export async function cancelGoogleEvent(input: {
       },
     },
   });
-  if (!connection) throw new BadRequestError("Google Calendarが接続されていません。");
+  if (!connection)
+    throw new BadRequestError("Google Calendarが接続されていません。");
   if (!isGoogleCalendarIntegrationEnabled()) return;
   const accessToken = await getValidAccessToken(connection);
   await googleFetch(
@@ -736,7 +1107,8 @@ async function processGoogleEvent(
     (end && end.getTime() !== booking.endsAt.getTime());
   const titleChanged =
     input.event.summary !== undefined &&
-    input.event.summary !== bookingTitle({ ...booking, legacyMetadata: booking.legacyMetadata });
+    input.event.summary !==
+      bookingTitle({ ...booking, legacyMetadata: booking.legacyMetadata });
   if (dateChanged || titleChanged) {
     await tx.meetingBooking.update({
       where: { id: booking.id },
@@ -806,11 +1178,13 @@ export async function syncCalendarSelection(input: {
   const selection = await prisma.googleCalendarSelection.findUnique({
     where: { id: input.selectionId },
   });
-  if (!selection) throw new BadRequestError("同期対象カレンダーが見つかりません。");
+  if (!selection)
+    throw new BadRequestError("同期対象カレンダーが見つかりません。");
   const connection = await prisma.googleCalendarConnection.findUnique({
     where: { id: selection.connectionId },
   });
-  if (!connection) throw new BadRequestError("Google Calendar接続が見つかりません。");
+  if (!connection)
+    throw new BadRequestError("Google Calendar接続が見つかりません。");
   const mode = input.mode ?? (selection.syncToken ? "INCREMENTAL" : "FULL");
   const job = await prisma.calendarSyncJob.create({
     data: {
@@ -858,9 +1232,12 @@ export async function syncCalendarSelection(input: {
         data: {
           syncToken: nextSyncToken ?? selection.syncToken,
           syncTokenInvalidatedAt: null,
-          lastFullSyncAt: mode === "FULL" ? new Date() : selection.lastFullSyncAt,
+          lastFullSyncAt:
+            mode === "FULL" ? new Date() : selection.lastFullSyncAt,
           lastIncrementalSyncAt:
-            mode === "INCREMENTAL" ? new Date() : selection.lastIncrementalSyncAt,
+            mode === "INCREMENTAL"
+              ? new Date()
+              : selection.lastIncrementalSyncAt,
           lastSyncStatus: CalendarSyncJobStatus.SUCCEEDED,
           lastSyncErrorCode: null,
           lastSyncErrorMessage: null,
@@ -875,9 +1252,16 @@ export async function syncCalendarSelection(input: {
         },
       });
     });
-    return { status: CalendarSyncJobStatus.SUCCEEDED, processedCount: processed };
+    return {
+      status: CalendarSyncJobStatus.SUCCEEDED,
+      processedCount: processed,
+    };
   } catch (error) {
-    if (error instanceof GoogleApiError && error.status === 410 && mode === "INCREMENTAL") {
+    if (
+      error instanceof GoogleApiError &&
+      error.status === 410 &&
+      mode === "INCREMENTAL"
+    ) {
       await prisma.googleCalendarSelection.update({
         where: { id: selection.id },
         data: {
@@ -885,7 +1269,8 @@ export async function syncCalendarSelection(input: {
           syncTokenInvalidatedAt: new Date(),
           lastSyncStatus: CalendarSyncJobStatus.FAILED,
           lastSyncErrorCode: "SYNC_TOKEN_INVALID",
-          lastSyncErrorMessage: "GoogleのsyncTokenが無効になったためフル同期へ切り替えます。",
+          lastSyncErrorMessage:
+            "GoogleのsyncTokenが無効になったためフル同期へ切り替えます。",
         },
       });
       await prisma.calendarSyncJob.update({
@@ -938,7 +1323,8 @@ export async function createWatchChannel(input: {
   const connection = await prisma.googleCalendarConnection.findUnique({
     where: { id: input.connectionId },
   });
-  if (!connection) throw new BadRequestError("Google Calendar接続が見つかりません。");
+  if (!connection)
+    throw new BadRequestError("Google Calendar接続が見つかりません。");
   const accessToken = await getValidAccessToken(connection);
   const channelId = randomUUID();
   const channelToken = randomBytes(32).toString("base64url");
@@ -972,7 +1358,9 @@ export async function createWatchChannel(input: {
       channelId: response.id,
       resourceId: response.resourceId ?? null,
       encryptedChannelToken: encryptSecret(channelToken),
-      expiresAt: response.expiration ? new Date(Number(response.expiration)) : null,
+      expiresAt: response.expiration
+        ? new Date(Number(response.expiration))
+        : null,
       status: "ACTIVE",
     },
   });
@@ -983,8 +1371,12 @@ export async function stopWatchChannel(input: {
   channelId: string;
 }) {
   const [connection, channel] = await Promise.all([
-    prisma.googleCalendarConnection.findUnique({ where: { id: input.connectionId } }),
-    prisma.googleCalendarWatchChannel.findUnique({ where: { channelId: input.channelId } }),
+    prisma.googleCalendarConnection.findUnique({
+      where: { id: input.connectionId },
+    }),
+    prisma.googleCalendarWatchChannel.findUnique({
+      where: { channelId: input.channelId },
+    }),
   ]);
   if (!connection || !channel?.resourceId) return;
   const accessToken = await getValidAccessToken(connection);
@@ -994,7 +1386,10 @@ export async function stopWatchChannel(input: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ id: channel.channelId, resourceId: channel.resourceId }),
+    body: JSON.stringify({
+      id: channel.channelId,
+      resourceId: channel.resourceId,
+    }),
   }).catch(() => null);
   await prisma.googleCalendarWatchChannel.update({
     where: { id: channel.id },
@@ -1006,7 +1401,9 @@ export async function renewWatchChannels(input: {
   organizationId: string;
   withinHours?: number;
 }) {
-  const cutoff = new Date(Date.now() + (input.withinHours ?? 24) * 60 * 60 * 1000);
+  const cutoff = new Date(
+    Date.now() + (input.withinHours ?? 24) * 60 * 60 * 1000,
+  );
   const connections = await prisma.googleCalendarConnection.findMany({
     where: { organizationId: input.organizationId },
     select: { id: true },

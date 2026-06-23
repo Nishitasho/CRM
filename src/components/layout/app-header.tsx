@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Icon } from "@/components/ui/icon";
 import { BusinessUnitSwitcher } from "./business-unit-switcher";
 import { OrganizationSwitcher } from "./organization-switcher";
 
@@ -10,6 +11,7 @@ type HeaderProps = {
   selectedBusinessUnitId: string | null;
   canSelectAllBusinessUnits: boolean;
   canCreateInternalAppointment: boolean;
+  unreadNotificationCount: number;
 };
 
 export function AppHeader({
@@ -20,6 +22,7 @@ export function AppHeader({
   selectedBusinessUnitId,
   canSelectAllBusinessUnits,
   canCreateInternalAppointment,
+  unreadNotificationCount,
 }: HeaderProps) {
   const initial =
     user.name.trim().charAt(0) || user.email.charAt(0).toUpperCase();
@@ -45,11 +48,26 @@ export function AppHeader({
       </div>
       <div className="flex items-center gap-3">
         {canCreateInternalAppointment ? (
-          <Link href="/appointments/new" className="primary-button inline-flex whitespace-nowrap px-3 sm:px-4">
+          <Link
+            href="/appointments/new"
+            className="primary-button inline-flex whitespace-nowrap px-3 sm:px-4"
+          >
             <span className="sm:hidden">＋ アポ</span>
             <span className="hidden sm:inline">＋ アポ登録</span>
           </Link>
         ) : null}
+        <Link
+          href="/notifications"
+          aria-label="通知"
+          className="relative grid h-10 w-10 place-items-center rounded-xl border border-line bg-white text-slate-600 shadow-sm transition hover:border-brand-200 hover:text-brand-700"
+        >
+          <Icon name="bell" className="h-5 w-5" />
+          {unreadNotificationCount ? (
+            <span className="absolute -right-1 -top-1 grid min-h-5 min-w-5 place-items-center rounded-full bg-brand-600 px-1 text-[10px] font-bold text-white">
+              {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
+            </span>
+          ) : null}
+        </Link>
         <div className="hidden text-right sm:block">
           <p className="text-sm font-bold">{user.name}</p>
           <p className="text-xs text-slate-500">{user.email}</p>

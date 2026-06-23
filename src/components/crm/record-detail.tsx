@@ -1,7 +1,10 @@
 import { ActivityComposer } from "./activity-composer";
 import { AssociationManager } from "./association-manager";
 import { EmailLogComposer } from "./email-log-composer";
-import { RecordPropertyDescriptor, RecordPropertyList } from "./inline-property-field";
+import {
+  RecordPropertyDescriptor,
+  RecordPropertyList,
+} from "./inline-property-field";
 import { RecordActions } from "./record-actions";
 
 type Activity = {
@@ -35,6 +38,7 @@ export function RecordDetail({
   canEdit,
   canDelete,
   defaultEmail = "",
+  timelineBefore,
 }: {
   objectType: "CONTACT" | "COMPANY" | "DEAL";
   objectId: string;
@@ -48,6 +52,7 @@ export function RecordDetail({
   canEdit: boolean;
   canDelete: boolean;
   defaultEmail?: string;
+  timelineBefore?: React.ReactNode;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)_300px]">
@@ -97,6 +102,7 @@ export function RecordDetail({
           objectId={objectId}
           canEdit={canEdit}
         />
+        {timelineBefore}
         <section className="card p-6">
           <h2 className="font-bold">活動タイムライン</h2>
           <div className="mt-6 space-y-6">

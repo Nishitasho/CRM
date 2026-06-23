@@ -1,9 +1,19 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
-import { assertObjectAccess, validateOwner } from "@/lib/crm";
+import {
+  assertObjectAccess,
+  createRecordActivity,
+  validateOwner,
+} from "@/lib/crm";
+import { deleteTaskGoogleEvent, syncTaskToGoogle } from "@/lib/google-calendar";
 import { prisma } from "@/lib/prisma";
-import { canEditTask } from "@/lib/tasks";
+import {
+  assertTaskHasDueDateForCalendar,
+  buildReminderRows,
+  canAssignTaskOwner,
+  canEditTask,
+} from "@/lib/tasks";
 import { taskSchema } from "@/lib/validation";
 type Params = { params: Promise<{ id: string }> };
 export async function PATCH(request: Request, { params }: Params) {
@@ -27,13 +37,25 @@ export async function PATCH(request: Request, { params }: Params) {
     const body = await request.json();
     const input = taskSchema.parse(body);
     await validateOwner(context.organization.id, input.ownerUserId);
+    await canAssignTaskOwner(context, input.ownerUserId);
+    assertTaskHasDueDateForCalendar(input);
     if (input.relatedObjectType && input.relatedObjectId)
       await assertObjectAccess(
         context,
         input.relatedObjectType,
         input.relatedObjectId,
+        true,
       );
+    const oldCalendar = {
+      ownerUserId: current.ownerUserId,
+      googleCalendarId: current.googleCalendarId,
+      googleEventId: current.googleEventId,
+    };
     const item = await prisma.$transaction(async (tx) => {
+      const activeStatus = !["COMPLETED", "CANCELED"].includes(input.status);
+      const shouldSyncCalendar = Boolean(
+        activeStatus && input.calendarSyncEnabled && input.dueDate,
+      );
       const updated = await tx.task.update({
         where: { id },
         data: {
@@ -41,6 +63,17 @@ export async function PATCH(request: Request, { params }: Params) {
           title: input.title,
           description: input.description,
           dueDate: input.dueDate,
+          durationMinutes: input.durationMinutes ?? 30,
+          timezone: input.timezone,
+          calendarSyncEnabled: shouldSyncCalendar,
+          calendarSyncStatus: shouldSyncCalendar ? "PENDING" : "NOT_REQUIRED",
+          googleCalendarId: shouldSyncCalendar
+            ? current.googleCalendarId
+            : null,
+          googleEventId: shouldSyncCalendar ? current.googleEventId : null,
+          googleEventHtmlLink: shouldSyncCalendar
+            ? current.googleEventHtmlLink
+            : null,
           status: input.status,
           priority: input.priority,
           taskType: input.taskType,
@@ -50,6 +83,28 @@ export async function PATCH(request: Request, { params }: Params) {
               : null,
         },
       });
+      await tx.taskReminder.updateMany({
+        where: {
+          organizationId: context.organization.id,
+          taskId: id,
+          status: { in: ["PENDING", "FAILED", "PROCESSING"] },
+        },
+        data: { status: "CANCELED" },
+      });
+      if (!["COMPLETED", "CANCELED"].includes(input.status)) {
+        const reminders = buildReminderRows({
+          organizationId: context.organization.id,
+          taskId: id,
+          recipientUserId: input.ownerUserId,
+          dueDate: input.dueDate ?? null,
+          offsets: input.reminderOffsets,
+        });
+        if (reminders.length)
+          await tx.taskReminder.createMany({
+            data: reminders,
+            skipDuplicates: true,
+          });
+      }
       await tx.objectAssociation.deleteMany({
         where: {
           organizationId: context.organization.id,
@@ -68,8 +123,44 @@ export async function PATCH(request: Request, { params }: Params) {
             targetObjectId: input.relatedObjectId,
           },
         });
+      if (input.relatedObjectType && input.relatedObjectId) {
+        await createRecordActivity(tx, {
+          organizationId: context.organization.id,
+          actorUserId: context.user.id,
+          objectType: input.relatedObjectType,
+          objectId: input.relatedObjectId,
+          type: "SYSTEM_EVENT",
+          title:
+            current.ownerUserId !== input.ownerUserId
+              ? `タスク「${updated.title}」の担当者を変更しました`
+              : `タスク「${updated.title}」を更新しました`,
+          metadata: { taskId: id },
+        });
+      }
       return updated;
     });
+    if (
+      oldCalendar.ownerUserId !== input.ownerUserId &&
+      oldCalendar.googleCalendarId &&
+      oldCalendar.googleEventId
+    ) {
+      await deleteTaskGoogleEvent({
+        organizationId: context.organization.id,
+        userId: oldCalendar.ownerUserId,
+        calendarId: oldCalendar.googleCalendarId,
+        eventId: oldCalendar.googleEventId,
+      });
+    }
+    if (!input.dueDate || ["COMPLETED", "CANCELED"].includes(input.status)) {
+      await deleteTaskGoogleEvent({
+        organizationId: context.organization.id,
+        userId: oldCalendar.ownerUserId,
+        calendarId: oldCalendar.googleCalendarId,
+        eventId: oldCalendar.googleEventId,
+      });
+    } else if (input.calendarSyncEnabled) {
+      await syncTaskToGoogle(id);
+    }
     return NextResponse.json({ item });
   } catch (error) {
     return apiError(error);
@@ -93,7 +184,17 @@ export async function DELETE(_: Request, { params }: Params) {
         { status: 404 },
       );
     await canEditTask(context, current.ownerUserId);
+    await deleteTaskGoogleEvent({
+      organizationId: context.organization.id,
+      userId: current.ownerUserId,
+      calendarId: current.googleCalendarId,
+      eventId: current.googleEventId,
+    });
     await prisma.$transaction([
+      prisma.taskReminder.updateMany({
+        where: { organizationId: context.organization.id, taskId: id },
+        data: { status: "CANCELED" },
+      }),
       prisma.objectAssociation.deleteMany({
         where: {
           organizationId: context.organization.id,

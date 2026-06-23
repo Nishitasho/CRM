@@ -698,6 +698,24 @@ enum TaskType {
   @@map("task_type")
 }
 
+enum TaskReminderChannel {
+  IN_APP          @map("in_app")
+  EMAIL           @map("email")
+  GOOGLE_CALENDAR @map("google_calendar")
+
+  @@map("task_reminder_channel")
+}
+
+enum TaskReminderStatus {
+  PENDING    @map("pending")
+  PROCESSING @map("processing")
+  SENT       @map("sent")
+  FAILED     @map("failed")
+  CANCELED   @map("canceled")
+
+  @@map("task_reminder_status")
+}
+
 enum ObjectType {
   CONTACT  @map("contact")
   COMPANY  @map("company")
@@ -763,6 +781,8 @@ model User {
   activities              Activity[]
   ownedTasks              Task[]                   @relation("TaskOwner")
   createdTasks            Task[]                   @relation("TaskCreator")
+  taskReminders           TaskReminder[]           @relation("TaskReminderRecipient")
+  notifications           Notification[]           @relation("NotificationRecipient")
   uploadedImports         ImportJob[]
   createdTemplates        EmailTemplate[]
   availabilityRules       AvailabilityRule[]
@@ -788,6 +808,8 @@ model Organization {
   deals                      Deal[]
   activities                 Activity[]
   tasks                      Task[]
+  taskReminders              TaskReminder[]
+  notifications              Notification[]
   pipelines                  Pipeline[]
   stages                     PipelineStage[]
   associations               ObjectAssociation[]
@@ -1152,31 +1174,91 @@ model Activity {
 }
 
 model Task {
-  id                    String       @id @default(uuid()) @db.Uuid
-  organizationId        String       @map("organization_id") @db.Uuid
-  ownerUserId           String       @map("owner_user_id") @db.Uuid
-  createdByUserId       String       @map("created_by_user_id") @db.Uuid
-  deliveryProjectId     String?      @map("delivery_project_id") @db.Uuid
-  sourceDeliveryStageId String?      @map("source_delivery_stage_id") @db.Uuid
-  autoTaskKey           String?      @map("auto_task_key") @db.VarChar(240)
-  title                 String       @db.VarChar(200)
-  description           String?
-  dueDate               DateTime?    @map("due_date") @db.Timestamptz(3)
-  status                TaskStatus   @default(TODO)
-  priority              TaskPriority @default(MEDIUM)
-  taskType              TaskType     @default(OTHER) @map("task_type")
-  completedAt           DateTime?    @map("completed_at") @db.Timestamptz(3)
-  createdAt             DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt             DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                       String             @id @default(uuid()) @db.Uuid
+  organizationId           String             @map("organization_id") @db.Uuid
+  ownerUserId              String             @map("owner_user_id") @db.Uuid
+  createdByUserId          String             @map("created_by_user_id") @db.Uuid
+  deliveryProjectId        String?            @map("delivery_project_id") @db.Uuid
+  sourceDeliveryStageId    String?            @map("source_delivery_stage_id") @db.Uuid
+  autoTaskKey              String?            @map("auto_task_key") @db.VarChar(240)
+  title                    String             @db.VarChar(200)
+  description              String?
+  dueDate                  DateTime?          @map("due_date") @db.Timestamptz(3)
+  durationMinutes          Int?               @map("duration_minutes")
+  timezone                 String             @default("Asia/Tokyo") @db.VarChar(80)
+  calendarSyncEnabled      Boolean            @default(false) @map("calendar_sync_enabled")
+  calendarSyncStatus       CalendarSyncStatus @default(NOT_REQUIRED) @map("calendar_sync_status")
+  googleCalendarId         String?            @map("google_calendar_id") @db.VarChar(240)
+  googleEventId            String?            @map("google_event_id") @db.VarChar(240)
+  googleEventHtmlLink      String?            @map("google_event_html_link")
+  calendarSyncAttemptCount Int                @default(0) @map("calendar_sync_attempt_count")
+  calendarSyncErrorCode    String?            @map("calendar_sync_error_code") @db.VarChar(120)
+  calendarSyncErrorMessage String?            @map("calendar_sync_error_message")
+  calendarLastSyncedAt     DateTime?          @map("calendar_last_synced_at") @db.Timestamptz(3)
+  calendarNextRetryAt      DateTime?          @map("calendar_next_retry_at") @db.Timestamptz(3)
+  status                   TaskStatus         @default(TODO)
+  priority                 TaskPriority       @default(MEDIUM)
+  taskType                 TaskType           @default(OTHER) @map("task_type")
+  completedAt              DateTime?          @map("completed_at") @db.Timestamptz(3)
+  createdAt                DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt                DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  owner        User         @relation("TaskOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  createdBy    User         @relation("TaskCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner        User           @relation("TaskOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  createdBy    User           @relation("TaskCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  reminders    TaskReminder[]
 
   @@index([organizationId, ownerUserId, status, dueDate])
   @@index([organizationId, deliveryProjectId, status, dueDate])
   @@index([organizationId, deliveryProjectId, autoTaskKey])
+  @@index([organizationId, calendarSyncStatus, calendarNextRetryAt])
   @@map("tasks")
+}
+
+model TaskReminder {
+  id              String              @id @default(uuid()) @db.Uuid
+  organizationId  String              @map("organization_id") @db.Uuid
+  taskId          String              @map("task_id") @db.Uuid
+  recipientUserId String              @map("recipient_user_id") @db.Uuid
+  channel         TaskReminderChannel
+  scheduledAt     DateTime            @map("scheduled_at") @db.Timestamptz(3)
+  status          TaskReminderStatus  @default(PENDING)
+  sentAt          DateTime?           @map("sent_at") @db.Timestamptz(3)
+  attemptCount    Int                 @default(0) @map("attempt_count")
+  lastError       String?             @map("last_error")
+  idempotencyKey  String              @map("idempotency_key") @db.VarChar(240)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  task         Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  recipient    User         @relation("TaskReminderRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, channel, scheduledAt])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status, scheduledAt])
+  @@index([organizationId, recipientUserId, status, scheduledAt])
+  @@map("task_reminders")
+}
+
+model Notification {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @map("organization_id") @db.Uuid
+  recipientUserId String    @map("recipient_user_id") @db.Uuid
+  type            String    @db.VarChar(80)
+  title           String    @db.VarChar(200)
+  body            String?
+  targetType      String?   @map("target_type") @db.VarChar(80)
+  targetId        String?   @map("target_id") @db.Uuid
+  readAt          DateTime? @map("read_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipient    User         @relation("NotificationRecipient", fields: [recipientUserId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, recipientUserId, readAt, createdAt])
+  @@index([organizationId, targetType, targetId])
+  @@map("notifications")
 }
 
 model CustomProperty {

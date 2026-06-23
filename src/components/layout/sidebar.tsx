@@ -29,7 +29,7 @@ const navigation = [
   },
   {
     href: "/delivery-projects",
-    label: "制作案件",
+    label: "CS案件",
     icon: "tasks",
     activePrefixes: ["/delivery-projects"],
   },

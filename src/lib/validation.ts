@@ -276,6 +276,7 @@ export const taskSchema = z
       .nullable()
       .optional(),
     relatedObjectId: optionalUuid,
+    deliveryProjectId: optionalUuid,
   })
   .refine((value) => !value.calendarSyncEnabled || value.dueDate, {
     message: "Google Calendarへ追加する場合は期限日時を入力してください。",
@@ -296,7 +297,7 @@ export const deliveryPipelineSchema = z.object({
   name: z
     .string()
     .trim()
-    .min(1, "制作パイプライン名を入力してください。")
+    .min(1, "CSパイプライン名を入力してください。")
     .max(160),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
@@ -312,7 +313,7 @@ export const pipelineStageSchema = z.object({
 });
 
 export const deliveryPipelineStageSchema = z.object({
-  pipelineId: z.string().uuid("制作パイプラインを選択してください。"),
+  pipelineId: z.string().uuid("CSパイプラインを選択してください。"),
   name: z.string().trim().min(1, "ステージ名を入力してください。").max(120),
   sortOrder: z.coerce.number().int().min(1),
   color: optionalText(40),
@@ -1197,7 +1198,8 @@ export const deliveryCrossSellSchema = z.object({
   productName: optionalText(180),
   expectedRevenueAmount: optionalNumber,
   expectedGrossProfitAmount: optionalNumber,
-  fsUserId: z.string().uuid("担当FSを選択してください。"),
+  salesOwnerMode: z.enum(["CS_OWNED", "FS_HANDOFF"]).default("CS_OWNED"),
+  fsUserId: optionalUuid,
   pipelineId: z.string().uuid("パイプラインを選択してください。"),
   stageId: z.string().uuid("初期ステージを選択してください。"),
   expectedCloseDate: optionalDate,
@@ -1206,4 +1208,7 @@ export const deliveryCrossSellSchema = z.object({
   handoffNote: optionalText(4000),
   overrideDuplicate: z.boolean().default(false),
   overrideReason: optionalText(1000),
+}).refine((value) => value.salesOwnerMode !== "FS_HANDOFF" || value.fsUserId, {
+  message: "FSへ引き継ぐ場合はFS担当者を選択してください。",
+  path: ["fsUserId"],
 });

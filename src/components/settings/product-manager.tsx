@@ -94,7 +94,7 @@ const productKindLabels: Record<ProductKind, string> = {
 
 const fulfillmentTypeLabels: Record<FulfillmentType, string> = {
   NONE: "制作なし",
-  PROJECT: "制作案件",
+  PROJECT: "CS案件",
   RECURRING_SERVICE: "継続運用",
 };
 
@@ -578,7 +578,7 @@ export function ProductManager({
                               relation?.autoCreateDeliveryProject ?? false
                             }
                           />
-                          受注時に制作案件を自動作成
+                          受注時にCS案件を自動作成
                         </label>
                         <select
                           className="text-field mt-2"

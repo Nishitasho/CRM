@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 type ObjectType = "CONTACT" | "COMPANY" | "DEAL";
+type RelatedObjectType = ObjectType | "DELIVERY_PROJECT";
 type Task = {
   id: string;
   title: string;
@@ -14,7 +15,7 @@ type Task = {
   priority: string;
   taskType: string;
   owner: { id: string; name: string };
-  related: { type: ObjectType; id: string; name: string } | null;
+  related: { type: RelatedObjectType; id: string; name: string } | null;
 };
 type Option = { id: string; name: string };
 
@@ -36,15 +37,17 @@ const priorityLabels: Record<string, string> = {
   MEDIUM: "優先度 中",
   LOW: "優先度 低",
 };
-const objectLabels: Record<ObjectType, string> = {
+const objectLabels: Record<RelatedObjectType, string> = {
   CONTACT: "担当者",
   COMPANY: "会社",
   DEAL: "商談",
+  DELIVERY_PROJECT: "CS案件",
 };
-const objectPaths: Record<ObjectType, string> = {
+const objectPaths: Record<RelatedObjectType, string> = {
   CONTACT: "contacts",
   COMPANY: "companies",
   DEAL: "deals",
+  DELIVERY_PROJECT: "delivery-projects",
 };
 
 export function TaskManager({
@@ -291,7 +294,9 @@ export function TaskManager({
                                 setEditingId(task.id);
                                 setOpen(false);
                                 setEditRelatedType(
-                                  task.related?.type ?? "CONTACT",
+                                  task.related?.type === "DELIVERY_PROJECT"
+                                    ? "CONTACT"
+                                    : task.related?.type ?? "CONTACT",
                                 );
                               }}
                             >

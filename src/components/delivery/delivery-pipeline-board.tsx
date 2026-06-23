@@ -90,7 +90,7 @@ export function DeliveryPipelineBoard({ stages }: { stages: DeliveryStage[] }) {
     });
     const result = await response.json();
     if (!response.ok) {
-      setError(result.message ?? "制作ステージを変更できませんでした。");
+      setError(result.message ?? "CSステージを変更できませんでした。");
       return;
     }
     setError("");
@@ -229,7 +229,7 @@ function ProjectCard({
       </p>
       <div className="mt-3 flex items-center justify-between text-[11px] font-bold text-slate-400">
         <span>{days === null ? "滞在日数 -" : `${days}日滞在`}</span>
-        {project.blocker ? <span className="text-red-700">blockerあり</span> : null}
+        {project.blocker ? <span className="text-red-700">対応阻害要因あり</span> : null}
       </div>
     </article>
   );

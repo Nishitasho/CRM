@@ -24,12 +24,12 @@ export async function PATCH(request: Request, { params }: Params) {
     });
     if (!current)
       return NextResponse.json(
-        { message: "制作パイプラインが見つかりません。" },
+        { message: "CSパイプラインが見つかりません。" },
         { status: 404 },
       );
     if (!(await assertBusinessUnitAccess(context, current.businessUnitId))) {
       return NextResponse.json(
-        { message: "この事業部の制作パイプラインを編集する権限がありません。" },
+        { message: "この事業部のCSパイプラインを編集する権限がありません。" },
         { status: 403 },
       );
     }

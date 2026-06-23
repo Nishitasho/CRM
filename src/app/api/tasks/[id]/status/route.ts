@@ -73,6 +73,21 @@ export async function PATCH(request: Request, { params }: Params) {
             title: `タスク「${current.title}」を完了しました`,
             metadata: { taskId: id },
           });
+      if (
+        input.status === "COMPLETED" &&
+        current.status !== "COMPLETED" &&
+        current.deliveryProjectId
+      )
+        await tx.activity.create({
+          data: {
+            organizationId: context.organization.id,
+            actorUserId: context.user.id,
+            deliveryProjectId: current.deliveryProjectId,
+            type: "SYSTEM_EVENT",
+            title: `タスク「${current.title}」を完了しました`,
+            metadata: { taskId: id },
+          },
+        });
       if (input.status === "CANCELED" && current.status !== "CANCELED")
         for (const link of links)
           await createRecordActivity(tx, {
@@ -84,6 +99,21 @@ export async function PATCH(request: Request, { params }: Params) {
             title: `タスク「${current.title}」をキャンセルしました`,
             metadata: { taskId: id },
           });
+      if (
+        input.status === "CANCELED" &&
+        current.status !== "CANCELED" &&
+        current.deliveryProjectId
+      )
+        await tx.activity.create({
+          data: {
+            organizationId: context.organization.id,
+            actorUserId: context.user.id,
+            deliveryProjectId: current.deliveryProjectId,
+            type: "SYSTEM_EVENT",
+            title: `タスク「${current.title}」をキャンセルしました`,
+            metadata: { taskId: id },
+          },
+        });
       return updated;
     });
     if (finished)

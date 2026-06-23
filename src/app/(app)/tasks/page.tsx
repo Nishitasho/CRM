@@ -87,7 +87,11 @@ async function getTaskRelatedRecords(
 ) {
   const related = new Map<
     string,
-    { type: "CONTACT" | "COMPANY" | "DEAL"; id: string; name: string }
+    {
+      type: "CONTACT" | "COMPANY" | "DEAL" | "DELIVERY_PROJECT";
+      id: string;
+      name: string;
+    }
   >();
   if (!taskIds.length) return related;
 
@@ -160,6 +164,26 @@ async function getTaskRelatedRecords(
       type: link.targetObjectType as "CONTACT" | "COMPANY" | "DEAL",
       id: link.targetObjectId,
       name,
+    });
+  }
+
+  const deliveryTasks = await prisma.task.findMany({
+    where: {
+      organizationId,
+      id: { in: taskIds },
+      deliveryProjectId: { not: null },
+    },
+    select: {
+      id: true,
+      deliveryProject: { select: { id: true, name: true } },
+    },
+  });
+  for (const task of deliveryTasks) {
+    if (!task.deliveryProject || related.has(task.id)) continue;
+    related.set(task.id, {
+      type: "DELIVERY_PROJECT",
+      id: task.deliveryProject.id,
+      name: task.deliveryProject.name,
     });
   }
 

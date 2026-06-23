@@ -21,7 +21,7 @@ export async function POST(request: Request) {
     });
     if (!pipeline)
       return NextResponse.json(
-        { message: "制作パイプラインが見つかりません。" },
+        { message: "CSパイプラインが見つかりません。" },
         { status: 404 },
       );
     const item = await prisma.deliveryPipelineStage.create({

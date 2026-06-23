@@ -140,15 +140,15 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
     <div className="mx-auto max-w-7xl">
       <PageHeading
         eyebrow="HD CS operations"
-        title="制作案件"
-        description="受注後のFS引き継ぎ、制作進捗、期限、クロスセル創出を商談とは別の制作案件として管理します。"
+        title="CS案件"
+        description="受注後のFS引き継ぎ、制作進捗、期限、クロスセル創出を商談とは別のCS案件として管理します。"
         action={
           <div className="flex flex-wrap gap-2">
             <Link href="/delivery-projects/board" className="secondary-button">
-              制作パイプライン
+              CSパイプライン
             </Link>
             <Link href="/settings/products" className="secondary-button">
-              制作対象設定
+              CS対象設定
             </Link>
           </div>
         }
@@ -156,7 +156,7 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
 
       <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <KpiCard
-          label="進行中制作案件"
+          label="進行中CS案件"
           value={report.summary.activeProjectCount}
           href="/api/reports/cs/drilldown?type=active"
         />
@@ -184,7 +184,7 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
             <div>
               <h2 className="font-bold">アラート</h2>
               <p className="mt-1 text-sm text-slate-500">
-                次回アクション、公開予定日、blocker、元商談差分を検出します。
+                次回アクション、公開予定日、対応阻害要因、元商談差分を検出します。
               </p>
             </div>
             <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">
@@ -230,7 +230,7 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
       <section className="card overflow-hidden">
         <div className="flex flex-col justify-between gap-4 border-b border-line p-5 md:flex-row md:items-center">
           <div>
-            <h2 className="font-bold">制作案件一覧</h2>
+            <h2 className="font-bold">CS案件一覧</h2>
             <p className="mt-1 text-sm text-slate-500">
               顧客、ステージ、CS担当、公開予定、次回アクションを横断確認します。
             </p>
@@ -312,7 +312,7 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
               {!projects.length ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-12 text-center text-sm font-semibold text-slate-400">
-                    制作案件はまだありません。
+                    CS案件はまだありません。
                   </td>
                 </tr>
               ) : null}
@@ -345,7 +345,7 @@ export default async function DeliveryProjectsPage({ searchParams }: Props) {
         <section className="mt-6 rounded-lg border border-line bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <h2 className="font-bold">制作案件未作成の受注商談</h2>
+              <h2 className="font-bold">CS案件未作成の受注商談</h2>
               <p className="mt-1 text-sm text-slate-500">
                 デプロイ時に自動作成せず、管理者が確認してから個別作成します。
               </p>

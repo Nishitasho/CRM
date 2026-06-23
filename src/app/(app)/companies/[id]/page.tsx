@@ -69,6 +69,15 @@ export default async function CompanyDetailPage({
       deletedAt: null,
     },
   });
+  const deliveryProjects = await prisma.deliveryProject.findMany({
+    where: {
+      organizationId: context.organization.id,
+      companyId: id,
+      deletedAt: null,
+    },
+    select: { id: true, name: true, status: true },
+    orderBy: { createdAt: "desc" },
+  });
   const contactById = new Map(contacts.map((contact) => [contact.id, contact]));
   const contactPeople = contactLinks
     .map((link) => {
@@ -199,6 +208,27 @@ export default async function CompanyDetailPage({
         )}
       />
       <div className="mt-6">
+        {deliveryProjects.length ? (
+          <section className="card mb-6 overflow-hidden">
+            <div className="border-b border-line p-5">
+              <h2 className="font-bold">関連CS案件</h2>
+            </div>
+            <div className="divide-y divide-line">
+              {deliveryProjects.map((project) => (
+                <Link
+                  key={project.id}
+                  href={`/delivery-projects/${project.id}`}
+                  className="block p-4 hover:bg-brand-50"
+                >
+                  <p className="font-semibold text-ink">{project.name}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {project.status}
+                  </p>
+                </Link>
+              ))}
+            </div>
+          </section>
+        ) : null}
         <ContactPersonManager
           companyId={id}
           contacts={contactPeople}

@@ -19,6 +19,7 @@ export async function POST(request: Request, { params }: Params) {
       organizationId: context.organization.id,
       projectId: id,
       actorUserId: context.user.id,
+      salesOwnerMode: input.salesOwnerMode,
       fsUserId: input.fsUserId,
       pipelineId: input.pipelineId,
       stageId: input.stageId,

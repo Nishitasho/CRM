@@ -55,7 +55,7 @@ export async function POST(request: Request) {
       null;
     if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
       return NextResponse.json(
-        { message: "この事業部へ制作パイプラインを作成する権限がありません。" },
+        { message: "この事業部へCSパイプラインを作成する権限がありません。" },
         { status: 403 },
       );
     }

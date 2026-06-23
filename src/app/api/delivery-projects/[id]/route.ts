@@ -129,7 +129,7 @@ export async function GET(_: Request, { params }: Params) {
     const { id } = await params;
     const item = await getDeliveryProjectDetail(context.organization.id, id);
     if (!item)
-      return NextResponse.json({ message: "制作案件が見つかりません。" }, { status: 404 });
+      return NextResponse.json({ message: "CS案件が見つかりません。" }, { status: 404 });
     return NextResponse.json({ item });
   } catch (error) {
     return apiError(error);
@@ -147,13 +147,13 @@ export async function PATCH(request: Request, { params }: Params) {
       where: { id, organizationId: context.organization.id, deletedAt: null },
     });
     if (!current)
-      return NextResponse.json({ message: "制作案件が見つかりません。" }, { status: 404 });
+      return NextResponse.json({ message: "CS案件が見つかりません。" }, { status: 404 });
     if (
       context.membership.role === "USER" &&
       current.ownerUserId &&
       current.ownerUserId !== context.user.id
     ) {
-      throw new AuthorizationError("担当外の制作案件は編集できません。");
+      throw new AuthorizationError("担当外のCS案件は編集できません。");
     }
     const input = deliveryProjectUpdateSchema.parse(await request.json());
     const item = await prisma.deliveryProject.update({

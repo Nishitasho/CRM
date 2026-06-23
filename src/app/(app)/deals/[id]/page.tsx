@@ -150,6 +150,18 @@ export default async function DealDetailPage({
     },
     orderBy: [{ status: "asc" }, { dueDate: "asc" }, { createdAt: "desc" }],
   });
+  const deliveryProjects = await prisma.deliveryProject.findMany({
+    where: {
+      organizationId: context.organization.id,
+      deletedAt: null,
+      OR: [
+        { sourceDealId: id },
+        ...(item.originProjectId ? [{ id: item.originProjectId }] : []),
+      ],
+    },
+    select: { id: true, name: true, status: true },
+    orderBy: { createdAt: "desc" },
+  });
   const canEdit =
     hasPermission(context.membership.role, Permission.CRM_WRITE) &&
     (context.membership.role !== "USER" ||
@@ -355,13 +367,36 @@ export default async function DealDetailPage({
           Permission.CRM_DELETE,
         )}
         timelineBefore={
-          <DealTaskCard
-            dealId={id}
-            items={dealTasks}
-            members={ownerOptions.map((member) => member.user)}
-            defaultOwnerUserId={item.ownerUserId ?? context.user.id}
-            canEdit={canEdit}
-          />
+          <div className="space-y-6">
+            {deliveryProjects.length ? (
+              <section className="card overflow-hidden">
+                <div className="border-b border-line p-5">
+                  <h2 className="font-bold">関連CS案件</h2>
+                </div>
+                <div className="divide-y divide-line">
+                  {deliveryProjects.map((project) => (
+                    <Link
+                      key={project.id}
+                      href={`/delivery-projects/${project.id}`}
+                      className="block p-4 hover:bg-brand-50"
+                    >
+                      <p className="font-semibold text-ink">{project.name}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {project.status}
+                      </p>
+                    </Link>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <DealTaskCard
+              dealId={id}
+              items={dealTasks}
+              members={ownerOptions.map((member) => member.user)}
+              defaultOwnerUserId={item.ownerUserId ?? context.user.id}
+              canEdit={canEdit}
+            />
+          </div>
         }
       />
       <DealLineItemManager

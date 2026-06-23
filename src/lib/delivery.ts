@@ -81,7 +81,7 @@ const requiredFieldLabels: Record<string, string> = {
   nextActionDate: "次回アクション日",
   expectedPublishDate: "公開予定日",
   actualPublishDate: "実公開日",
-  blocker: "blocker",
+  blocker: "対応阻害要因",
   scopeSnapshot: "制作範囲",
 };
 
@@ -206,24 +206,53 @@ export function detectScopeChanged(
 }
 
 async function getDealAssociations(tx: Tx, organizationId: string, dealId: string) {
-  const associations = await tx.objectAssociation.findMany({
+  const companyId = await resolveDealCompanyId(tx, organizationId, dealId);
+  const contactAssociations = await tx.objectAssociation.findMany({
     where: {
       organizationId,
       sourceObjectType: "DEAL",
       sourceObjectId: dealId,
-      targetObjectType: { in: ["COMPANY", "CONTACT"] },
+      targetObjectType: "CONTACT",
       isPrimary: true,
     },
     select: { targetObjectType: true, targetObjectId: true },
   });
   return {
-    companyId:
-      associations.find((item) => item.targetObjectType === "COMPANY")?.targetObjectId ??
-      null,
+    companyId,
     primaryContactId:
-      associations.find((item) => item.targetObjectType === "CONTACT")?.targetObjectId ??
+      contactAssociations.find((item) => item.targetObjectType === "CONTACT")?.targetObjectId ??
       null,
   };
+}
+
+export async function resolveDealCompanyId(
+  tx: Tx,
+  organizationId: string,
+  dealId: string,
+) {
+  const associations = await tx.objectAssociation.findMany({
+    where: {
+      organizationId,
+      OR: [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: dealId,
+          targetObjectType: "COMPANY",
+        },
+        {
+          sourceObjectType: "COMPANY",
+          targetObjectType: "DEAL",
+          targetObjectId: dealId,
+        },
+      ],
+    },
+    orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+  });
+  const association = associations[0];
+  if (!association) return null;
+  return association.sourceObjectType === "COMPANY"
+    ? association.sourceObjectId
+    : association.targetObjectId;
 }
 
 async function getDefaultDeliveryPipeline(
@@ -246,12 +275,12 @@ async function getDefaultDeliveryPipeline(
         },
         orderBy: [{ businessUnitId: "desc" }, { createdAt: "asc" }],
       });
-  if (!pipeline) throw new BadRequestError("制作パイプラインが未設定です。");
+  if (!pipeline) throw new BadRequestError("CSパイプラインが未設定です。");
   const stage = await tx.deliveryPipelineStage.findFirst({
     where: { organizationId, pipelineId: pipeline.id },
     orderBy: { sortOrder: "asc" },
   });
-  if (!stage) throw new BadRequestError("制作パイプラインの初期ステージが未設定です。");
+  if (!stage) throw new BadRequestError("CSパイプラインの初期ステージが未設定です。");
   return { pipeline, stage };
 }
 
@@ -372,7 +401,7 @@ export async function createDeliveryProjectsForDeal(input: {
     });
     if (!deal) throw new BadRequestError("対象商談が見つかりません。");
     if (deal.status !== DealStatus.WON) {
-      throw new BadRequestError("制作案件は受注済み商談から作成してください。");
+      throw new BadRequestError("CS案件は受注済み商談から作成してください。");
     }
     const productIds = deal.lineItems
       .map((line) => line.productId)
@@ -481,7 +510,7 @@ export async function createDeliveryProjectsForDeal(input: {
           name:
             group.mode === ProjectGroupingMode.SEPARATE_BY_LINE_ITEM
               ? `${deal.name} ${group.lines[0]?.product?.name ?? group.lines[0]?.name}制作`
-              : `${deal.name} 制作案件`,
+              : `${deal.name} CS案件`,
           ownerUserId: template?.defaultCsUserId ?? null,
           createdByUserId: input.actorUserId,
           expectedStartDate: new Date(),
@@ -532,7 +561,7 @@ export async function createDeliveryProjectsForDeal(input: {
           toStageId: stage.id,
           changedByUserId: input.actorUserId,
           enteredAt: new Date(),
-          note: "制作案件を作成しました。",
+          note: "CS案件を作成しました。",
         },
       });
       await createInitialTasks({
@@ -550,8 +579,8 @@ export async function createDeliveryProjectsForDeal(input: {
           actorUserId: input.actorUserId,
           deliveryProjectId: project.id,
           type: "SYSTEM_EVENT",
-          title: "制作案件を作成",
-          body: `元商談「${deal.name}」から制作案件を作成しました。`,
+          title: "CS案件を作成",
+          body: `元商談「${deal.name}」からCS案件を作成しました。`,
           metadata: inputJson({ groupKey }),
         },
       });
@@ -619,7 +648,7 @@ export async function getEligibleDeliveryDeals(organizationId: string) {
           ? targetLines.some((line) => existingLineIds.has(line.id))
             ? "一部作成済みです。"
             : "作成できます。"
-          : "制作対象商品がありません。",
+          : "CS対象商品がありません。",
       };
     })
     .filter((item) => item.targetLines.length > 0);
@@ -637,7 +666,7 @@ export async function submitDeliveryHandoff(input: {
     const project = await tx.deliveryProject.findFirst({
       where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
     });
-    if (!project) throw new BadRequestError("制作案件が見つかりません。");
+    if (!project) throw new BadRequestError("CS案件が見つかりません。");
     const template = project.templateId
       ? await tx.deliveryProjectTemplate.findFirst({
           where: { id: project.templateId, organizationId: input.organizationId },
@@ -810,7 +839,7 @@ export async function transitionDeliveryProject(input: {
         where: { id: input.stageId, organizationId: input.organizationId },
       }),
     ]);
-    if (!project || !stage) throw new BadRequestError("制作案件またはステージが見つかりません。");
+    if (!project || !stage) throw new BadRequestError("CS案件またはステージが見つかりません。");
     const values = {
       ...asRecord(project.scopeSnapshot),
       ownerUserId: project.ownerUserId,
@@ -899,7 +928,7 @@ export async function transitionDeliveryProject(input: {
         actorUserId: input.actorUserId,
         deliveryProjectId: project.id,
         type: "STAGE_CHANGED",
-        title: "制作ステージを変更",
+        title: "CSステージを変更",
         body: stage.name,
       },
     });
@@ -918,7 +947,7 @@ export async function syncDeliveryScope(input: {
       where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
       include: { items: true },
     });
-    if (!project || !project.sourceDealId) throw new BadRequestError("制作案件が見つかりません。");
+    if (!project || !project.sourceDealId) throw new BadRequestError("CS案件が見つかりません。");
     const deal = await tx.deal.findFirst({
       where: { id: project.sourceDealId, organizationId: input.organizationId },
       include: {
@@ -929,9 +958,12 @@ export async function syncDeliveryScope(input: {
       },
     });
     if (!deal) throw new BadRequestError("元商談が見つかりません。");
+    const resolvedCompanyId =
+      (await resolveDealCompanyId(tx, input.organizationId, deal.id)) ??
+      project.companyId;
     const currentSnapshot = buildScopeSnapshot({
       deal,
-      companyId: project.companyId,
+      companyId: resolvedCompanyId,
       primaryContactId: project.primaryContactId,
       items: deal.lineItems,
     });
@@ -939,7 +971,11 @@ export async function syncDeliveryScope(input: {
     if (!changed) {
       return tx.deliveryProject.update({
         where: { id: project.id },
-        data: { scopeSyncStatus: ScopeSyncStatus.SYNCED },
+        data: {
+          companyId: resolvedCompanyId,
+          scopeSnapshot: inputJson(currentSnapshot),
+          scopeSyncStatus: ScopeSyncStatus.SYNCED,
+        },
       });
     }
     if (!input.apply) {
@@ -951,6 +987,7 @@ export async function syncDeliveryScope(input: {
     return tx.deliveryProject.update({
       where: { id: project.id },
       data: {
+        companyId: resolvedCompanyId,
         scopeSnapshot: inputJson(currentSnapshot),
         scopeVersion: { increment: 1 },
         scopeSyncStatus: ScopeSyncStatus.SYNCED,
@@ -963,7 +1000,8 @@ export async function createCrossSellDeal(input: {
   organizationId: string;
   projectId: string;
   actorUserId: string;
-  fsUserId: string;
+  salesOwnerMode: "CS_OWNED" | "FS_HANDOFF";
+  fsUserId?: string | null;
   pipelineId: string;
   stageId: string;
   productId?: string | null;
@@ -986,9 +1024,30 @@ export async function createCrossSellDeal(input: {
         where: { id: input.stageId, organizationId: input.organizationId },
       }),
     ]);
-    if (!project || !stage) throw new BadRequestError("制作案件または商談ステージが見つかりません。");
+    if (!project || !stage) throw new BadRequestError("CS案件または商談ステージが見つかりません。");
+    if (!project.companyId) {
+      throw new BadRequestError("CS案件に会社が設定されていないため、商談を作成できません。");
+    }
     if (stage.pipelineId !== input.pipelineId) {
       throw new BadRequestError("ステージとパイプラインの組み合わせが正しくありません。");
+    }
+    const csUserId = project.ownerUserId ?? input.actorUserId;
+    if (input.salesOwnerMode === "FS_HANDOFF" && !input.fsUserId) {
+      throw new BadRequestError("FSへ引き継ぐ場合はFS担当者を選択してください。");
+    }
+    if (input.fsUserId) {
+      const fsMember = await tx.organizationMember.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: input.organizationId,
+            userId: input.fsUserId,
+          },
+        },
+        select: { status: true },
+      });
+      if (!fsMember || fsMember.status !== "ACTIVE") {
+        throw new BadRequestError("指定されたFS担当者はこの組織に所属していません。");
+      }
     }
     const duplicate = input.productId
       ? await tx.deal.findFirst({
@@ -1011,7 +1070,8 @@ export async function createCrossSellDeal(input: {
       data: {
         organizationId: input.organizationId,
         businessUnitId: project.businessUnitId,
-        ownerUserId: input.fsUserId,
+        ownerUserId:
+          input.salesOwnerMode === "FS_HANDOFF" ? input.fsUserId! : csUserId,
         pipelineId: input.pipelineId,
         stageId: input.stageId,
         name: input.title || `${project.name} クロスセル商談`,
@@ -1027,6 +1087,7 @@ export async function createCrossSellDeal(input: {
           proposalBackground: input.proposalBackground ?? null,
           csHandoffNote: input.handoffNote ?? null,
           overrideDuplicateReason: input.overrideReason ?? null,
+          salesOwnerMode: input.salesOwnerMode,
         }),
       },
     });
@@ -1046,71 +1107,93 @@ export async function createCrossSellDeal(input: {
         },
       });
     }
-    await tx.dealParticipant.createMany({
-      data: [
+    const participantRows: Prisma.DealParticipantCreateManyInput[] =
+      input.salesOwnerMode === "FS_HANDOFF"
+        ? [
+            {
+              organizationId: input.organizationId,
+              dealId: deal.id,
+              userId: csUserId,
+              workFunction: "CS",
+              role: DealParticipantRole.CROSS_SELL_ORIGINATOR,
+              creditShare: 80,
+              creditedAt: new Date(),
+              snapshotUserName: null,
+            },
+            {
+              organizationId: input.organizationId,
+              dealId: deal.id,
+              userId: input.fsUserId!,
+              workFunction: "FS",
+              role: DealParticipantRole.CLOSER,
+              creditShare: 20,
+              creditedAt: new Date(),
+              snapshotUserName: null,
+            },
+          ]
+        : [
         {
           organizationId: input.organizationId,
           dealId: deal.id,
-          userId: input.actorUserId,
+              userId: csUserId,
           workFunction: "CS",
           role: DealParticipantRole.CROSS_SELL_ORIGINATOR,
+              creditShare: 100,
           creditedAt: new Date(),
           snapshotUserName: null,
         },
         {
           organizationId: input.organizationId,
           dealId: deal.id,
-          userId: input.fsUserId,
-          workFunction: "FS",
+              userId: csUserId,
+              workFunction: "CS",
           role: DealParticipantRole.CLOSER,
           creditShare: 100,
           creditedAt: new Date(),
           snapshotUserName: null,
         },
+          ];
+    await tx.dealParticipant.createMany({ data: participantRows });
+    await tx.objectAssociation.createMany({
+      data: [
+        {
+          organizationId: input.organizationId,
+          sourceObjectType: "DEAL",
+          sourceObjectId: deal.id,
+          targetObjectType: "COMPANY",
+          targetObjectId: project.companyId,
+          label: "クロスセル対象",
+          isPrimary: true,
+        },
+        ...(project.primaryContactId
+          ? [
+              {
+                organizationId: input.organizationId,
+                sourceObjectType: "DEAL" as const,
+                sourceObjectId: deal.id,
+                targetObjectType: "CONTACT" as const,
+                targetObjectId: project.primaryContactId,
+                label: "顧客担当者",
+                isPrimary: true,
+              },
+            ]
+          : []),
       ],
+      skipDuplicates: true,
     });
-    if (project.companyId) {
-      await tx.objectAssociation.createMany({
-        data: [
-          {
-            organizationId: input.organizationId,
-            sourceObjectType: "DEAL",
-            sourceObjectId: deal.id,
-            targetObjectType: "COMPANY",
-            targetObjectId: project.companyId,
-            label: "クロスセル対象",
-            isPrimary: true,
-          },
-          ...(project.primaryContactId
-            ? [
-                {
-                  organizationId: input.organizationId,
-                  sourceObjectType: "DEAL" as const,
-                  sourceObjectId: deal.id,
-                  targetObjectType: "CONTACT" as const,
-                  targetObjectId: project.primaryContactId,
-                  label: "顧客担当者",
-                  isPrimary: true,
-                },
-              ]
-            : []),
-        ],
-        skipDuplicates: true,
-      });
-    }
     await tx.salesPerformanceEvent.createMany({
       data: [{
         organizationId: input.organizationId,
         businessUnitId: project.businessUnitId,
         dealId: deal.id,
-        creditedUserId: input.actorUserId,
+        creditedUserId: csUserId,
         creditedRole: DealParticipantRole.CROSS_SELL_ORIGINATOR,
         workFunction: "CS",
         eventType: "CROSS_SELL_CREATED",
         source: "SYSTEM",
         occurredAt: new Date(),
         quantity: 1,
-        idempotencyKey: `cross-sell-created:${deal.id}:${input.actorUserId}`,
+        idempotencyKey: `cross-sell-created:${deal.id}:${csUserId}`,
         metadata: inputJson({ originProjectId: project.id, originDealId: project.sourceDealId }),
       }],
       skipDuplicates: true,
@@ -1168,7 +1251,11 @@ export function buildDeliveryAlerts(projects: Array<{
       alerts.push({ ...common, type: "PUBLISH_OVERDUE", message: "公開予定日を過ぎています。" });
     }
     if (project.blocker) {
-      alerts.push({ ...common, type: "BLOCKED", message: `blocker: ${project.blocker}` });
+      alerts.push({
+        ...common,
+        type: "BLOCKED",
+        message: `対応阻害要因: ${project.blocker}`,
+      });
     }
     if (project.scopeSyncStatus === ScopeSyncStatus.SOURCE_CHANGED) {
       alerts.push({ ...common, type: "SOURCE_CHANGED", message: "元商談内容が変更されています。" });

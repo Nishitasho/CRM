@@ -1,6 +1,6 @@
 import { CalendarSyncStatus, Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
-import { apiError } from "@/lib/api";
+import { apiError, BadRequestError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import {
   assertObjectAccess,
@@ -8,7 +8,11 @@ import {
   validateOwner,
 } from "@/lib/crm";
 import { syncTaskToGoogle } from "@/lib/google-calendar";
-import { Permission, requirePermission } from "@/lib/permissions";
+import {
+  AuthorizationError,
+  Permission,
+  requirePermission,
+} from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import {
   assertTaskHasDueDateForCalendar,
@@ -17,6 +21,30 @@ import {
   taskOwnerScope,
 } from "@/lib/tasks";
 import { taskSchema } from "@/lib/validation";
+
+async function assertDeliveryProjectAccess(
+  context: NonNullable<Awaited<ReturnType<typeof getAuthContext>>>,
+  deliveryProjectId: string | null | undefined,
+) {
+  if (!deliveryProjectId) return null;
+  const project = await prisma.deliveryProject.findFirst({
+    where: {
+      id: deliveryProjectId,
+      organizationId: context.organization.id,
+      deletedAt: null,
+    },
+    select: { id: true, name: true, ownerUserId: true, companyId: true },
+  });
+  if (!project) throw new BadRequestError("CS案件が見つかりません。");
+  if (
+    context.membership.role === "USER" &&
+    project.ownerUserId &&
+    project.ownerUserId !== context.user.id
+  ) {
+    throw new AuthorizationError("担当外のCS案件にはタスクを作成できません。");
+  }
+  return project;
+}
 
 export async function GET(request: Request) {
   try {
@@ -82,6 +110,10 @@ export async function POST(request: Request) {
     await validateOwner(context.organization.id, input.ownerUserId);
     await canAssignTaskOwner(context, input.ownerUserId);
     assertTaskHasDueDateForCalendar(input);
+    const deliveryProject = await assertDeliveryProjectAccess(
+      context,
+      input.deliveryProjectId,
+    );
     if (input.relatedObjectType && input.relatedObjectId)
       await assertObjectAccess(
         context,
@@ -98,6 +130,7 @@ export async function POST(request: Request) {
           title: input.title,
           description: input.description,
           dueDate: input.dueDate,
+          deliveryProjectId: deliveryProject?.id ?? null,
           durationMinutes: input.durationMinutes ?? 30,
           timezone: input.timezone,
           calendarSyncEnabled: input.calendarSyncEnabled,
@@ -139,6 +172,18 @@ export async function POST(request: Request) {
           objectId: input.relatedObjectId,
           type: "SYSTEM_EVENT",
           title: `タスク「${created.title}」を作成しました`,
+        });
+      }
+      if (deliveryProject) {
+        await tx.activity.create({
+          data: {
+            organizationId: context.organization.id,
+            actorUserId: context.user.id,
+            deliveryProjectId: deliveryProject.id,
+            type: "SYSTEM_EVENT",
+            title: `タスク「${created.title}」を作成しました`,
+            metadata: { taskId: created.id },
+          },
         });
       }
       return created;

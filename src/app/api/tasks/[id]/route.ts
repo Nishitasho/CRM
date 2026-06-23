@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { apiError } from "@/lib/api";
+import { apiError, BadRequestError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import {
   assertObjectAccess,
@@ -7,6 +7,7 @@ import {
   validateOwner,
 } from "@/lib/crm";
 import { deleteTaskGoogleEvent, syncTaskToGoogle } from "@/lib/google-calendar";
+import { AuthorizationError } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import {
   assertTaskHasDueDateForCalendar,
@@ -16,6 +17,31 @@ import {
 } from "@/lib/tasks";
 import { taskSchema } from "@/lib/validation";
 type Params = { params: Promise<{ id: string }> };
+
+async function assertDeliveryProjectAccess(
+  context: NonNullable<Awaited<ReturnType<typeof getAuthContext>>>,
+  deliveryProjectId: string | null | undefined,
+) {
+  if (!deliveryProjectId) return null;
+  const project = await prisma.deliveryProject.findFirst({
+    where: {
+      id: deliveryProjectId,
+      organizationId: context.organization.id,
+      deletedAt: null,
+    },
+    select: { id: true, name: true, ownerUserId: true },
+  });
+  if (!project) throw new BadRequestError("CS案件が見つかりません。");
+  if (
+    context.membership.role === "USER" &&
+    project.ownerUserId &&
+    project.ownerUserId !== context.user.id
+  ) {
+    throw new AuthorizationError("担当外のCS案件は操作できません。");
+  }
+  return project;
+}
+
 export async function PATCH(request: Request, { params }: Params) {
   try {
     const context = await getAuthContext();
@@ -39,6 +65,10 @@ export async function PATCH(request: Request, { params }: Params) {
     await validateOwner(context.organization.id, input.ownerUserId);
     await canAssignTaskOwner(context, input.ownerUserId);
     assertTaskHasDueDateForCalendar(input);
+    const deliveryProject = await assertDeliveryProjectAccess(
+      context,
+      input.deliveryProjectId,
+    );
     if (input.relatedObjectType && input.relatedObjectId)
       await assertObjectAccess(
         context,
@@ -63,6 +93,7 @@ export async function PATCH(request: Request, { params }: Params) {
           title: input.title,
           description: input.description,
           dueDate: input.dueDate,
+          deliveryProjectId: deliveryProject?.id ?? null,
           durationMinutes: input.durationMinutes ?? 30,
           timezone: input.timezone,
           calendarSyncEnabled: shouldSyncCalendar,
@@ -135,6 +166,21 @@ export async function PATCH(request: Request, { params }: Params) {
               ? `タスク「${updated.title}」の担当者を変更しました`
               : `タスク「${updated.title}」を更新しました`,
           metadata: { taskId: id },
+        });
+      }
+      if (deliveryProject) {
+        await tx.activity.create({
+          data: {
+            organizationId: context.organization.id,
+            actorUserId: context.user.id,
+            deliveryProjectId: deliveryProject.id,
+            type: "SYSTEM_EVENT",
+            title:
+              current.ownerUserId !== input.ownerUserId
+                ? `タスク「${updated.title}」の担当者を変更しました`
+                : `タスク「${updated.title}」を更新しました`,
+            metadata: { taskId: id },
+          },
         });
       }
       return updated;

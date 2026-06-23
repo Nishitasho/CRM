@@ -153,7 +153,10 @@ export async function syncCrossSellPerformanceEvents(
         dealId: deal.id,
         creditedUserId: participant.userId,
         creditedRole: DealParticipantRole.CLOSER,
-        workFunction: "FS",
+        workFunction:
+          "workFunction" in participant
+            ? (participant.workFunction ?? "FS")
+            : "FS",
         eventType: SalesPerformanceEventType.CROSS_SELL_WON,
         source: "SYSTEM",
         occurredAt: deal.wonAt ?? deal.closeDate ?? occurredAt,

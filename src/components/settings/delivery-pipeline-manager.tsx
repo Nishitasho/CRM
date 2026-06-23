@@ -159,7 +159,7 @@ export function DeliveryPipelineManager({
   return (
     <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
       <aside className="card p-4">
-        <h2 className="px-2 font-bold">制作パイプライン</h2>
+        <h2 className="px-2 font-bold">CSパイプライン</h2>
         <div className="mt-3 space-y-1">
           {pipelines.map((item) => (
             <button
@@ -184,7 +184,7 @@ export function DeliveryPipelineManager({
             <input
               className="text-field"
               name="name"
-              placeholder="新しい制作パイプライン"
+              placeholder="新しいCSパイプライン"
               required
             />
             <label className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-500">
@@ -297,7 +297,7 @@ export function DeliveryPipelineManager({
                   <input name="isPaused" type="checkbox" defaultChecked={stage.isPaused} />
                   保留扱い
                 </label>
-                <span className="text-xs text-slate-400">制作案件 {stage.projectCount}件</span>
+                <span className="text-xs text-slate-400">CS案件 {stage.projectCount}件</span>
               </div>
             </form>
           ))}

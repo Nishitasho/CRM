@@ -25,9 +25,9 @@ export default async function DeliveryProjectBoardPage({ searchParams }: Props) 
     return (
       <div className="mx-auto max-w-7xl">
         <PageHeading
-          eyebrow="Delivery pipeline"
-          title="制作パイプライン"
-          description="制作パイプラインがまだ設定されていません。seedまたは管理画面から作成してください。"
+          eyebrow="CS pipeline"
+          title="CSパイプライン"
+          description="CSパイプラインがまだ設定されていません。seedまたは管理画面から作成してください。"
           action={
             <Link href="/delivery-projects" className="secondary-button">
               リスト表示
@@ -89,16 +89,16 @@ export default async function DeliveryProjectBoardPage({ searchParams }: Props) 
   return (
     <div className="mx-auto max-w-[1800px]">
       <PageHeading
-        eyebrow="Delivery pipeline"
-        title="制作パイプライン"
-        description={`${pipeline.name}の制作案件をドラッグ＆ドロップで進めます。ステージ移動時は必須項目を検証します。`}
+        eyebrow="CS pipeline"
+        title="CSパイプライン"
+        description={`${pipeline.name}のCS案件をドラッグ＆ドロップで進めます。ステージ移動時は必須項目を検証します。`}
         action={
           <div className="flex flex-wrap gap-2">
             <Link href="/delivery-projects" className="secondary-button">
               リスト表示
             </Link>
             <Link href="/settings/products" className="secondary-button">
-              制作対象設定
+              CS対象設定
             </Link>
           </div>
         }

@@ -23,7 +23,7 @@ export async function PATCH(request: Request, { params }: Params) {
     });
     if (!current)
       return NextResponse.json(
-        { message: "制作ステージが見つかりません。" },
+        { message: "CSステージが見つかりません。" },
         { status: 404 },
       );
     const input = deliveryPipelineStageSchema.parse(await request.json());
@@ -85,7 +85,7 @@ export async function DELETE(_: Request, { params }: Params) {
     });
     if (!stage)
       return NextResponse.json(
-        { message: "制作ステージが見つかりません。" },
+        { message: "CSステージが見つかりません。" },
         { status: 404 },
       );
     const projectCount = await prisma.deliveryProject.count({
@@ -93,7 +93,7 @@ export async function DELETE(_: Request, { params }: Params) {
     });
     if (projectCount)
       return NextResponse.json(
-        { message: "制作案件が存在するステージは削除できません。" },
+        { message: "CS案件が存在するステージは削除できません。" },
         { status: 409 },
       );
     await prisma.deliveryPipelineStage.delete({ where: { id } });

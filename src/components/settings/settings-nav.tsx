@@ -4,7 +4,7 @@ const items = [
   ["/settings/business-units", "事業部"],
   ["/settings/members", "メンバーと権限"],
   ["/settings/pipelines", "パイプライン"],
-  ["/settings/delivery-pipelines", "制作パイプライン"],
+  ["/settings/delivery-pipelines", "CSパイプライン"],
   ["/settings/products", "商品・価格"],
   ["/settings/kpis", "KPI定義"],
   ["/settings/daily-metric-fields", "日次入力項目設定"],

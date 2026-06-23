@@ -22,6 +22,9 @@ type Task = {
 };
 
 type Option = { id: string; name: string };
+type TaskContext =
+  | { contextType: "DEAL"; contextId: string }
+  | { contextType: "DELIVERY_PROJECT"; contextId: string };
 
 const typeLabels: Record<string, string> = {
   CALL: "電話",
@@ -55,18 +58,22 @@ const reminderOptions = [
   { value: 1440, label: "1日前" },
 ];
 
-export function DealTaskCard({
-  dealId,
+export function RecordTaskCard({
+  context,
   items,
   members,
   defaultOwnerUserId,
   canEdit,
+  title = "タスク",
+  description,
 }: {
-  dealId: string;
+  context: TaskContext;
   items: Task[];
   members: Option[];
   defaultOwnerUserId: string;
   canEdit: boolean;
+  title?: string;
+  description?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -85,7 +92,7 @@ export function DealTaskCard({
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPendingId("create");
-    const payload = readTaskForm(event.currentTarget, dealId);
+    const payload = readTaskForm(event.currentTarget, context);
     const response = await fetch("/api/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -107,7 +114,7 @@ export function DealTaskCard({
     const response = await fetch(`/api/tasks/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(readTaskForm(event.currentTarget, dealId)),
+      body: JSON.stringify(readTaskForm(event.currentTarget, context)),
     });
     const result = await response.json();
     setPendingId(null);
@@ -168,10 +175,10 @@ export function DealTaskCard({
     <section className="card p-6">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div>
-          <h2 className="font-bold">タスク</h2>
+          <h2 className="font-bold">{title}</h2>
           <p className="mt-1 text-sm text-slate-500">
-            次回対応、リマインド、Google
-            Calendar同期をこの商談に紐付けて管理します。
+            {description ??
+              "次回対応、リマインド、Google Calendar同期をこのレコードに紐付けて管理します。"}
           </p>
         </div>
         {canEdit ? (
@@ -265,6 +272,31 @@ export function DealTaskCard({
         </div>
       ) : null}
     </section>
+  );
+}
+
+export function DealTaskCard({
+  dealId,
+  items,
+  members,
+  defaultOwnerUserId,
+  canEdit,
+}: {
+  dealId: string;
+  items: Task[];
+  members: Option[];
+  defaultOwnerUserId: string;
+  canEdit: boolean;
+}) {
+  return (
+    <RecordTaskCard
+      context={{ contextType: "DEAL", contextId: dealId }}
+      items={items}
+      members={members}
+      defaultOwnerUserId={defaultOwnerUserId}
+      canEdit={canEdit}
+      description="次回対応、リマインド、Google Calendar同期をこの商談に紐付けて管理します。"
+    />
   );
 }
 
@@ -539,7 +571,7 @@ function TaskForm({
   );
 }
 
-function readTaskForm(form: HTMLFormElement, dealId: string) {
+function readTaskForm(form: HTMLFormElement, context: TaskContext) {
   const data = new FormData(form);
   const reminderOffsets = data
     .getAll("reminderOffsets")
@@ -557,8 +589,10 @@ function readTaskForm(form: HTMLFormElement, dealId: string) {
     status: data.get("status"),
     priority: data.get("priority"),
     taskType: data.get("taskType"),
-    relatedObjectType: "DEAL",
-    relatedObjectId: dealId,
+    relatedObjectType: context.contextType === "DEAL" ? "DEAL" : null,
+    relatedObjectId: context.contextType === "DEAL" ? context.contextId : null,
+    deliveryProjectId:
+      context.contextType === "DELIVERY_PROJECT" ? context.contextId : null,
   };
 }
 

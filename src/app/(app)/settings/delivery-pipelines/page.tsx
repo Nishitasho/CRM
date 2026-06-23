@@ -61,7 +61,7 @@ export default async function DeliveryPipelinesPage() {
     <div className="mx-auto max-w-7xl">
       <PageHeading
         eyebrow="Delivery settings"
-        title="制作パイプライン設定"
+        title="CSパイプライン設定"
         description={`${selection.selectedBusinessUnitName}の制作進行ステージ、停滞判定、必須項目を管理します。`}
       />
       <SettingsNav />

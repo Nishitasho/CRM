@@ -1,8 +1,11 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { DeliveryProjectActions } from "@/components/delivery/delivery-project-actions";
+import { RecordTaskCard } from "@/components/tasks/deal-task-card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
 type Props = {
@@ -179,7 +182,13 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
     }),
     prisma.task.findMany({
       where: { organizationId: context.organization.id, deliveryProjectId: project.id },
-      include: { owner: { select: { id: true, name: true } } },
+      include: {
+        owner: { select: { id: true, name: true } },
+        reminders: {
+          where: { status: { not: "CANCELED" } },
+          orderBy: { scheduledAt: "asc" },
+        },
+      },
       orderBy: [{ status: "asc" }, { dueDate: "asc" }],
       take: 100,
     }),
@@ -206,6 +215,9 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
   const scope = asRecord(project.scopeSnapshot);
   const userById = new Map(users.map((user) => [user.id, user]));
   const stageNameById = new Map(allDeliveryStages.map((item) => [item.id, item.name]));
+  const canEditDelivery =
+    hasPermission(context.membership.role, Permission.MANAGE_DELIVERY) ||
+    hasPermission(context.membership.role, Permission.CRM_WRITE);
   const primaryContactName = primaryContact
     ? [primaryContact.lastName, primaryContact.firstName].filter(Boolean).join(" ")
     : "-";
@@ -213,8 +225,8 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeading
-        eyebrow="Delivery project"
-        title={project.name}
+        eyebrow="CS case"
+        title={`${company?.name ?? "会社未設定"} / ${project.name}`}
         description={`${company?.name ?? "会社未設定"} / ${stage?.name ?? "ステージ未設定"} / ${
           statusLabels[project.status] ?? project.status
         }`}
@@ -252,13 +264,29 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
           元商談内容が変更されています。自動上書きせず、差分確認または再同期を実行してください。
         </p>
       ) : null}
+      {!company ? (
+        <p className="mb-6 rounded-md bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+          元商談に会社が関連付けられていません。会社を紐付けると、CS案件とクロスセル商談の関連が追いやすくなります。
+        </p>
+      ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
         <div className="space-y-6">
           <section className="card p-5">
             <h2 className="font-bold">概要</h2>
             <dl className="mt-4 grid gap-4 text-sm md:grid-cols-2">
-              <Info label="顧客" value={company?.name ?? "-"} />
+              <Info
+                label="会社"
+                value={
+                  company ? (
+                    <Link href={`/companies/${company.id}`} className="text-brand-700 hover:underline">
+                      {company.name}
+                    </Link>
+                  ) : (
+                    "-"
+                  )
+                }
+              />
               <Info label="主担当者" value={primaryContactName || "-"} />
               <Info label="電話番号" value={primaryContact?.phone ?? company?.phone ?? "-"} />
               <Info label="メール" value={primaryContact?.email ?? "-"} />
@@ -267,8 +295,50 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
               <Info label="契約日" value={String(scope.contractedAt ?? "-")} />
               <Info label="課金開始予定日" value={String(scope.billingStartedAt ?? "-")} />
               <Info label="次回アクション" value={project.nextAction ?? "-"} wide />
-              <Info label="blocker" value={project.blocker ?? "-"} wide />
+              <Info label="対応阻害要因" value={project.blocker ?? "-"} wide />
             </dl>
+          </section>
+
+          <RecordTaskCard
+            context={{ contextType: "DELIVERY_PROJECT", contextId: project.id }}
+            title="未完了タスク"
+            description="CS案件の次回対応、リマインド、Google Calendar同期を管理します。"
+            items={tasks}
+            members={users}
+            defaultOwnerUserId={project.ownerUserId ?? context.user.id}
+            canEdit={canEditDelivery}
+          />
+
+          <section className="card overflow-hidden">
+            <div className="border-b border-line p-5">
+              <h2 className="font-bold">クロスセル商談</h2>
+            </div>
+            <div className="divide-y divide-line">
+              {crossSellDeals.map((deal) => (
+                <Link
+                  key={deal.id}
+                  href={`/deals/${deal.id}`}
+                  className="block p-4 hover:bg-brand-50"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-ink">{deal.name}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {deal.owner?.name ?? "担当未設定"} / {deal.stage.name}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">
+                      {deal.status}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+              {!crossSellDeals.length ? (
+                <div className="p-8 text-center text-sm font-semibold text-slate-400">
+                  クロスセル商談はまだありません。
+                </div>
+              ) : null}
+            </div>
           </section>
 
           <section className="card overflow-hidden">
@@ -360,15 +430,18 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
           <DeliveryProjectActions
             project={{
               id: project.id,
+              name: project.name,
+              companyName: company?.name ?? null,
               ownerUserId: project.ownerUserId,
               healthStatus: project.healthStatus,
-              priority: project.priority,
               expectedPublishDate: dateInput(project.expectedPublishDate),
+              actualPublishDate: dateInput(project.actualPublishDate),
               nextAction: project.nextAction,
               nextActionDate: dateInput(project.nextActionDate),
               blocker: project.blocker,
               handoffStatus: project.handoffStatus,
               scopeSnapshot: asRecord(project.scopeSnapshot),
+              companyMissing: !company,
             }}
             users={users}
             stages={(pipeline?.stages ?? []).map((item) => ({
@@ -387,66 +460,6 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
           />
         </div>
       </div>
-
-      <section className="mt-6 grid gap-6 xl:grid-cols-2">
-        <div className="card overflow-hidden">
-          <div className="border-b border-line p-5">
-            <h2 className="font-bold">タスク</h2>
-          </div>
-          <div className="divide-y divide-line">
-            {tasks.map((task) => (
-              <div key={task.id} className="flex items-center justify-between gap-3 p-4 text-sm">
-                <div>
-                  <p className="font-semibold text-ink">{task.title}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {task.owner.name} / {formatDate(task.dueDate)}
-                  </p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">
-                  {task.status}
-                </span>
-              </div>
-            ))}
-            {!tasks.length ? (
-              <div className="p-8 text-center text-sm font-semibold text-slate-400">
-                タスクはありません。
-              </div>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="card overflow-hidden">
-          <div className="border-b border-line p-5">
-            <h2 className="font-bold">クロスセル商談</h2>
-          </div>
-          <div className="divide-y divide-line">
-            {crossSellDeals.map((deal) => (
-              <Link
-                key={deal.id}
-                href={`/deals/${deal.id}`}
-                className="block p-4 hover:bg-brand-50"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold text-ink">{deal.name}</p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {deal.owner?.name ?? "担当未設定"} / {deal.stage.name}
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-bold text-slate-600">
-                    {deal.status}
-                  </span>
-                </div>
-              </Link>
-            ))}
-            {!crossSellDeals.length ? (
-              <div className="p-8 text-center text-sm font-semibold text-slate-400">
-                クロスセル商談はまだありません。
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </section>
 
       <section className="mt-6 card overflow-hidden">
         <div className="border-b border-line p-5">
@@ -494,7 +507,7 @@ function Info({
   wide = false,
 }: {
   label: string;
-  value: string;
+  value: ReactNode;
   wide?: boolean;
 }) {
   return (

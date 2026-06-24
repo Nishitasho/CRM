@@ -40,17 +40,35 @@ type PendingMove = {
   stage: Stage;
 };
 
-export function KanbanBoard({ stages }: { stages: Stage[] }) {
+type LossReason = {
+  id: string;
+  name: string;
+  category: string | null;
+  requiresNote: boolean;
+};
+
+export function KanbanBoard({
+  stages,
+  lossReasons,
+}: {
+  stages: Stage[];
+  lossReasons: LossReason[];
+}) {
   const router = useRouter();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
   const [active, setActive] = useState<Deal | null>(null);
   const [pendingMove, setPendingMove] = useState<PendingMove | null>(null);
-  const [lostReason, setLostReason] = useState("");
+  const [lostReasonId, setLostReasonId] = useState("");
+  const [lossReasonNote, setLossReasonNote] = useState("");
+  const [manualLostReason, setManualLostReason] = useState("");
   const [error, setError] = useState("");
 
   const allDeals = stages.flatMap((stage) => stage.deals);
+  const selectedLossReason = lossReasons.find(
+    (reason) => reason.id === lostReasonId,
+  );
 
   async function dragEnd(event: DragEndEvent) {
     setActive(null);
@@ -60,7 +78,7 @@ export function KanbanBoard({ stages }: { stages: Stage[] }) {
 
     if (stage.stageType === "LOST") {
       setPendingMove({ deal, stage });
-      setLostReason("");
+      resetLostReasonForm();
       return;
     }
 
@@ -69,15 +87,53 @@ export function KanbanBoard({ stages }: { stages: Stage[] }) {
 
   async function submitLostReason(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!pendingMove || !lostReason.trim()) return;
-    await updateStage(pendingMove.deal, pendingMove.stage, lostReason.trim());
+    if (!pendingMove) return;
+    if (lossReasons.length) {
+      if (!selectedLossReason) {
+        setError("失注理由を選択してください。");
+        return;
+      }
+      if (selectedLossReason.requiresNote && !lossReasonNote.trim()) {
+        setError("この失注理由では補足を入力してください。");
+        return;
+      }
+      await updateStage(pendingMove.deal, pendingMove.stage, {
+        primaryLossReasonId: selectedLossReason.id,
+        lostReason: selectedLossReason.name,
+        lossReasonNote: lossReasonNote.trim() || null,
+      });
+      return;
+    }
+
+    if (!manualLostReason.trim()) {
+      setError("失注理由を入力してください。");
+      return;
+    }
+    await updateStage(pendingMove.deal, pendingMove.stage, {
+      lostReason: manualLostReason.trim(),
+    });
   }
 
-  async function updateStage(deal: Deal, stage: Stage, reason?: string) {
+  function resetLostReasonForm() {
+    setLostReasonId("");
+    setLossReasonNote("");
+    setManualLostReason("");
+    setError("");
+  }
+
+  async function updateStage(
+    deal: Deal,
+    stage: Stage,
+    extra?: {
+      lostReason?: string | null;
+      primaryLossReasonId?: string | null;
+      lossReasonNote?: string | null;
+    },
+  ) {
     const response = await fetch(`/api/deals/${deal.id}/stage`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ stageId: stage.id, lostReason: reason ?? null }),
+      body: JSON.stringify({ stageId: stage.id, ...extra }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -87,7 +143,7 @@ export function KanbanBoard({ stages }: { stages: Stage[] }) {
 
     setError("");
     setPendingMove(null);
-    setLostReason("");
+    resetLostReasonForm();
     router.refresh();
   }
 
@@ -134,20 +190,66 @@ export function KanbanBoard({ stages }: { stages: Stage[] }) {
               {pendingMove.deal.name} を「{pendingMove.stage.name}
               」へ移動します。
             </p>
-            <textarea
-              className="text-field mt-4 min-h-28"
-              value={lostReason}
-              onChange={(event) => setLostReason(event.target.value)}
-              autoFocus
-              required
-            />
+            {lossReasons.length ? (
+              <>
+                <label className="mt-4 block">
+                  <span className="field-label">失注理由</span>
+                  <select
+                    className="text-field w-full"
+                    value={lostReasonId}
+                    onChange={(event) => {
+                      setLostReasonId(event.target.value);
+                      setError("");
+                    }}
+                    autoFocus
+                    required
+                  >
+                    <option value="">選択してください</option>
+                    {lossReasons.map((reason) => (
+                      <option key={reason.id} value={reason.id}>
+                        {reason.category ? `${reason.category} / ` : ""}
+                        {reason.name}
+                        {reason.requiresNote ? " *" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="mt-4 block">
+                  <span className="field-label">
+                    補足
+                    {selectedLossReason?.requiresNote ? " *" : ""}
+                  </span>
+                  <textarea
+                    className="text-field min-h-24 w-full"
+                    value={lossReasonNote}
+                    onChange={(event) => setLossReasonNote(event.target.value)}
+                    placeholder="例: 金額感が合わず、次回見直し時期に再提案"
+                    required={Boolean(selectedLossReason?.requiresNote)}
+                  />
+                </label>
+              </>
+            ) : (
+              <textarea
+                className="text-field mt-4 min-h-28"
+                value={manualLostReason}
+                onChange={(event) => setManualLostReason(event.target.value)}
+                placeholder="失注理由を入力"
+                autoFocus
+                required
+              />
+            )}
+            {error ? (
+              <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-red-700">
+                {error}
+              </p>
+            ) : null}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => {
                   setPendingMove(null);
-                  setLostReason("");
+                  resetLostReasonForm();
                 }}
               >
                 キャンセル

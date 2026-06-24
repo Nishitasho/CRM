@@ -117,6 +117,63 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function getDefaultProductId(products: Product[]) {
+  return products[0]?.id ?? "";
+}
+
+function getDefaultPriceBookEntryId(products: Product[], productId: string) {
+  return (
+    products.find((product) => product.id === productId)?.priceBookEntries[0]
+      ?.id ?? ""
+  );
+}
+
+function setFormValue(form: HTMLFormElement, name: string, value: unknown) {
+  const field = form.elements.namedItem(name);
+  if (
+    field instanceof HTMLInputElement ||
+    field instanceof HTMLSelectElement ||
+    field instanceof HTMLTextAreaElement
+  ) {
+    field.value = numberValue(value);
+  }
+}
+
+function applyPriceEntry(form: HTMLFormElement, product?: Product) {
+  const priceBookEntryId = String(
+    new FormData(form).get("priceBookEntryId") ?? "",
+  );
+  const entry = product?.priceBookEntries.find(
+    (item) => item.id === priceBookEntryId,
+  );
+  if (product) setFormValue(form, "name", product.name);
+  if (!entry) return;
+
+  setFormValue(form, "unitPriceAmount", entry.unitPriceAmount);
+  setFormValue(form, "initialFee", entry.initialFee);
+  setFormValue(form, "recurringFee", entry.recurringFee);
+  setFormValue(form, "revenueAmount", entry.revenueAmount);
+  setFormValue(form, "grossProfitAmount", entry.grossProfitAmount);
+  setFormValue(form, "expectedRevenueAmount", entry.revenueAmount);
+  setFormValue(form, "expectedGrossProfitAmount", entry.grossProfitAmount);
+}
+
+function applySharedDate(form: HTMLFormElement, value: string) {
+  if (!value) return;
+  ["contractedAt", "collectedAt", "billingStartedAt"].forEach((name) =>
+    setFormValue(form, name, value),
+  );
+  Array.from(form.elements).forEach((element) => {
+    if (
+      element instanceof HTMLInputElement &&
+      element.type === "date" &&
+      element.name.startsWith("custom:")
+    ) {
+      element.value = value;
+    }
+  });
+}
+
 export function DealLineItemManager({
   dealId,
   lineItems,
@@ -126,6 +183,7 @@ export function DealLineItemManager({
   properties,
   propertyScopes,
   defaultBusinessUnitId,
+  defaultDate,
   canEdit,
 }: {
   dealId: string;
@@ -136,13 +194,25 @@ export function DealLineItemManager({
   properties: Property[];
   propertyScopes: Array<{ customPropertyId: string; productId: string }>;
   defaultBusinessUnitId: string | null;
+  defaultDate?: Date | string | null;
   canEdit: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<LineItem | null>(null);
-  const [formProductId, setFormProductId] = useState(products[0]?.id ?? "");
+  const [formProductId, setFormProductId] = useState(
+    getDefaultProductId(products),
+  );
+  const [formPriceBookEntryId, setFormPriceBookEntryId] = useState(
+    getDefaultPriceBookEntryId(products, getDefaultProductId(products)),
+  );
+  const [formStatus, setFormStatus] = useState("PROPOSED");
+  const [sharedDate, setSharedDate] = useState(dateInput(defaultDate));
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const selectedProduct = products.find((item) => item.id === formProductId);
+  const selectedPrice = selectedProduct?.priceBookEntries.find(
+    (item) => item.id === formPriceBookEntryId,
+  );
   const scopedPropertyIds = useMemo(
     () => new Set(propertyScopes.map((scope) => scope.customPropertyId)),
     [propertyScopes],
@@ -229,7 +299,7 @@ export function DealLineItemManager({
     setMessage(
       editing ? "商品明細を更新しました。" : "商品明細を追加しました。",
     );
-    setEditing(null);
+    resetToNew();
     event.currentTarget.reset();
     router.refresh();
   }
@@ -249,6 +319,15 @@ export function DealLineItemManager({
   }
 
   const defaultValues = editing ? asRecord(editing.customFields) : {};
+
+  function resetToNew() {
+    const productId = getDefaultProductId(products);
+    setEditing(null);
+    setFormProductId(productId);
+    setFormPriceBookEntryId(getDefaultPriceBookEntryId(products, productId));
+    setFormStatus("PROPOSED");
+    setSharedDate(dateInput(defaultDate));
+  }
 
   return (
     <section className="card mb-6 overflow-hidden">
@@ -318,6 +397,16 @@ export function DealLineItemManager({
                           onClick={() => {
                             setEditing(item);
                             setFormProductId(item.productId ?? "");
+                            setFormPriceBookEntryId(
+                              item.priceBookEntryId ?? "",
+                            );
+                            setFormStatus(item.status);
+                            setSharedDate(
+                              dateInput(item.contractedAt) ||
+                                dateInput(item.collectedAt) ||
+                                dateInput(item.billingStartedAt) ||
+                                dateInput(defaultDate),
+                            );
                           }}
                         >
                           編集
@@ -368,19 +457,86 @@ export function DealLineItemManager({
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => setEditing(null)}
+                onClick={resetToNew}
               >
                 新規へ戻る
               </button>
             ) : null}
+          </div>
+          <input
+            type="hidden"
+            name="unitPriceAmount"
+            defaultValue={numberValue(
+              editing?.unitPriceAmount ?? selectedPrice?.unitPriceAmount,
+            )}
+          />
+          <div className="mb-5 rounded-xl border border-brand-100 bg-brand-50/50 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className="text-sm font-bold text-slate-800">
+                  入力をまとめて反映
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  商品・価格を選ぶと明細名と金額を自動入力します。同じ日付は下の日付項目へまとめて反映できます。
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label className="text-sm font-semibold">
+                  <span className="mb-1 block text-xs text-slate-500">
+                    共通日付
+                  </span>
+                  <input
+                    className="text-field min-h-10 w-full sm:w-44"
+                    type="date"
+                    value={sharedDate}
+                    onChange={(event) => setSharedDate(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="secondary-button min-h-10"
+                  type="button"
+                  onClick={(event) => {
+                    const form = event.currentTarget.form;
+                    if (form) applySharedDate(form, sharedDate);
+                  }}
+                >
+                  日付を一括反映
+                </button>
+                <button
+                  className="secondary-button min-h-10"
+                  type="button"
+                  onClick={(event) => {
+                    const form = event.currentTarget.form;
+                    if (form) applyPriceEntry(form, selectedProduct);
+                  }}
+                >
+                  価格を再反映
+                </button>
+              </div>
+            </div>
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <Field label="商品">
               <select
                 className="text-field"
                 name="productId"
-                defaultValue={editing?.productId ?? formProductId}
-                onChange={(event) => setFormProductId(event.target.value)}
+                value={formProductId}
+                onChange={(event) => {
+                  const nextProductId = event.target.value;
+                  const nextPriceBookEntryId = getDefaultPriceBookEntryId(
+                    products,
+                    nextProductId,
+                  );
+                  setFormProductId(nextProductId);
+                  setFormPriceBookEntryId(nextPriceBookEntryId);
+                  window.requestAnimationFrame(() => {
+                    const form = event.currentTarget.form;
+                    const product = products.find(
+                      (item) => item.id === nextProductId,
+                    );
+                    if (form) applyPriceEntry(form, product);
+                  });
+                }}
               >
                 <option value="">商品なし</option>
                 {products.map((product) => (
@@ -394,26 +550,28 @@ export function DealLineItemManager({
               <select
                 className="text-field"
                 name="priceBookEntryId"
-                defaultValue={editing?.priceBookEntryId ?? ""}
+                value={formPriceBookEntryId}
+                onChange={(event) => {
+                  setFormPriceBookEntryId(event.target.value);
+                  window.requestAnimationFrame(() => {
+                    const form = event.currentTarget.form;
+                    if (form) applyPriceEntry(form, selectedProduct);
+                  });
+                }}
               >
                 <option value="">未選択</option>
-                {products
-                  .find(
-                    (product) =>
-                      product.id === (formProductId || editing?.productId),
-                  )
-                  ?.priceBookEntries.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.name}
-                    </option>
-                  ))}
+                {selectedProduct?.priceBookEntries.map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.name}
+                  </option>
+                ))}
               </select>
             </Field>
             <Field label="明細名">
               <input
                 className="text-field"
                 name="name"
-                defaultValue={editing?.name ?? ""}
+                defaultValue={editing?.name ?? selectedProduct?.name ?? ""}
               />
             </Field>
             <Field label="事業部">
@@ -448,7 +606,9 @@ export function DealLineItemManager({
                 name="initialFee"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.initialFee)}
+                defaultValue={numberValue(
+                  editing?.initialFee ?? selectedPrice?.initialFee,
+                )}
               />
             </Field>
             <Field label="月額費用">
@@ -457,7 +617,9 @@ export function DealLineItemManager({
                 name="recurringFee"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.recurringFee)}
+                defaultValue={numberValue(
+                  editing?.recurringFee ?? selectedPrice?.recurringFee,
+                )}
               />
             </Field>
             <Field label="売上">
@@ -466,7 +628,9 @@ export function DealLineItemManager({
                 name="revenueAmount"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.revenueAmount)}
+                defaultValue={numberValue(
+                  editing?.revenueAmount ?? selectedPrice?.revenueAmount,
+                )}
               />
             </Field>
             <Field label="粗利">
@@ -475,7 +639,10 @@ export function DealLineItemManager({
                 name="grossProfitAmount"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.grossProfitAmount)}
+                defaultValue={numberValue(
+                  editing?.grossProfitAmount ??
+                    selectedPrice?.grossProfitAmount,
+                )}
               />
             </Field>
             <Field label="見込売上">
@@ -484,7 +651,10 @@ export function DealLineItemManager({
                 name="expectedRevenueAmount"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.expectedRevenueAmount)}
+                defaultValue={numberValue(
+                  editing?.expectedRevenueAmount ??
+                    selectedPrice?.revenueAmount,
+                )}
               />
             </Field>
             <Field label="見込粗利">
@@ -493,7 +663,10 @@ export function DealLineItemManager({
                 name="expectedGrossProfitAmount"
                 type="number"
                 min="0"
-                defaultValue={numberValue(editing?.expectedGrossProfitAmount)}
+                defaultValue={numberValue(
+                  editing?.expectedGrossProfitAmount ??
+                    selectedPrice?.grossProfitAmount,
+                )}
               />
             </Field>
             <Field label="回収金額">
@@ -510,7 +683,7 @@ export function DealLineItemManager({
                 className="text-field"
                 name="contractedAt"
                 type="date"
-                defaultValue={dateInput(editing?.contractedAt)}
+                defaultValue={dateInput(editing?.contractedAt) || sharedDate}
               />
             </Field>
             <Field label="回収日">
@@ -518,7 +691,7 @@ export function DealLineItemManager({
                 className="text-field"
                 name="collectedAt"
                 type="date"
-                defaultValue={dateInput(editing?.collectedAt)}
+                defaultValue={dateInput(editing?.collectedAt) || sharedDate}
               />
             </Field>
             <Field label="課金開始日">
@@ -526,7 +699,7 @@ export function DealLineItemManager({
                 className="text-field"
                 name="billingStartedAt"
                 type="date"
-                defaultValue={dateInput(editing?.billingStartedAt)}
+                defaultValue={dateInput(editing?.billingStartedAt) || sharedDate}
               />
             </Field>
             <Field label="キャンセル日">
@@ -541,7 +714,8 @@ export function DealLineItemManager({
               <select
                 className="text-field"
                 name="status"
-                defaultValue={editing?.status ?? "PROPOSED"}
+                value={formStatus}
+                onChange={(event) => setFormStatus(event.target.value)}
               >
                 {Object.entries(statusLabels).map(([value, label]) => (
                   <option key={value} value={value}>
@@ -550,27 +724,37 @@ export function DealLineItemManager({
                 ))}
               </select>
             </Field>
-            <Field label="失注・不採用理由">
-              <select
-                className="text-field"
-                name="lossReasonId"
-                defaultValue={editing?.lossReasonId ?? ""}
-              >
-                <option value="">未選択</option>
-                {lossReasons.map((reason) => (
-                  <option key={reason.id} value={reason.id}>
-                    {reason.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="理由補足" wide>
-              <textarea
-                className="text-field min-h-20"
-                name="lossReasonNote"
-                defaultValue={editing?.lossReasonNote ?? ""}
-              />
-            </Field>
+            {["LOST", "CANCELLED", "NOT_SELECTED"].includes(formStatus) ? (
+              <Field label="失注・不採用理由">
+                <select
+                  className="text-field"
+                  name="lossReasonId"
+                  defaultValue={editing?.lossReasonId ?? ""}
+                >
+                  <option value="">未選択</option>
+                  {lossReasons.map((reason) => (
+                    <option key={reason.id} value={reason.id}>
+                      {reason.name}
+                      {reason.requiresNote ? " *" : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <input type="hidden" name="lossReasonId" value="" />
+            )}
+            {["LOST", "CANCELLED", "NOT_SELECTED"].includes(formStatus) ? (
+              <Field label="理由補足" wide>
+                <textarea
+                  className="text-field min-h-20"
+                  name="lossReasonNote"
+                  defaultValue={editing?.lossReasonNote ?? ""}
+                  placeholder="例: 金額感が合わず、次回検討時期に再提案"
+                />
+              </Field>
+            ) : (
+              <input type="hidden" name="lossReasonNote" value="" />
+            )}
             {activeProperties.map((property) => (
               <Field
                 key={property.id}

@@ -41,6 +41,15 @@ export default async function DealBoardPage({
     include: { owner: { select: { name: true } } },
     orderBy: { updatedAt: "desc" },
   });
+  const lossReasons = await prisma.lossReasonDefinition.findMany({
+    where: {
+      organizationId: context.organization.id,
+      isActive: true,
+      applicableScope: { in: ["DEAL", "BOTH"] },
+    },
+    orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }],
+    select: { id: true, name: true, category: true, requiresNote: true },
+  });
   const links = await prisma.objectAssociation.findMany({
     where: {
       organizationId: context.organization.id,
@@ -120,7 +129,7 @@ export default async function DealBoardPage({
           切り替え
         </button>
       </form>
-      <KanbanBoard stages={stages} />
+      <KanbanBoard stages={stages} lossReasons={lossReasons} />
     </div>
   );
 }

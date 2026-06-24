@@ -408,6 +408,7 @@ export default async function DealDetailPage({
         properties={lineItemProperties}
         propertyScopes={propertyScopes}
         defaultBusinessUnitId={item.businessUnitId}
+        defaultDate={item.closeDate ?? item.expectedCloseDate}
         canEdit={canEdit}
       />
     </div>

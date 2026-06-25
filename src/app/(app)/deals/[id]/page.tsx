@@ -167,6 +167,24 @@ export default async function DealDetailPage({
     (context.membership.role !== "USER" ||
       !item.ownerUserId ||
       item.ownerUserId === context.user.id);
+  const dealCustomFields = asRecord(item.customFields);
+  const appointmentAcquiredDate = datePropertyValue(
+    dealCustomFields.appointmentAcquiredDate,
+    dealCustomFields.appointmentAcquiredAt,
+  );
+  const meetingDate = datePropertyValue(
+    dealCustomFields.meetingDate,
+    dealCustomFields.scheduledStartAt,
+  );
+  const collectedDate = datePropertyValue(
+    dealCustomFields.collectedDate,
+    lineItems.find((line) => line.collectedAt)?.collectedAt,
+  );
+  const billingDate = datePropertyValue(
+    dealCustomFields.billingDate,
+    dealCustomFields.billingStartedAt,
+    lineItems.find((line) => line.billingStartedAt)?.billingStartedAt,
+  );
   return (
     <div className="mx-auto max-w-[1500px]">
       <PageHeading
@@ -247,25 +265,57 @@ export default async function DealDetailPage({
             isEditable: false,
           },
           {
+            key: "customFields.appointmentAcquiredDate",
+            label: "アポ獲得日",
+            value: appointmentAcquiredDate,
+            formattedValue: formatDate(appointmentAcquiredDate),
+            fieldType: "DATE",
+            isCustom: true,
+            isEditable: true,
+          },
+          {
+            key: "customFields.meetingDate",
+            label: "商談日",
+            value: meetingDate,
+            formattedValue: formatDate(meetingDate),
+            fieldType: "DATE",
+            isCustom: true,
+            isEditable: true,
+          },
+          {
             key: "expectedCloseDate",
             label: "受注予定日",
             value: item.expectedCloseDate,
-            formattedValue: item.expectedCloseDate
-              ? new Intl.DateTimeFormat("ja-JP").format(item.expectedCloseDate)
-              : null,
+            formattedValue: formatDate(item.expectedCloseDate),
             fieldType: "DATE",
             isCustom: false,
             isEditable: true,
           },
           {
             key: "closeDate",
-            label: "クローズ日",
+            label: "受注日",
             value: item.closeDate,
-            formattedValue: item.closeDate
-              ? new Intl.DateTimeFormat("ja-JP").format(item.closeDate)
-              : null,
+            formattedValue: formatDate(item.closeDate),
             fieldType: "DATE",
             isCustom: false,
+            isEditable: true,
+          },
+          {
+            key: "customFields.collectedDate",
+            label: "回収日",
+            value: collectedDate,
+            formattedValue: formatDate(collectedDate),
+            fieldType: "DATE",
+            isCustom: true,
+            isEditable: true,
+          },
+          {
+            key: "customFields.billingDate",
+            label: "課金日",
+            value: billingDate,
+            formattedValue: formatDate(billingDate),
+            fieldType: "DATE",
+            isCustom: true,
             isEditable: true,
           },
           {
@@ -317,9 +367,7 @@ export default async function DealDetailPage({
             key: "nextActionDate",
             label: "次回アクション日",
             value: item.nextActionDate,
-            formattedValue: item.nextActionDate
-              ? new Intl.DateTimeFormat("ja-JP").format(item.nextActionDate)
-              : null,
+            formattedValue: formatDate(item.nextActionDate),
             fieldType: "DATE",
             isCustom: false,
             isEditable: true,
@@ -413,4 +461,23 @@ export default async function DealDetailPage({
       />
     </div>
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function datePropertyValue(...values: unknown[]) {
+  for (const value of values) {
+    if (value instanceof Date) return value;
+    if (typeof value === "string" && value.trim()) return value.slice(0, 10);
+  }
+  return null;
+}
+
+function formatDate(value: Date | string | null | undefined) {
+  if (!value) return null;
+  return new Intl.DateTimeFormat("ja-JP").format(new Date(value));
 }

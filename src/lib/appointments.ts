@@ -30,6 +30,15 @@ function inputJson(value: unknown) {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
+function jstDateString(value: Date) {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(value);
+}
+
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -440,6 +449,8 @@ export async function createInternalAppointment(
           nextActionDate: input.scheduledStartAt,
           customFields: inputJson({
             ...customValues(input, "DEAL"),
+            appointmentAcquiredDate: jstDateString(input.appointmentAcquiredAt),
+            meetingDate: jstDateString(input.scheduledStartAt),
             appointmentAcquiredAt: input.appointmentAcquiredAt,
             scheduledStartAt: input.scheduledStartAt,
             scheduledEndAt: input.scheduledEndAt,

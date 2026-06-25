@@ -67,7 +67,7 @@ const standardProperties: Record<ObjectType, Record<string, StandardProperty>> =
     name: { label: "商談名", fieldType: "TEXT" },
     amount: { label: "金額", fieldType: "CURRENCY", nullable: true },
     expectedCloseDate: { label: "受注予定日", fieldType: "DATE", nullable: true },
-    closeDate: { label: "クローズ日", fieldType: "DATE", nullable: true },
+    closeDate: { label: "受注日", fieldType: "DATE", nullable: true },
     source: { label: "流入元", fieldType: "TEXT", nullable: true },
     ownerUserId: { label: "担当者", fieldType: "OWNER", nullable: true },
     decisionMakerStatus: { label: "決裁者区分", fieldType: "SELECT" },
@@ -76,6 +76,17 @@ const standardProperties: Record<ObjectType, Record<string, StandardProperty>> =
     nextActionOwnerId: { label: "次回アクション担当", fieldType: "OWNER", nullable: true },
     forecastCategoryId: { label: "Forecast", fieldType: "SELECT", nullable: true },
   },
+};
+
+const dealSystemCustomProperties: Record<string, StandardProperty> = {
+  appointmentAcquiredDate: {
+    label: "アポ獲得日",
+    fieldType: "DATE",
+    nullable: true,
+  },
+  meetingDate: { label: "商談日", fieldType: "DATE", nullable: true },
+  collectedDate: { label: "回収日", fieldType: "DATE", nullable: true },
+  billingDate: { label: "課金日", fieldType: "DATE", nullable: true },
 };
 
 function normalizeObjectType(value: string): ObjectType | null {
@@ -198,21 +209,34 @@ export async function PATCH(request: Request, { params }: Params) {
       const property = await prisma.customProperty.findFirst({
         where: { organizationId: context.organization.id, objectType, name: customName },
       });
-      if (!property)
+      const systemProperty =
+        objectType === "DEAL" ? dealSystemCustomProperties[customName] : null;
+      if (!property && !systemProperty)
         return NextResponse.json({ message: "カスタムプロパティが見つかりません。" }, { status: 400 });
       isCustom = true;
-      propertyLabel = property.label;
-      normalizedValue = normalizeInputValue(input.value, {
-        fieldType: property.fieldType,
-        isRequired: property.isRequired,
-      });
+      propertyLabel = property?.label ?? systemProperty?.label ?? customName;
+      normalizedValue = normalizeInputValue(
+        input.value,
+        property
+          ? {
+              fieldType: property.fieldType,
+              isRequired: property.isRequired,
+            }
+          : systemProperty!,
+      );
+      if (normalizedValue instanceof Date) {
+        normalizedValue =
+          (property?.fieldType ?? systemProperty?.fieldType) === "DATETIME"
+            ? normalizedValue.toISOString()
+            : normalizedValue.toISOString().slice(0, 10);
+      }
       const customFields = asRecord(current.customFields);
-      before = customFields[property.name] ?? null;
+      before = customFields[property?.name ?? customName] ?? null;
       if (jsonEqual(before, normalizedValue)) return NextResponse.json({ item: current, skipped: true });
       data = {
         customFields: {
           ...customFields,
-          [property.name]: normalizedValue,
+          [property?.name ?? customName]: normalizedValue,
         },
       };
     } else {

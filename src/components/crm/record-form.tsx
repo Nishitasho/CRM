@@ -253,7 +253,7 @@ export function RecordForm({
               defaultValue={dateValue(value("expectedCloseDate"))}
             />
             <Field
-              label="クローズ日"
+              label="受注日"
               name="closeDate"
               type="date"
               defaultValue={dateValue(value("closeDate"))}

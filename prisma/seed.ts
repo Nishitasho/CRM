@@ -55,14 +55,20 @@ const stages = [
     name: "アポ獲得",
     probability: 20,
     stageType: StageType.OPEN,
-    requiredFields: ["next_action", "next_action_date"],
+    requiredFields: ["appointment_acquired_date", "next_action", "next_action_date"],
     staleDays: 3,
   },
   {
     name: "商談予定",
     probability: 35,
     stageType: StageType.OPEN,
-    requiredFields: ["line_items", "forecast_category", "next_action_date"],
+    requiredFields: [
+      "appointment_acquired_date",
+      "meeting_date",
+      "line_items",
+      "forecast_category",
+      "next_action_date",
+    ],
     staleDays: 3,
   },
   {
@@ -70,6 +76,7 @@ const stages = [
     probability: 55,
     stageType: StageType.OPEN,
     requiredFields: [
+      "meeting_date",
       "proposed_line_items",
       "expected_amount",
       "forecast_category",
@@ -91,6 +98,9 @@ const stages = [
     requiredFields: [
       "won_line_items",
       "confirmed_amount",
+      "won_date",
+      "collected_date",
+      "billing_date",
       "contracted_at",
       "closer",
     ],

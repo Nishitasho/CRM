@@ -127,7 +127,7 @@ export async function GET(request: Request, { params }: Params) {
         商談名: x.name,
         金額: x.amount?.toString(),
         受注予定日: x.expectedCloseDate?.toISOString().slice(0, 10),
-        クローズ日: x.closeDate?.toISOString().slice(0, 10),
+        受注日: x.closeDate?.toISOString().slice(0, 10),
         流入元: x.source,
         失注理由: x.lostReason,
         外部ID: x.externalId,

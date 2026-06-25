@@ -41,7 +41,7 @@ export const importFields: Record<ImportObjectType, ImportField[]> = {
     { value: "name", label: "商談名", required: true },
     { value: "amount", label: "金額" },
     { value: "expectedCloseDate", label: "受注予定日" },
-    { value: "closeDate", label: "クローズ日" },
+    { value: "closeDate", label: "受注日" },
     { value: "source", label: "流入元" },
     { value: "lostReason", label: "失注理由" },
     { value: "externalId", label: "外部ID" },

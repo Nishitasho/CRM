@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { DEAL_STAGE_REQUIREMENT_OPTIONS } from "@/lib/deal-stage-requirements";
 
 type Stage = {
   id: string;
@@ -9,6 +10,7 @@ type Stage = {
   sortOrder: number;
   probability: number;
   stageType: "OPEN" | "WON" | "LOST";
+  requiredFields: unknown;
   _count: { deals: number };
 };
 type Pipeline = {
@@ -90,6 +92,7 @@ export function PipelineManager({
         sortOrder: data.get("sortOrder"),
         probability: data.get("probability"),
         stageType: data.get("stageType"),
+        requiredFields: data.getAll("requiredFields").map(String),
       }),
     });
     const result = await response.json();
@@ -112,6 +115,7 @@ export function PipelineManager({
           Math.max(0, ...pipeline.stages.map((stage) => stage.sortOrder)) + 1,
         probability: data.get("probability"),
         stageType: data.get("stageType"),
+        requiredFields: data.getAll("requiredFields").map(String),
       }),
     });
     const result = await response.json();
@@ -280,6 +284,10 @@ export function PipelineManager({
                   </button>
                 </div>
               ) : null}
+              <StageRequirementPicker
+                selected={stage.requiredFields}
+                disabled={!canManage}
+              />
               <p className="text-xs text-slate-400 md:col-span-5">
                 商談 {stage._count.deals}件
               </p>
@@ -312,9 +320,55 @@ export function PipelineManager({
               <option value="LOST">失注</option>
             </select>
             <button className="primary-button">ステージ追加</button>
+            <StageRequirementPicker selected={[]} />
           </form>
         ) : null}
       </main>
     </div>
+  );
+}
+
+function parseRequiredFields(value: unknown) {
+  return new Set(Array.isArray(value) ? value.map(String) : []);
+}
+
+function StageRequirementPicker({
+  selected,
+  disabled = false,
+}: {
+  selected: unknown;
+  disabled?: boolean;
+}) {
+  const selectedFields = parseRequiredFields(selected);
+  return (
+    <fieldset className="rounded-xl border border-line bg-white/70 p-3 md:col-span-full">
+      <legend className="px-1 text-xs font-bold text-slate-500">
+        ステージ変更に必要なプロパティ
+      </legend>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {DEAL_STAGE_REQUIREMENT_OPTIONS.map((option) => (
+          <label
+            key={option.key}
+            className="flex gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs text-slate-600 hover:border-brand-100 hover:bg-brand-50"
+          >
+            <input
+              type="checkbox"
+              name="requiredFields"
+              value={option.key}
+              defaultChecked={selectedFields.has(option.key)}
+              disabled={disabled}
+            />
+            <span>
+              <span className="block font-bold text-slate-700">
+                {option.label}
+              </span>
+              <span className="block text-[11px] text-slate-400">
+                {option.description}
+              </span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }

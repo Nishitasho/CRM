@@ -252,6 +252,20 @@ function basisLabel(value: AmountMetricBasis) {
   return value === AmountMetricBasis.REVENUE ? "売上" : "粗利";
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function hasDateValue(...values: unknown[]) {
+  return values.some((value) => {
+    if (value instanceof Date) return true;
+    if (typeof value === "string") return value.trim().length > 0;
+    return Boolean(value);
+  });
+}
+
 async function businessUnitSettings(organizationId: string) {
   const units = await prisma.businessUnit.findMany({
     where: { organizationId, status: "ACTIVE" },
@@ -1699,6 +1713,7 @@ export async function validateDealStageRequirements(input: {
   const hasProposedLine = deal.lineItems.some((line) =>
     ["PROPOSED", "WON"].includes(line.status),
   );
+  const customFields = asRecord(deal.customFields);
   for (const key of required) {
     if (key === "line_items" && deal.lineItems.length === 0)
       missing.push("商品明細");
@@ -1717,6 +1732,41 @@ export async function validateDealStageRequirements(input: {
       missing.push("決裁者区分");
     if (key === "loss_reason" && !deal.primaryLossReasonId)
       missing.push("失注理由");
+    if (
+      key === "appointment_acquired_date" &&
+      !hasDateValue(
+        customFields.appointmentAcquiredDate,
+        customFields.appointmentAcquiredAt,
+      )
+    ) {
+      missing.push("アポ獲得日");
+    }
+    if (
+      key === "meeting_date" &&
+      !hasDateValue(customFields.meetingDate, customFields.scheduledStartAt)
+    ) {
+      missing.push("商談日");
+    }
+    if (
+      key === "won_date" &&
+      !hasDateValue(customFields.wonDate, deal.closeDate, deal.wonAt)
+    ) {
+      missing.push("受注日");
+    }
+    if (
+      key === "collected_date" &&
+      !hasDateValue(customFields.collectedDate) &&
+      !deal.lineItems.some((line) => line.collectedAt)
+    ) {
+      missing.push("回収日");
+    }
+    if (
+      key === "billing_date" &&
+      !hasDateValue(customFields.billingDate, customFields.billingStartedAt) &&
+      !deal.lineItems.some((line) => line.billingStartedAt)
+    ) {
+      missing.push("課金日");
+    }
     if (
       key === "expected_amount" &&
       !deal.lineItems.some(

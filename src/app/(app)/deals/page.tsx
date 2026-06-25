@@ -10,6 +10,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
+import { buildDealQualityIssues } from "@/lib/deal-quality";
 import { prisma } from "@/lib/prisma";
 
 export default async function DealsPage({
@@ -25,6 +26,7 @@ export default async function DealsPage({
     closeFrom?: string;
     closeTo?: string;
     nextAction?: string;
+    quality?: string;
   }>;
 }) {
   const context = await getAuthContext();
@@ -70,6 +72,7 @@ export default async function DealsPage({
   const nextAction = isNextActionFilter(params.nextAction)
     ? params.nextAction
     : "";
+  const quality = isQualityFilter(params.quality) ? params.quality : "";
   const owners = await prisma.organizationMember.findMany({
     where: {
       organizationId: context.organization.id,
@@ -91,6 +94,7 @@ export default async function DealsPage({
         }
       : undefined;
   const nextActionFilter = buildNextActionFilter(nextAction);
+  const qualityFilter = buildQualityFilter(quality);
   const where: Prisma.DealWhereInput = {
     organizationId: context.organization.id,
     deletedAt: null,
@@ -111,6 +115,7 @@ export default async function DealsPage({
     ...(selectedStatus ? { status: selectedStatus } : {}),
     ...(dateRange ? { expectedCloseDate: dateRange } : {}),
     ...nextActionFilter,
+    ...qualityFilter,
   };
   const filterParams = compactParams({
     pipelineId: selectedPipelineId,
@@ -120,6 +125,7 @@ export default async function DealsPage({
     closeFrom,
     closeTo,
     nextAction,
+    quality,
   });
   const [items, total] = await Promise.all([
     prisma.deal.findMany({
@@ -128,6 +134,18 @@ export default async function DealsPage({
         owner: { select: { name: true } },
         stage: true,
         pipeline: true,
+        lineItems: {
+          select: {
+            id: true,
+            status: true,
+            expectedRevenueAmount: true,
+            expectedGrossProfitAmount: true,
+          },
+        },
+        participants: {
+          where: { role: "CLOSER", status: "ACTIVE" },
+          select: { id: true },
+        },
       },
       orderBy: { updatedAt: "desc" },
       skip: (page - 1) * pageSize,
@@ -160,10 +178,65 @@ export default async function DealsPage({
       companyNames.get(link.targetObjectId) ?? null,
     ]),
   );
-  const enhancedItems = items.map((item) => ({
-    ...item,
-    companyName: dealCompanies.get(item.id) ?? null,
-  }));
+  const activityLinks = await prisma.objectAssociation.findMany({
+    where: {
+      organizationId: context.organization.id,
+      sourceObjectType: "ACTIVITY",
+      targetObjectType: "DEAL",
+      targetObjectId: { in: items.map((item) => item.id) },
+    },
+    select: { sourceObjectId: true, targetObjectId: true },
+  });
+  const activities = await prisma.activity.findMany({
+    where: {
+      organizationId: context.organization.id,
+      id: { in: activityLinks.map((link) => link.sourceObjectId) },
+      deletedAt: null,
+    },
+    select: { id: true, occurredAt: true },
+    orderBy: { occurredAt: "desc" },
+  });
+  const activityById = new Map(activities.map((activity) => [activity.id, activity]));
+  const lastActivityByDeal = new Map<string, Date>();
+  for (const link of activityLinks) {
+    const activity = activityById.get(link.sourceObjectId);
+    if (!activity) continue;
+    const current = lastActivityByDeal.get(link.targetObjectId);
+    if (!current || activity.occurredAt > current) {
+      lastActivityByDeal.set(link.targetObjectId, activity.occurredAt);
+    }
+  }
+  const enhancedItems = items.map((item) => {
+    const qualityIssues = buildDealQualityIssues({
+      status: item.status,
+      stageType: item.stage.stageType,
+      stageName: item.stage.name,
+      stageStaleDays: item.stage.staleDays,
+      updatedAt: item.updatedAt,
+      expectedCloseDate: item.expectedCloseDate,
+      closeDate: item.closeDate,
+      nextAction: item.nextAction,
+      nextActionDate: item.nextActionDate,
+      forecastCategoryId: item.forecastCategoryId,
+      primaryLossReasonId: item.primaryLossReasonId,
+      lostReason: item.lostReason,
+      customFields: item.customFields,
+      lineItemCount: item.lineItems.length,
+      closerCount: item.participants.length,
+      hasProposedLineItemWithoutExpectedAmount: item.lineItems.some(
+        (line) =>
+          line.status === "PROPOSED" &&
+          !line.expectedRevenueAmount &&
+          !line.expectedGrossProfitAmount,
+      ),
+    });
+    return {
+      ...item,
+      companyName: dealCompanies.get(item.id) ?? null,
+      lastActivityAt: lastActivityByDeal.get(item.id) ?? null,
+      qualityIssues,
+    };
+  });
   const query = new URLSearchParams();
   if (q) query.set("q", q);
   Object.entries(filterParams).forEach(([key, value]) => query.set(key, value));
@@ -307,7 +380,24 @@ export default async function DealsPage({
               <option value="none">未設定</option>
             </select>
           </label>
-          <div className="flex flex-wrap items-end gap-2 lg:col-span-6">
+          <label className="lg:col-span-2">
+            <span className="mb-1 block text-xs font-bold text-slate-500">
+              要対応
+            </span>
+            <select
+              className="text-field"
+              name="quality"
+              defaultValue={quality}
+            >
+              <option value="">すべて</option>
+              {Object.entries(QUALITY_FILTER_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-wrap items-end gap-2 lg:col-span-4">
             <button className="primary-button" type="submit">
               <Icon name="search" className="h-4 w-4" />
               絞り込む
@@ -354,6 +444,9 @@ export default async function DealsPage({
           ) : null}
           {nextAction ? (
             <FilterPill label={`次アクション: ${NEXT_ACTION_LABELS[nextAction]}`} />
+          ) : null}
+          {quality ? (
+            <FilterPill label={`要対応: ${QUALITY_FILTER_LABELS[quality]}`} />
           ) : null}
         </div>
       </section>
@@ -424,6 +517,33 @@ export default async function DealsPage({
             ),
           },
           {
+            key: "quality",
+            label: "要確認",
+            render: (item) =>
+              item.qualityIssues.length ? (
+                <div className="max-w-[240px]">
+                  <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">
+                    {item.qualityIssues.length}件
+                  </span>
+                  <p className="mt-1 truncate text-xs text-slate-500">
+                    {item.qualityIssues[0]?.message}
+                  </p>
+                </div>
+              ) : (
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">
+                  OK
+                </span>
+              ),
+          },
+          {
+            key: "lastActivity",
+            label: "最終接触",
+            render: (item) =>
+              item.lastActivityAt
+                ? new Intl.DateTimeFormat("ja-JP").format(item.lastActivityAt)
+                : "履歴なし",
+          },
+          {
             key: "owner",
             label: "担当者",
             render: (item) => item.owner?.name ?? "未設定",
@@ -457,6 +577,14 @@ const NEXT_ACTION_LABELS = {
   none: "未設定",
 } as const;
 
+const QUALITY_FILTER_LABELS = {
+  next_overdue: "次回アクション期限超過",
+  missing_next_action: "次回アクション未設定",
+  expected_close_overdue: "受注予定日超過",
+  missing_line_items: "商品明細なし",
+  missing_forecast: "Forecast未設定",
+} as const;
+
 function isDealStatus(value: string | undefined): value is DealStatus {
   return Boolean(value && value in DEAL_STATUS_LABELS);
 }
@@ -465,6 +593,12 @@ function isNextActionFilter(
   value: string | undefined,
 ): value is keyof typeof NEXT_ACTION_LABELS {
   return Boolean(value && value in NEXT_ACTION_LABELS);
+}
+
+function isQualityFilter(
+  value: string | undefined,
+): value is keyof typeof QUALITY_FILTER_LABELS {
+  return Boolean(value && value in QUALITY_FILTER_LABELS);
 }
 
 function validDateParam(value: string | undefined) {
@@ -508,6 +642,39 @@ function buildNextActionFilter(
     return {
       OR: [{ nextActionDate: null }, { nextAction: null }, { nextAction: "" }],
     };
+  }
+  return {};
+}
+
+function buildQualityFilter(
+  value: keyof typeof QUALITY_FILTER_LABELS | "",
+): Prisma.DealWhereInput {
+  const today = new Date();
+  const todayJst = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(today);
+  const todayDate = parseDateParam(todayJst);
+
+  if (value === "next_overdue") {
+    return { status: "OPEN", nextActionDate: { lt: todayDate } };
+  }
+  if (value === "missing_next_action") {
+    return {
+      status: "OPEN",
+      OR: [{ nextActionDate: null }, { nextAction: null }, { nextAction: "" }],
+    };
+  }
+  if (value === "expected_close_overdue") {
+    return { status: "OPEN", expectedCloseDate: { lt: todayDate } };
+  }
+  if (value === "missing_line_items") {
+    return { lineItems: { none: {} } };
+  }
+  if (value === "missing_forecast") {
+    return { status: "OPEN", forecastCategoryId: null };
   }
   return {};
 }

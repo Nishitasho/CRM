@@ -6,6 +6,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
+import { buildDealQualityIssues } from "@/lib/deal-quality";
 import { prisma } from "@/lib/prisma";
 
 export default async function DealBoardPage({
@@ -38,7 +39,21 @@ export default async function DealBoardPage({
       ...businessUnitFilter,
       ...(await ownerScope(context)),
     },
-    include: { owner: { select: { name: true } } },
+    include: {
+      owner: { select: { name: true } },
+      lineItems: {
+        select: {
+          id: true,
+          status: true,
+          expectedRevenueAmount: true,
+          expectedGrossProfitAmount: true,
+        },
+      },
+      participants: {
+        where: { role: "CLOSER", status: "ACTIVE" },
+        select: { id: true },
+      },
+    },
     orderBy: { updatedAt: "desc" },
   });
   const lossReasons = await prisma.lossReasonDefinition.findMany({
@@ -75,6 +90,40 @@ export default async function DealBoardPage({
       companyNames.get(link.targetObjectId) ?? null,
     ]),
   );
+  const activityLinks = await prisma.objectAssociation.findMany({
+    where: {
+      organizationId: context.organization.id,
+      sourceObjectType: "ACTIVITY",
+      targetObjectType: "DEAL",
+      targetObjectId: { in: deals.map((deal) => deal.id) },
+    },
+    select: { sourceObjectId: true, targetObjectId: true },
+  });
+  const activities = await prisma.activity.findMany({
+    where: {
+      organizationId: context.organization.id,
+      id: { in: activityLinks.map((link) => link.sourceObjectId) },
+      deletedAt: null,
+    },
+    select: { id: true, occurredAt: true },
+    orderBy: { occurredAt: "desc" },
+  });
+  const activityById = new Map(activities.map((activity) => [activity.id, activity]));
+  const lastActivityByDeal = new Map<string, Date>();
+  for (const link of activityLinks) {
+    const activity = activityById.get(link.sourceObjectId);
+    if (!activity) continue;
+    const current = lastActivityByDeal.get(link.targetObjectId);
+    if (!current || activity.occurredAt > current) {
+      lastActivityByDeal.set(link.targetObjectId, activity.occurredAt);
+    }
+  }
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
   const stages = pipeline.stages.map((stage) => ({
     id: stage.id,
     name: stage.name,
@@ -82,17 +131,54 @@ export default async function DealBoardPage({
     probability: stage.probability,
     deals: deals
       .filter((deal) => deal.stageId === stage.id)
-      .map((deal) => ({
-        id: deal.id,
-        name: deal.name,
-        amount: deal.amount ? Number(deal.amount) : null,
-        expectedCloseDate: deal.expectedCloseDate?.toISOString() ?? null,
-        nextAction: deal.nextAction,
-        nextActionDate: deal.nextActionDate?.toISOString() ?? null,
-        ownerName: deal.owner?.name ?? "未設定",
-        companyName: dealCompanies.get(deal.id) ?? null,
-        stageId: deal.stageId,
-      })),
+      .map((deal) => {
+        const issues = buildDealQualityIssues({
+          status: deal.status,
+          stageType: stage.stageType,
+          stageName: stage.name,
+          stageStaleDays: stage.staleDays,
+          updatedAt: deal.updatedAt,
+          expectedCloseDate: deal.expectedCloseDate,
+          closeDate: deal.closeDate,
+          nextAction: deal.nextAction,
+          nextActionDate: deal.nextActionDate,
+          forecastCategoryId: deal.forecastCategoryId,
+          primaryLossReasonId: deal.primaryLossReasonId,
+          lostReason: deal.lostReason,
+          customFields: deal.customFields,
+          lineItemCount: deal.lineItems.length,
+          closerCount: deal.participants.length,
+          hasProposedLineItemWithoutExpectedAmount: deal.lineItems.some(
+            (line) =>
+              line.status === "PROPOSED" &&
+              !line.expectedRevenueAmount &&
+              !line.expectedGrossProfitAmount,
+          ),
+        });
+        return {
+          id: deal.id,
+          name: deal.name,
+          amount: deal.amount ? Number(deal.amount) : null,
+          expectedCloseDate: deal.expectedCloseDate?.toISOString() ?? null,
+          nextAction: deal.nextAction,
+          nextActionDate: deal.nextActionDate?.toISOString() ?? null,
+          lastActivityAt:
+            lastActivityByDeal.get(deal.id)?.toISOString() ?? null,
+          qualityIssueCount: issues.length,
+          primaryQualityIssue: issues[0]?.message ?? null,
+          daysSinceUpdated: Math.max(
+            0,
+            Math.floor(
+              (new Date(`${today}T00:00:00+09:00`).getTime() -
+                new Date(deal.updatedAt.toISOString().slice(0, 10)).getTime()) /
+                (24 * 60 * 60 * 1000),
+            ),
+          ),
+          ownerName: deal.owner?.name ?? "未設定",
+          companyName: dealCompanies.get(deal.id) ?? null,
+          stageId: deal.stageId,
+        };
+      }),
   }));
 
   return (

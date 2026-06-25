@@ -93,6 +93,7 @@ export default async function ProductSettingsPage() {
   }));
   const lossReasonItems = lossReasons.map((reason) => ({
     id: reason.id,
+    businessUnitId: reason.businessUnitId,
     code: reason.code,
     name: reason.name,
     category: reason.category,
@@ -101,6 +102,7 @@ export default async function ProductSettingsPage() {
     applicableStatus: reason.applicableStatus,
     requiresNote: reason.requiresNote,
     isActive: reason.isActive,
+    displayOrder: reason.displayOrder,
   }));
   return (
     <div className="mx-auto max-w-7xl">

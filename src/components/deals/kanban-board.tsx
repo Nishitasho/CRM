@@ -14,6 +14,7 @@ import { CSS } from "@dnd-kit/utilities";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { MissingStageRequirementsDialog } from "./missing-stage-requirements-dialog";
 
 type Deal = {
   id: string;
@@ -22,6 +23,10 @@ type Deal = {
   expectedCloseDate: string | null;
   nextAction: string | null;
   nextActionDate: string | null;
+  lastActivityAt: string | null;
+  qualityIssueCount: number;
+  primaryQualityIssue: string | null;
+  daysSinceUpdated: number;
   ownerName: string;
   companyName: string | null;
   stageId: string;
@@ -38,6 +43,16 @@ type Stage = {
 type PendingMove = {
   deal: Deal;
   stage: Stage;
+};
+
+type PendingRequirements = PendingMove & {
+  extra?: {
+    lostReason?: string | null;
+    primaryLossReasonId?: string | null;
+    lossReasonNote?: string | null;
+  };
+  missingRequirementKeys: string[];
+  missingLabels: string[];
 };
 
 type LossReason = {
@@ -64,6 +79,8 @@ export function KanbanBoard({
   const [lossReasonNote, setLossReasonNote] = useState("");
   const [manualLostReason, setManualLostReason] = useState("");
   const [error, setError] = useState("");
+  const [pendingRequirements, setPendingRequirements] =
+    useState<PendingRequirements | null>(null);
 
   const allDeals = stages.flatMap((stage) => stage.deals);
   const selectedLossReason = lossReasons.find(
@@ -137,12 +154,30 @@ export function KanbanBoard({
     });
     const result = await response.json();
     if (!response.ok) {
+      if (
+        Array.isArray(result.missingRequirementKeys) &&
+        result.missingRequirementKeys.length
+      ) {
+        setPendingRequirements({
+          deal,
+          stage,
+          extra,
+          missingRequirementKeys: result.missingRequirementKeys.map(String),
+          missingLabels: Array.isArray(result.missingFields)
+            ? result.missingFields.map(String)
+            : [],
+        });
+        setPendingMove(null);
+        setError("");
+        return;
+      }
       setError(result.message ?? "ステージを変更できませんでした。");
       return;
     }
 
     setError("");
     setPendingMove(null);
+    setPendingRequirements(null);
     resetLostReasonForm();
     router.refresh();
   }
@@ -259,6 +294,22 @@ export function KanbanBoard({
           </form>
         </div>
       ) : null}
+      {pendingRequirements ? (
+        <MissingStageRequirementsDialog
+          dealId={pendingRequirements.deal.id}
+          title="不足項目を入力"
+          missingRequirementKeys={pendingRequirements.missingRequirementKeys}
+          missingLabels={pendingRequirements.missingLabels}
+          onCancel={() => setPendingRequirements(null)}
+          onSaved={() =>
+            updateStage(
+              pendingRequirements.deal,
+              pendingRequirements.stage,
+              pendingRequirements.extra,
+            )
+          }
+        />
+      ) : null}
     </>
   );
 }
@@ -362,6 +413,22 @@ function DealCard({
           {deal.nextAction?.trim() || "メモ未設定"}
         </p>
       </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+        <div className="rounded-lg bg-slate-50 px-2 py-1.5">
+          <span className="block font-bold text-slate-400">最終接触</span>
+          <span>{deal.lastActivityAt ? shortDate(deal.lastActivityAt) : "履歴なし"}</span>
+        </div>
+        <div className="rounded-lg bg-slate-50 px-2 py-1.5">
+          <span className="block font-bold text-slate-400">更新停滞</span>
+          <span>{deal.daysSinceUpdated}日</span>
+        </div>
+      </div>
+      {deal.qualityIssueCount ? (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p className="font-bold">要確認 {deal.qualityIssueCount}件</p>
+          <p className="mt-1 max-h-10 overflow-hidden">{deal.primaryQualityIssue}</p>
+        </div>
+      ) : null}
       <div className="mt-3 flex items-end justify-between text-xs text-slate-400">
         <span>{deal.ownerName}</span>
         <span>
@@ -375,4 +442,11 @@ function DealCard({
       </div>
     </article>
   );
+}
+
+function shortDate(value: string) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
 }

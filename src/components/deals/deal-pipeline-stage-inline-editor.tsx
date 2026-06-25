@@ -2,6 +2,7 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MissingStageRequirementsDialog } from "./missing-stage-requirements-dialog";
 
 type Stage = {
   id: string;
@@ -21,6 +22,16 @@ type LossReason = {
   requiresNote: boolean;
 };
 
+type Option = { value: string; label: string };
+
+type PendingRequirementSave = {
+  pipelineId: string;
+  stageId: string;
+  extra?: Record<string, unknown>;
+  missingRequirementKeys: string[];
+  missingLabels: string[];
+};
+
 export function DealPipelineStageInlineEditor({
   dealId,
   canEdit,
@@ -28,6 +39,7 @@ export function DealPipelineStageInlineEditor({
   currentStageId,
   pipelines,
   lossReasons,
+  forecastCategories = [],
 }: {
   dealId: string;
   canEdit: boolean;
@@ -35,6 +47,7 @@ export function DealPipelineStageInlineEditor({
   currentStageId: string;
   pipelines: Pipeline[];
   lossReasons: LossReason[];
+  forecastCategories?: Option[];
 }) {
   const router = useRouter();
   const [pipelineId, setPipelineId] = useState(currentPipelineId);
@@ -44,6 +57,8 @@ export function DealPipelineStageInlineEditor({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [lostDialogStageId, setLostDialogStageId] = useState<string | null>(null);
+  const [pendingRequirements, setPendingRequirements] =
+    useState<PendingRequirementSave | null>(null);
 
   const selectedPipeline = useMemo(
     () => pipelines.find((item) => item.id === pipelineId) ?? pipelines[0],
@@ -82,6 +97,22 @@ export function DealPipelineStageInlineEditor({
     const result = await response.json().catch(() => ({}));
     setPending(false);
     if (!response.ok) {
+      if (
+        Array.isArray(result.missingRequirementKeys) &&
+        result.missingRequirementKeys.length
+      ) {
+        setPendingRequirements({
+          pipelineId: nextPipelineId,
+          stageId: nextStageId,
+          extra,
+          missingRequirementKeys: result.missingRequirementKeys.map(String),
+          missingLabels: Array.isArray(result.missingFields)
+            ? result.missingFields.map(String)
+            : [],
+        });
+        setError("");
+        return;
+      }
       setPipelineId(previousPipelineId);
       setStageId(previousStageId);
       setError(result.message ?? "パイプライン/ステージを変更できませんでした。");
@@ -92,6 +123,7 @@ export function DealPipelineStageInlineEditor({
     setPipelineId(nextPipelineId);
     setStageId(nextStageId);
     setLostDialogStageId(null);
+    setPendingRequirements(null);
     router.refresh();
   }
 
@@ -119,6 +151,12 @@ export function DealPipelineStageInlineEditor({
 
   function cancelLostDialog() {
     setLostDialogStageId(null);
+    setPipelineId(savedPipelineId);
+    setStageId(savedStageId);
+  }
+
+  function cancelRequirementDialog() {
+    setPendingRequirements(null);
     setPipelineId(savedPipelineId);
     setStageId(savedStageId);
   }
@@ -217,6 +255,23 @@ export function DealPipelineStageInlineEditor({
             </div>
           </form>
         </div>
+      ) : null}
+      {pendingRequirements ? (
+        <MissingStageRequirementsDialog
+          dealId={dealId}
+          title="不足項目を入力"
+          missingRequirementKeys={pendingRequirements.missingRequirementKeys}
+          missingLabels={pendingRequirements.missingLabels}
+          inputOptions={{ forecastCategories }}
+          onCancel={cancelRequirementDialog}
+          onSaved={() =>
+            save(
+              pendingRequirements.pipelineId,
+              pendingRequirements.stageId,
+              pendingRequirements.extra,
+            )
+          }
+        />
       ) : null}
     </div>
   );

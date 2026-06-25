@@ -68,6 +68,7 @@ type BaseProduct = { ruleId: string; productId: string };
 
 type LossReason = {
   id: string;
+  businessUnitId: string | null;
   code: string;
   name: string;
   category: string | null;
@@ -76,6 +77,7 @@ type LossReason = {
   applicableStatus: string[];
   requiresNote: boolean;
   isActive: boolean;
+  displayOrder: number;
 };
 
 type DeliveryTemplate = {
@@ -339,6 +341,39 @@ export function ProductManager({
       setMessage("失注理由を追加しました。");
       event.currentTarget.reset();
     }
+  }
+
+  async function updateLossReason(
+    event: FormEvent<HTMLFormElement>,
+    reason: LossReason,
+  ) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const applicableStatus = [
+      "LOST",
+      "CANCELLED",
+      "INVALID",
+      "NOT_SELECTED",
+    ].filter((status) => form.get(`status:${status}`) === "on");
+    const ok = await submitJson(`/api/loss-reasons/${reason.id}`, "PATCH", {
+      businessUnitId: form.get("businessUnitId"),
+      productId: form.get("productId"),
+      code: form.get("code"),
+      name: form.get("name"),
+      category: form.get("category"),
+      applicableScope: form.get("applicableScope"),
+      applicableStatus,
+      requiresNote: form.get("requiresNote") === "on",
+      isActive: form.get("isActive") === "on",
+      displayOrder: Number(form.get("displayOrder") ?? 0),
+    });
+    if (ok) setMessage("失注理由を更新しました。");
+  }
+
+  async function disableLossReason(reason: LossReason) {
+    if (!window.confirm(`${reason.name}を非表示にしますか？`)) return;
+    const ok = await submitJson(`/api/loss-reasons/${reason.id}`, "DELETE", {});
+    if (ok) setMessage("失注理由を非表示にしました。");
   }
 
   return (
@@ -976,16 +1011,137 @@ export function ProductManager({
         <section className="card overflow-hidden">
           <div className="border-b border-line p-5">
             <h2 className="font-bold">登録済み失注理由</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              失注ステージ移動時のプルダウンに表示されます。カテゴリ・補足必須・表示順を運用に合わせて調整できます。
+            </p>
           </div>
           <div className="divide-y divide-line">
             {lossReasons.map((reason) => (
-              <div key={reason.id} className="p-4 text-sm">
-                <p className="font-semibold">{reason.name}</p>
-                <p className="mt-1 text-slate-500">
-                  {reason.category ?? "未分類"} / {reason.applicableScope} /{" "}
-                  {reason.requiresNote ? "補足必須" : "補足任意"}
-                </p>
-              </div>
+              <form
+                key={reason.id}
+                className="grid gap-3 p-4 text-sm md:grid-cols-6"
+                onSubmit={(event) => updateLossReason(event, reason)}
+              >
+                <input
+                  className="text-field md:col-span-2"
+                  name="name"
+                  defaultValue={reason.name}
+                  disabled={!canManage}
+                  aria-label="失注理由名"
+                  required
+                />
+                <input
+                  className="text-field"
+                  name="code"
+                  defaultValue={reason.code}
+                  disabled={!canManage}
+                  aria-label="コード"
+                  required
+                />
+                <input
+                  className="text-field"
+                  name="category"
+                  defaultValue={reason.category ?? ""}
+                  disabled={!canManage}
+                  aria-label="カテゴリ"
+                  placeholder="カテゴリ"
+                />
+                <select
+                  className="text-field"
+                  name="applicableScope"
+                  defaultValue={reason.applicableScope}
+                  disabled={!canManage}
+                  aria-label="適用範囲"
+                >
+                  <option value="DEAL">商談</option>
+                  <option value="DEAL_LINE_ITEM">商品明細</option>
+                  <option value="BOTH">両方</option>
+                </select>
+                <select
+                  className="text-field"
+                  name="productId"
+                  defaultValue={reason.productId ?? ""}
+                  disabled={!canManage}
+                  aria-label="対象商品"
+                >
+                  <option value="">全商品</option>
+                  {products.map((product) => (
+                    <option key={product.id} value={product.id}>
+                      {product.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="text-field"
+                  name="businessUnitId"
+                  defaultValue={reason.businessUnitId ?? ""}
+                  disabled={!canManage}
+                  aria-label="事業部"
+                >
+                  <option value="">全事業部</option>
+                  {businessUnits.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="text-field"
+                  name="displayOrder"
+                  type="number"
+                  min={0}
+                  defaultValue={reason.displayOrder}
+                  disabled={!canManage}
+                  aria-label="表示順"
+                />
+                <div className="flex flex-wrap items-center gap-3 md:col-span-3">
+                  {["LOST", "CANCELLED", "INVALID", "NOT_SELECTED"].map(
+                    (status) => (
+                      <label key={status} className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          name={`status:${status}`}
+                          defaultChecked={reason.applicableStatus.includes(status)}
+                          disabled={!canManage}
+                        />
+                        {status}
+                      </label>
+                    ),
+                  )}
+                </div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    name="requiresNote"
+                    defaultChecked={reason.requiresNote}
+                    disabled={!canManage}
+                  />
+                  補足必須
+                </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    name="isActive"
+                    defaultChecked={reason.isActive}
+                    disabled={!canManage}
+                  />
+                  表示
+                </label>
+                {canManage ? (
+                  <div className="flex justify-end gap-2 md:col-span-6">
+                    <button className="secondary-button py-2 text-xs" type="submit">
+                      更新
+                    </button>
+                    <button
+                      className="secondary-button border-red-200 py-2 text-xs text-red-600 hover:border-red-400 hover:text-red-700"
+                      type="button"
+                      onClick={() => disableLossReason(reason)}
+                    >
+                      非表示
+                    </button>
+                  </div>
+                ) : null}
+              </form>
             ))}
           </div>
         </section>

@@ -8,6 +8,10 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getRecordActivities } from "@/lib/crm";
 import { getCustomFieldDetails } from "@/lib/custom-fields";
+import {
+  buildDealQualityIssues,
+  highestDealQualitySeverity,
+} from "@/lib/deal-quality";
 import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAssociationOptions, getRelatedRecords } from "@/lib/record-data";
@@ -40,6 +44,7 @@ export default async function DealDetailPage({
     lineItemProperties,
     propertyScopes,
     taskLinks,
+    closerCount,
   ] = await Promise.all([
     getRecordActivities(context.organization.id, "DEAL", id),
     getRelatedRecords(context.organization.id, "DEAL", id),
@@ -135,6 +140,14 @@ export default async function DealDetailPage({
       },
       select: { sourceObjectId: true },
     }),
+    prisma.dealParticipant.count({
+      where: {
+        organizationId: context.organization.id,
+        dealId: id,
+        role: "CLOSER",
+        status: "ACTIVE",
+      },
+    }),
   ]);
   const dealTasks = await prisma.task.findMany({
     where: {
@@ -185,6 +198,34 @@ export default async function DealDetailPage({
     dealCustomFields.billingStartedAt,
     lineItems.find((line) => line.billingStartedAt)?.billingStartedAt,
   );
+  const qualityIssues = buildDealQualityIssues({
+    status: item.status,
+    stageType: item.stage.stageType,
+    stageName: item.stage.name,
+    stageStaleDays: item.stage.staleDays,
+    updatedAt: item.updatedAt,
+    expectedCloseDate: item.expectedCloseDate,
+    closeDate: item.closeDate,
+    nextAction: item.nextAction,
+    nextActionDate: item.nextActionDate,
+    forecastCategoryId: item.forecastCategoryId,
+    primaryLossReasonId: item.primaryLossReasonId,
+    lostReason: item.lostReason,
+    customFields: item.customFields,
+    lineItemCount: lineItems.length,
+    closerCount,
+    hasProposedLineItemWithoutExpectedAmount: lineItems.some(
+      (line) =>
+        line.status === "PROPOSED" &&
+        !line.expectedRevenueAmount &&
+        !line.expectedGrossProfitAmount,
+    ),
+  });
+  const lossReasonName =
+    dealLossReasons.find((reason) => reason.id === item.primaryLossReasonId)
+      ?.name ??
+    item.lostReason ??
+    null;
   return (
     <div className="mx-auto max-w-[1500px]">
       <PageHeading
@@ -196,6 +237,36 @@ export default async function DealDetailPage({
             一覧へ戻る
           </Link>
         }
+      />
+      <DealSummaryPanel
+        stageName={item.stage.name}
+        pipelineName={item.pipeline.name}
+        statusLabel={
+          item.status === "WON"
+            ? "受注"
+            : item.status === "LOST"
+              ? "失注"
+              : "進行中"
+        }
+        probability={item.probability}
+        nextAction={item.nextAction}
+        nextActionDate={item.nextActionDate}
+        lastActivityAt={activities[0]?.occurredAt ?? null}
+        appointmentAcquiredDate={appointmentAcquiredDate}
+        meetingDate={meetingDate}
+        expectedCloseDate={item.expectedCloseDate}
+        closeDate={item.closeDate}
+        collectedDate={collectedDate}
+        billingDate={billingDate}
+        amount={item.amount ? Number(item.amount) : null}
+        forecastName={
+          forecastCategories.find(
+            (category) => category.id === item.forecastCategoryId,
+          )?.name ?? null
+        }
+        ownerName={item.owner?.name ?? null}
+        lossReasonName={lossReasonName}
+        qualityIssues={qualityIssues}
       />
       <RecordDetail
         objectType="DEAL"
@@ -235,6 +306,10 @@ export default async function DealDetailPage({
                 currentStageId={item.stageId}
                 pipelines={pipelines}
                 lossReasons={dealLossReasons}
+                forecastCategories={forecastCategories.map((category) => ({
+                  value: category.id,
+                  label: category.name,
+                }))}
               />
             ),
             fieldType: "SELECT",
@@ -480,4 +555,148 @@ function datePropertyValue(...values: unknown[]) {
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return new Intl.DateTimeFormat("ja-JP").format(new Date(value));
+}
+
+function formatShortDate(value: Date | string | null | undefined) {
+  if (!value) return "未設定";
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function qualityTone(severity: ReturnType<typeof highestDealQualitySeverity>) {
+  if (severity === "DANGER") return "border-red-200 bg-red-50 text-red-700";
+  if (severity === "WARNING")
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  if (severity === "INFO") return "border-sky-200 bg-sky-50 text-sky-700";
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
+}
+
+function DealSummaryPanel({
+  stageName,
+  pipelineName,
+  statusLabel,
+  probability,
+  nextAction,
+  nextActionDate,
+  lastActivityAt,
+  appointmentAcquiredDate,
+  meetingDate,
+  expectedCloseDate,
+  closeDate,
+  collectedDate,
+  billingDate,
+  amount,
+  forecastName,
+  ownerName,
+  lossReasonName,
+  qualityIssues,
+}: {
+  stageName: string;
+  pipelineName: string;
+  statusLabel: string;
+  probability: number;
+  nextAction: string | null;
+  nextActionDate: Date | null;
+  lastActivityAt: Date | null;
+  appointmentAcquiredDate: Date | string | null;
+  meetingDate: Date | string | null;
+  expectedCloseDate: Date | null;
+  closeDate: Date | null;
+  collectedDate: Date | string | null;
+  billingDate: Date | string | null;
+  amount: number | null;
+  forecastName: string | null;
+  ownerName: string | null;
+  lossReasonName: string | null;
+  qualityIssues: ReturnType<typeof buildDealQualityIssues>;
+}) {
+  const severity = highestDealQualitySeverity(qualityIssues);
+  return (
+    <section className="mb-6 grid gap-4 xl:grid-cols-[1.1fr_1fr_1fr]">
+      <div className="card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold uppercase text-brand-700">
+              Next action
+            </p>
+            <h2 className="mt-2 text-lg font-bold text-ink">
+              {nextAction || "次回アクション未設定"}
+            </h2>
+          </div>
+          <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">
+            {formatShortDate(nextActionDate)}
+          </span>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <MiniStat label="担当" value={ownerName ?? "未設定"} />
+          <MiniStat label="最終接触" value={formatShortDate(lastActivityAt)} />
+          <MiniStat label="Forecast" value={forecastName ?? "未設定"} />
+        </div>
+      </div>
+      <div className="card p-5">
+        <p className="text-xs font-bold uppercase text-slate-500">
+          Pipeline
+        </p>
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="font-bold text-ink">{stageName}</p>
+            <p className="mt-1 text-xs text-slate-500">{pipelineName}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-2xl font-bold text-ink">{probability}%</p>
+            <p className="text-xs text-slate-500">{statusLabel}</p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-2 text-xs text-slate-500">
+          <div className="flex justify-between">
+            <span>金額</span>
+            <span className="font-bold text-slate-700">
+              {amount ? `${amount.toLocaleString("ja-JP")}円` : "未設定"}
+            </span>
+          </div>
+          {lossReasonName ? (
+            <div className="flex justify-between">
+              <span>失注理由</span>
+              <span className="font-bold text-slate-700">{lossReasonName}</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className={`rounded-2xl border p-5 ${qualityTone(severity)}`}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-bold">データ品質</h2>
+          <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs font-bold">
+            {qualityIssues.length ? `${qualityIssues.length}件` : "OK"}
+          </span>
+        </div>
+        <div className="mt-4 space-y-2 text-sm">
+          {qualityIssues.slice(0, 3).map((issue) => (
+            <p key={issue.type}>{issue.message}</p>
+          ))}
+          {!qualityIssues.length ? <p>入力状態に大きな問題はありません。</p> : null}
+        </div>
+      </div>
+      <div className="card p-5 xl:col-span-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+          <MiniStat label="アポ獲得日" value={formatShortDate(appointmentAcquiredDate)} />
+          <MiniStat label="商談日" value={formatShortDate(meetingDate)} />
+          <MiniStat label="受注予定日" value={formatShortDate(expectedCloseDate)} />
+          <MiniStat label="受注日" value={formatShortDate(closeDate)} />
+          <MiniStat label="回収日" value={formatShortDate(collectedDate)} />
+          <MiniStat label="課金日" value={formatShortDate(billingDate)} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-line bg-slate-50 px-3 py-2">
+      <p className="text-[11px] font-bold text-slate-400">{label}</p>
+      <p className="mt-1 text-sm font-bold text-ink">{value}</p>
+    </div>
+  );
 }

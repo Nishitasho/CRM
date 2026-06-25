@@ -3,26 +3,46 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
     key: "appointment_acquired_date",
     label: "アポ獲得日",
     description: "ISがアポを獲得した日付",
+    input: {
+      propertyName: "customFields.appointmentAcquiredDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "meeting_date",
     label: "商談日",
     description: "初回商談または提案商談の日付",
+    input: {
+      propertyName: "customFields.meetingDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "won_date",
     label: "受注日",
     description: "受注として確定した日付",
+    input: {
+      propertyName: "closeDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "collected_date",
     label: "回収日",
     description: "入金・回収を確認した日付",
+    input: {
+      propertyName: "customFields.collectedDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "billing_date",
     label: "課金日",
     description: "課金開始日または請求開始日",
+    input: {
+      propertyName: "customFields.billingDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "line_items",
@@ -53,16 +73,29 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
     key: "forecast_category",
     label: "Forecast",
     description: "Forecastカテゴリが設定されている",
+    input: {
+      propertyName: "forecastCategoryId",
+      fieldType: "SELECT",
+      optionsKey: "forecastCategories",
+    },
   },
   {
     key: "next_action",
     label: "次回アクション",
     description: "次回アクション内容がある",
+    input: {
+      propertyName: "nextAction",
+      fieldType: "TEXT",
+    },
   },
   {
     key: "next_action_date",
     label: "次回アクション日",
     description: "次回アクション日がある",
+    input: {
+      propertyName: "nextActionDate",
+      fieldType: "DATE",
+    },
   },
   {
     key: "closer",
@@ -73,6 +106,11 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
     key: "decision_maker",
     label: "決裁者区分",
     description: "決裁者区分が不明ではない",
+    input: {
+      propertyName: "decisionMakerStatus",
+      fieldType: "SELECT",
+      optionsKey: "decisionMakerStatuses",
+    },
   },
   {
     key: "loss_reason",
@@ -89,3 +127,7 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
 export const DEAL_STAGE_REQUIREMENT_LABELS = Object.fromEntries(
   DEAL_STAGE_REQUIREMENT_OPTIONS.map((option) => [option.key, option.label]),
 ) as Record<string, string>;
+
+export const DEAL_STAGE_REQUIREMENTS_BY_KEY = Object.fromEntries(
+  DEAL_STAGE_REQUIREMENT_OPTIONS.map((option) => [option.key, option]),
+) as Record<string, (typeof DEAL_STAGE_REQUIREMENT_OPTIONS)[number]>;

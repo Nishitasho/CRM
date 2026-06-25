@@ -11,6 +11,7 @@ type Stage = {
   probability: number;
   stageType: "OPEN" | "WON" | "LOST";
   requiredFields: unknown;
+  staleDays: number | null;
   _count: { deals: number };
 };
 type Pipeline = {
@@ -92,6 +93,7 @@ export function PipelineManager({
         sortOrder: data.get("sortOrder"),
         probability: data.get("probability"),
         stageType: data.get("stageType"),
+        staleDays: data.get("staleDays") || null,
         requiredFields: data.getAll("requiredFields").map(String),
       }),
     });
@@ -115,6 +117,7 @@ export function PipelineManager({
           Math.max(0, ...pipeline.stages.map((stage) => stage.sortOrder)) + 1,
         probability: data.get("probability"),
         stageType: data.get("stageType"),
+        staleDays: data.get("staleDays") || null,
         requiredFields: data.getAll("requiredFields").map(String),
       }),
     });
@@ -234,7 +237,7 @@ export function PipelineManager({
                 event.preventDefault();
                 save(stage, event.currentTarget);
               }}
-              className="grid gap-3 p-5 md:grid-cols-[1fr_90px_110px_130px_auto]"
+              className="grid gap-3 p-5 md:grid-cols-[1fr_90px_110px_130px_110px_auto]"
             >
               <input
                 className="text-field"
@@ -269,6 +272,15 @@ export function PipelineManager({
                 <option value="WON">受注</option>
                 <option value="LOST">失注</option>
               </select>
+              <input
+                className="text-field"
+                name="staleDays"
+                type="number"
+                min="0"
+                placeholder="停滞日数"
+                defaultValue={stage.staleDays ?? ""}
+                disabled={!canManage}
+              />
               {canManage ? (
                 <div className="flex gap-2">
                   <button className="secondary-button min-h-10 px-3 py-1">
@@ -288,7 +300,7 @@ export function PipelineManager({
                 selected={stage.requiredFields}
                 disabled={!canManage}
               />
-              <p className="text-xs text-slate-400 md:col-span-5">
+              <p className="text-xs text-slate-400 md:col-span-6">
                 商談 {stage._count.deals}件
               </p>
             </form>
@@ -298,7 +310,7 @@ export function PipelineManager({
         {canManage ? (
           <form
             onSubmit={add}
-            className="grid gap-3 border-t border-line bg-canvas p-5 md:grid-cols-[1fr_110px_130px_auto]"
+            className="grid gap-3 border-t border-line bg-canvas p-5 md:grid-cols-[1fr_110px_130px_110px_auto]"
           >
             <input
               className="text-field"
@@ -319,6 +331,13 @@ export function PipelineManager({
               <option value="WON">受注</option>
               <option value="LOST">失注</option>
             </select>
+            <input
+              className="text-field"
+              name="staleDays"
+              type="number"
+              min="0"
+              placeholder="停滞日数"
+            />
             <button className="primary-button">ステージ追加</button>
             <StageRequirementPicker selected={[]} />
           </form>

@@ -4,6 +4,7 @@ import { getAuthContext } from "@/lib/auth";
 import { assertBusinessUnitAccess } from "@/lib/business-units";
 import { syncCrossSellPerformanceEvents } from "@/lib/cross-sell-events";
 import { canEditRecord, canViewRecord, createRecordActivity } from "@/lib/crm";
+import { DEAL_STAGE_REQUIREMENT_LABELS } from "@/lib/deal-stage-requirements";
 import { prisma } from "@/lib/prisma";
 import { validateDealStageRequirements } from "@/lib/sales-ops";
 import { dealStageSchema } from "@/lib/validation";
@@ -105,9 +106,19 @@ export async function PATCH(request: Request, { params }: Params) {
     const effectiveMissing = missing.filter(
       (item) => !(item === "失注理由" && input.primaryLossReasonId),
     );
+    const requiredKeys = Array.isArray(stage.requiredFields)
+      ? stage.requiredFields.map(String)
+      : [];
+    const missingRequirementKeys = requiredKeys.filter((key) =>
+      effectiveMissing.includes(DEAL_STAGE_REQUIREMENT_LABELS[key] ?? key),
+    );
     if (effectiveMissing.length)
       return NextResponse.json(
-        { message: `不足項目があります: ${effectiveMissing.join("、")}` },
+        {
+          message: `不足項目があります: ${effectiveMissing.join("、")}`,
+          missingFields: effectiveMissing,
+          missingRequirementKeys,
+        },
         { status: 400 },
       );
 

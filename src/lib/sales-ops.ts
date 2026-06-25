@@ -10,6 +10,8 @@ import {
   WorkFunction,
 } from "@prisma/client";
 import { getBusinessCalendarSummary } from "./business-calendar";
+import { buildDealQualityIssues } from "./deal-quality";
+import { DEAL_STAGE_REQUIREMENT_LABELS } from "./deal-stage-requirements";
 import { prisma } from "./prisma";
 
 export type SalesReportFilter = {
@@ -264,6 +266,10 @@ function hasDateValue(...values: unknown[]) {
     if (typeof value === "string") return value.trim().length > 0;
     return Boolean(value);
   });
+}
+
+function requirementLabel(key: string, fallback: string) {
+  return DEAL_STAGE_REQUIREMENT_LABELS[key] ?? fallback;
 }
 
 async function businessUnitSettings(organizationId: string) {
@@ -1625,7 +1631,6 @@ export async function getDealQualityAlerts(
     orderBy: { updatedAt: "asc" },
     take: 200,
   });
-  const today = startOfDay(new Date());
   const alerts = [];
   for (const deal of deals) {
     const common = {
@@ -1634,53 +1639,33 @@ export async function getDealQualityAlerts(
       businessUnitId: deal.businessUnitId,
       stageName: deal.stage.name,
     };
-    if (!deal.nextAction) {
-      alerts.push({
-        ...common,
-        type: "MISSING_NEXT_ACTION",
-        message: "OPEN商談ですが次回アクションが未設定です。",
-      });
-    }
-    if (deal.nextActionDate && startOfDay(deal.nextActionDate) < today) {
-      alerts.push({
-        ...common,
-        type: "NEXT_ACTION_OVERDUE",
-        message: "次回アクション期限を過ぎています。",
-      });
-    }
-    if (deal.lineItems.length === 0) {
-      alerts.push({
-        ...common,
-        type: "MISSING_LINE_ITEMS",
-        message: "商談に商品明細が設定されていません。",
-      });
-    }
-    if (deal.participants.length === 0) {
-      alerts.push({
-        ...common,
-        type: "MISSING_CLOSER",
-        message: "CLOSERが設定されていません。",
-      });
-    }
-    if (!deal.forecastCategoryId) {
-      alerts.push({
-        ...common,
-        type: "MISSING_FORECAST_CATEGORY",
-        message: "ForecastCategoryが未設定です。",
-      });
-    }
-    if (
-      deal.lineItems.some(
+    for (const issue of buildDealQualityIssues({
+      status: deal.status,
+      stageType: deal.stage.stageType,
+      stageName: deal.stage.name,
+      stageStaleDays: deal.stage.staleDays,
+      updatedAt: deal.updatedAt,
+      expectedCloseDate: deal.expectedCloseDate,
+      closeDate: deal.closeDate,
+      nextAction: deal.nextAction,
+      nextActionDate: deal.nextActionDate,
+      forecastCategoryId: deal.forecastCategoryId,
+      primaryLossReasonId: deal.primaryLossReasonId,
+      lostReason: deal.lostReason,
+      customFields: deal.customFields,
+      lineItemCount: deal.lineItems.length,
+      closerCount: deal.participants.length,
+      hasProposedLineItemWithoutExpectedAmount: deal.lineItems.some(
         (line) =>
           line.status === "PROPOSED" &&
           !line.expectedRevenueAmount &&
           !line.expectedGrossProfitAmount,
-      )
-    ) {
+      ),
+    })) {
       alerts.push({
         ...common,
-        type: "MISSING_EXPECTED_AMOUNT",
-        message: "提案中の商品明細に見込金額がありません。",
+        type: issue.type,
+        message: issue.message,
       });
     }
   }
@@ -1716,22 +1701,23 @@ export async function validateDealStageRequirements(input: {
   const customFields = asRecord(deal.customFields);
   for (const key of required) {
     if (key === "line_items" && deal.lineItems.length === 0)
-      missing.push("商品明細");
+      missing.push(requirementLabel(key, "商品明細"));
     if (key === "proposed_line_items" && !hasProposedLine)
-      missing.push("提案商品");
-    if (key === "won_line_items" && !hasWonLine) missing.push("受注商品");
+      missing.push(requirementLabel(key, "提案商品"));
+    if (key === "won_line_items" && !hasWonLine)
+      missing.push(requirementLabel(key, "受注商品"));
     if (key === "forecast_category" && !deal.forecastCategoryId)
-      missing.push("ForecastCategory");
+      missing.push(requirementLabel(key, "Forecast"));
     if (key === "next_action" && !deal.nextAction)
-      missing.push("次回アクション");
+      missing.push(requirementLabel(key, "次回アクション"));
     if (key === "next_action_date" && !deal.nextActionDate)
-      missing.push("次回アクション日");
+      missing.push(requirementLabel(key, "次回アクション日"));
     if (key === "closer" && deal.participants.length === 0)
-      missing.push("CLOSER");
+      missing.push(requirementLabel(key, "CLOSER"));
     if (key === "decision_maker" && deal.decisionMakerStatus === "UNKNOWN")
-      missing.push("決裁者区分");
+      missing.push(requirementLabel(key, "決裁者区分"));
     if (key === "loss_reason" && !deal.primaryLossReasonId)
-      missing.push("失注理由");
+      missing.push(requirementLabel(key, "失注理由"));
     if (
       key === "appointment_acquired_date" &&
       !hasDateValue(
@@ -1739,33 +1725,33 @@ export async function validateDealStageRequirements(input: {
         customFields.appointmentAcquiredAt,
       )
     ) {
-      missing.push("アポ獲得日");
+      missing.push(requirementLabel(key, "アポ獲得日"));
     }
     if (
       key === "meeting_date" &&
       !hasDateValue(customFields.meetingDate, customFields.scheduledStartAt)
     ) {
-      missing.push("商談日");
+      missing.push(requirementLabel(key, "商談日"));
     }
     if (
       key === "won_date" &&
       !hasDateValue(customFields.wonDate, deal.closeDate, deal.wonAt)
     ) {
-      missing.push("受注日");
+      missing.push(requirementLabel(key, "受注日"));
     }
     if (
       key === "collected_date" &&
       !hasDateValue(customFields.collectedDate) &&
       !deal.lineItems.some((line) => line.collectedAt)
     ) {
-      missing.push("回収日");
+      missing.push(requirementLabel(key, "回収日"));
     }
     if (
       key === "billing_date" &&
       !hasDateValue(customFields.billingDate, customFields.billingStartedAt) &&
       !deal.lineItems.some((line) => line.billingStartedAt)
     ) {
-      missing.push("課金日");
+      missing.push(requirementLabel(key, "課金日"));
     }
     if (
       key === "expected_amount" &&
@@ -1773,7 +1759,7 @@ export async function validateDealStageRequirements(input: {
         (line) => line.expectedRevenueAmount || line.expectedGrossProfitAmount,
       )
     ) {
-      missing.push("見込売上または見込粗利");
+      missing.push(requirementLabel(key, "見込売上または見込粗利"));
     }
     if (
       key === "confirmed_amount" &&
@@ -1781,13 +1767,13 @@ export async function validateDealStageRequirements(input: {
         (line) => line.revenueAmount || line.grossProfitAmount,
       )
     ) {
-      missing.push("確定売上または確定粗利");
+      missing.push(requirementLabel(key, "確定売上または確定粗利"));
     }
     if (
       key === "contracted_at" &&
       !deal.lineItems.some((line) => line.contractedAt)
     ) {
-      missing.push("契約日");
+      missing.push(requirementLabel(key, "契約日"));
     }
   }
   return missing;

@@ -40,10 +40,14 @@ type GoogleEvent = {
   etag?: string;
   status?: string;
   summary?: string;
+  description?: string;
+  location?: string;
   htmlLink?: string;
   iCalUID?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
+  attendees?: Array<Record<string, unknown>>;
+  reminders?: GoogleEventReminders;
   extendedProperties?: { private?: Record<string, string> };
 };
 
@@ -136,7 +140,28 @@ function isAuthGoogleError(error: unknown) {
   return error instanceof GoogleApiError && [401, 403].includes(error.status);
 }
 
+type RawGoogleReminderOverride = { method?: unknown; minutes?: unknown };
+type GoogleEventReminders = {
+  useDefault?: boolean;
+  overrides?: RawGoogleReminderOverride[];
+};
 type GoogleReminderOverride = { method: "popup"; minutes: number };
+type ExpectedGoogleEventReminders = {
+  useDefault: false;
+  overrides: GoogleReminderOverride[];
+};
+
+class GoogleReminderMismatchError extends Error {
+  code = "GOOGLE_REMINDER_MISMATCH";
+
+  constructor(
+    public expected: ExpectedGoogleEventReminders,
+    public actual: GoogleEvent["reminders"] | null | undefined,
+  ) {
+    super("Google Calendar reminders mismatch.");
+    this.name = "GoogleReminderMismatchError";
+  }
+}
 
 export function googleReminderOverridesFromScheduledTimes(input: {
   dueDate: Date;
@@ -149,10 +174,56 @@ export function googleReminderOverridesFromScheduledTimes(input: {
       if (Number.isNaN(scheduledTime)) return null;
       return Math.round((dueTime - scheduledTime) / 60_000);
     })
-    .filter((item): item is number => item !== null && item >= 0);
+    .filter(
+      (item): item is number =>
+        item !== null && Number.isInteger(item) && item >= 0 && item <= 40_320,
+    );
   return [...new Set(minutes)]
     .sort((a, b) => a - b)
+    .slice(0, 5)
     .map((item) => ({ method: "popup", minutes: item }));
+}
+
+export function buildGoogleEventReminders(input: {
+  dueDate: Date;
+  scheduledTimes: Array<Date | string>;
+}): ExpectedGoogleEventReminders {
+  return {
+    useDefault: false,
+    overrides: googleReminderOverridesFromScheduledTimes(input),
+  };
+}
+
+function normalizeGoogleReminderOverrides(
+  overrides: RawGoogleReminderOverride[] | null | undefined,
+): GoogleReminderOverride[] {
+  if (!Array.isArray(overrides)) return [];
+  const minutes = overrides
+    .filter((item): item is RawGoogleReminderOverride => Boolean(item))
+    .filter((item) => item.method === "popup")
+    .map((item) => Number(item.minutes))
+    .filter((item) => Number.isInteger(item) && item >= 0 && item <= 40_320);
+  return [...new Set(minutes)]
+    .sort((a, b) => a - b)
+    .slice(0, 5)
+    .map((minutes) => ({ method: "popup", minutes }));
+}
+
+export function googleEventRemindersMatch(
+  expected: ExpectedGoogleEventReminders,
+  actual: GoogleEvent["reminders"] | null | undefined,
+) {
+  if (!actual || actual.useDefault !== expected.useDefault) return false;
+  const expectedOverrides = normalizeGoogleReminderOverrides(
+    expected.overrides,
+  );
+  const actualOverrides = normalizeGoogleReminderOverrides(actual.overrides);
+  if (expectedOverrides.length !== actualOverrides.length) return false;
+  return expectedOverrides.every(
+    (expectedItem, index) =>
+      actualOverrides[index]?.method === expectedItem.method &&
+      actualOverrides[index]?.minutes === expectedItem.minutes,
+  );
 }
 
 export function resolveWatchCalendarId(input: {
@@ -539,6 +610,141 @@ async function getGoogleEvent(
   }
 }
 
+type GoogleTaskEventBody = Awaited<ReturnType<typeof googleTaskEventBody>>;
+
+function googleTaskEventFullUpdateBody(input: {
+  current: GoogleEvent | null;
+  next: GoogleTaskEventBody;
+}) {
+  return {
+    ...(input.current?.location ? { location: input.current.location } : {}),
+    ...(input.current?.attendees ? { attendees: input.current.attendees } : {}),
+    ...input.next,
+  };
+}
+
+function googleReminderMinutes(
+  reminders: GoogleEvent["reminders"] | null | undefined,
+) {
+  return normalizeGoogleReminderOverrides(reminders?.overrides).map(
+    (item) => item.minutes,
+  );
+}
+
+async function recordGoogleReminderMismatch(input: {
+  organizationId: string;
+  taskId: string;
+  expected: ExpectedGoogleEventReminders;
+  actual: GoogleEvent["reminders"] | null | undefined;
+}) {
+  await prisma.operationalEvent.create({
+    data: {
+      organizationId: input.organizationId,
+      eventType: OperationalEventType.GOOGLE_SYNC_FAILED,
+      status: "GOOGLE_REMINDER_MISMATCH",
+      metadata: {
+        taskId: input.taskId,
+        expectedReminderMinutes: googleReminderMinutes(input.expected),
+        actualReminderMinutes: googleReminderMinutes(input.actual),
+        useDefault: input.actual?.useDefault ?? null,
+      },
+    },
+  });
+}
+
+async function verifyGoogleEventReminders(input: {
+  accessToken: string;
+  calendarId: string;
+  eventId: string;
+  expected: ExpectedGoogleEventReminders;
+}) {
+  const savedEvent = await getGoogleEvent(
+    input.accessToken,
+    input.calendarId,
+    input.eventId,
+  );
+  if (!savedEvent) {
+    throw new GoogleApiError(404, "GOOGLE_EVENT_NOT_FOUND");
+  }
+  return {
+    event: savedEvent,
+    matched: googleEventRemindersMatch(input.expected, savedEvent.reminders),
+  };
+}
+
+async function syncGoogleTaskEventWithReminderVerification(input: {
+  accessToken: string;
+  calendarId: string;
+  eventId: string;
+  eventBody: GoogleTaskEventBody;
+  existing: GoogleEvent | null;
+}) {
+  const eventUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}`;
+  const event = input.existing
+    ? await googleFetch<GoogleEvent>(eventUrl, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${input.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(input.eventBody),
+      })
+    : await googleFetch<GoogleEvent>(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(input.calendarId)}/events`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${input.accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(input.eventBody),
+        },
+      ).catch(async (error) => {
+        if (error instanceof GoogleApiError && error.status === 409) {
+          const duplicate = await getGoogleEvent(
+            input.accessToken,
+            input.calendarId,
+            input.eventId,
+          );
+          if (duplicate) return duplicate;
+        }
+        throw error;
+      });
+
+  const firstCheck = await verifyGoogleEventReminders({
+    accessToken: input.accessToken,
+    calendarId: input.calendarId,
+    eventId: event.id ?? input.eventId,
+    expected: input.eventBody.reminders,
+  });
+  if (firstCheck.matched) return firstCheck.event;
+
+  await googleFetch<GoogleEvent>(eventUrl, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${input.accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      googleTaskEventFullUpdateBody({
+        current: firstCheck.event,
+        next: input.eventBody,
+      }),
+    ),
+  });
+  const secondCheck = await verifyGoogleEventReminders({
+    accessToken: input.accessToken,
+    calendarId: input.calendarId,
+    eventId: event.id ?? input.eventId,
+    expected: input.eventBody.reminders,
+  });
+  if (secondCheck.matched) return secondCheck.event;
+  throw new GoogleReminderMismatchError(
+    input.eventBody.reminders,
+    secondCheck.event.reminders,
+  );
+}
+
 function googleEventBody(input: {
   eventId: string;
   booking: BookingForGoogle;
@@ -648,7 +854,7 @@ async function googleTaskEventBody(input: {
     },
     orderBy: { scheduledAt: "asc" },
   });
-  const overrides = googleReminderOverridesFromScheduledTimes({
+  const reminders = buildGoogleEventReminders({
     dueDate: input.task.dueDate,
     scheduledTimes: reminderOverrides.map((reminder) => reminder.scheduledAt),
   });
@@ -672,10 +878,7 @@ async function googleTaskEventBody(input: {
       dateTime: endsAt.toISOString(),
       timeZone: input.task.timezone,
     },
-    reminders: {
-      useDefault: false,
-      overrides,
-    },
+    reminders,
     extendedProperties: {
       private: {
         crmTaskId: input.task.id,
@@ -744,39 +947,13 @@ export async function syncTaskToGoogle(taskId: string) {
     const eventId = task.googleEventId ?? googleEventIdForTask(task.id);
     const eventBody = await googleTaskEventBody({ eventId, task });
     const existing = await getGoogleEvent(accessToken, calendarId, eventId);
-    const event = existing
-      ? await googleFetch<GoogleEvent>(
-          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-          {
-            method: "PATCH",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(eventBody),
-          },
-        )
-      : await googleFetch<GoogleEvent>(
-          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(eventBody),
-          },
-        ).catch(async (error) => {
-          if (error instanceof GoogleApiError && error.status === 409) {
-            const duplicate = await getGoogleEvent(
-              accessToken,
-              calendarId,
-              eventId,
-            );
-            if (duplicate) return duplicate;
-          }
-          throw error;
-        });
+    const event = await syncGoogleTaskEventWithReminderVerification({
+      accessToken,
+      calendarId,
+      eventId,
+      eventBody,
+      existing,
+    });
     await prisma.task.update({
       where: { id: task.id },
       data: {
@@ -797,6 +974,14 @@ export async function syncTaskToGoogle(taskId: string) {
     );
     return { status: CalendarSyncStatus.SYNCED };
   } catch (error) {
+    if (error instanceof GoogleReminderMismatchError) {
+      await recordGoogleReminderMismatch({
+        organizationId: task.organizationId,
+        taskId: task.id,
+        expected: error.expected,
+        actual: error.actual,
+      });
+    }
     const status = isAuthGoogleError(error)
       ? CalendarSyncStatus.REAUTH_REQUIRED
       : isRetryableGoogleError(error)
@@ -812,11 +997,17 @@ export async function syncTaskToGoogle(taskId: string) {
             ? new Date(Date.now() + 5 * 60 * 1000)
             : null,
         calendarSyncErrorCode:
-          error instanceof GoogleApiError ? error.code : "GOOGLE_SYNC_FAILED",
+          error instanceof GoogleReminderMismatchError
+            ? error.code
+            : error instanceof GoogleApiError
+              ? error.code
+              : "GOOGLE_SYNC_FAILED",
         calendarSyncErrorMessage:
-          status === CalendarSyncStatus.REAUTH_REQUIRED
-            ? "Google Calendarの再認可が必要です。"
-            : "Google Calendar同期に失敗しました。",
+          error instanceof GoogleReminderMismatchError
+            ? "Google Calendarの通知設定が反映されませんでした。"
+            : status === CalendarSyncStatus.REAUTH_REQUIRED
+              ? "Google Calendarの再認可が必要です。"
+              : "Google Calendar同期に失敗しました。",
       },
     });
     await createTaskCalendarActivity(
@@ -917,7 +1108,9 @@ export function taskCalendarDeleteFailureData(error: unknown) {
     calendarSyncStatus: status,
     calendarSyncAttemptCount: { increment: 1 },
     calendarSyncErrorCode:
-      error instanceof GoogleApiError ? error.code : "GOOGLE_EVENT_DELETE_FAILED",
+      error instanceof GoogleApiError
+        ? error.code
+        : "GOOGLE_EVENT_DELETE_FAILED",
     calendarSyncErrorMessage:
       status === CalendarSyncStatus.REAUTH_REQUIRED
         ? "Google Calendarの再認可が必要です。"

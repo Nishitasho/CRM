@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGoogleEventReminders,
   googleEventIdForTask,
   googleReminderOverridesFromScheduledTimes,
   resolveWatchCalendarId,
@@ -55,11 +56,26 @@ describe("Google task events", () => {
 
   it("builds one-hour Google reminder overrides", () => {
     expect(
-      googleReminderOverridesFromScheduledTimes({
+      buildGoogleEventReminders({
         dueDate: new Date("2026-07-02T02:00:00.000Z"),
         scheduledTimes: [new Date("2026-07-02T01:00:00.000Z")],
       }),
-    ).toEqual([{ method: "popup", minutes: 60 }]);
+    ).toEqual({
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 60 }],
+    });
+  });
+
+  it("builds thirty-minute Google reminder overrides", () => {
+    expect(
+      buildGoogleEventReminders({
+        dueDate: new Date("2026-07-02T02:00:00.000Z"),
+        scheduledTimes: [new Date("2026-07-02T01:30:00.000Z")],
+      }),
+    ).toEqual({
+      useDefault: false,
+      overrides: [{ method: "popup", minutes: 30 }],
+    });
   });
 
   it("deduplicates multiple Google reminder overrides", () => {
@@ -80,11 +96,34 @@ describe("Google task events", () => {
 
   it("uses empty overrides instead of Google defaults when reminders are off", () => {
     expect(
-      googleReminderOverridesFromScheduledTimes({
+      buildGoogleEventReminders({
         dueDate: new Date("2026-07-02T02:00:00.000Z"),
         scheduledTimes: [],
       }),
-    ).toEqual([]);
+    ).toEqual({ useDefault: false, overrides: [] });
+  });
+
+  it("keeps Google reminder overrides inside the allowed range and limit", () => {
+    expect(
+      googleReminderOverridesFromScheduledTimes({
+        dueDate: new Date("2026-07-31T00:00:00.000Z"),
+        scheduledTimes: [
+          new Date("2026-07-30T23:55:00.000Z"),
+          new Date("2026-07-30T23:45:00.000Z"),
+          new Date("2026-07-30T23:30:00.000Z"),
+          new Date("2026-07-30T23:00:00.000Z"),
+          new Date("2026-07-30T22:00:00.000Z"),
+          new Date("2026-07-30T21:00:00.000Z"),
+          new Date("2026-06-01T00:00:00.000Z"),
+        ],
+      }),
+    ).toEqual([
+      { method: "popup", minutes: 5 },
+      { method: "popup", minutes: 15 },
+      { method: "popup", minutes: 30 },
+      { method: "popup", minutes: 60 },
+      { method: "popup", minutes: 120 },
+    ]);
   });
 });
 

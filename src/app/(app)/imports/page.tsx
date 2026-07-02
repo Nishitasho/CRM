@@ -53,9 +53,14 @@ export default async function ImportsPage() {
         description="CSV、XLSX、貼り付けた表データをマッピングして一括作成・更新します。"
         action={
           canUseLegacyProgressImport(context.membership.role) ? (
-            <Link href="/imports/legacy-progress" className="secondary-button">
-              進捗管理Excel
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link href="/imports/legacy-excel" className="primary-button">
+                Excel移行
+              </Link>
+              <Link href="/imports/legacy-progress" className="secondary-button">
+                進捗管理Excel
+              </Link>
+            </div>
           ) : null
         }
       />

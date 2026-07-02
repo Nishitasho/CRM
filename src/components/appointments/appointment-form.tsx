@@ -79,6 +79,8 @@ export function AppointmentForm({
   formConfigs,
   submitEndpoint = "/api/appointments",
   passcodeRequired = false,
+  canManageIndustryMaster = false,
+  requireFsUser = false,
 }: {
   businessUnits: Option[];
   selectedBusinessUnitId: string;
@@ -94,10 +96,14 @@ export function AppointmentForm({
   formConfigs: AppointmentFormConfig[];
   submitEndpoint?: string;
   passcodeRequired?: boolean;
+  canManageIndustryMaster?: boolean;
+  requireFsUser?: boolean;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
+  const [bootstrappingIndustries, setBootstrappingIndustries] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [created, setCreated] = useState<CreatedLinks | null>(null);
   const [sourceChannel, setSourceChannel] = useState("OUTBOUND_CALL");
   const [selectedCallListId, setSelectedCallListId] = useState("");
@@ -121,6 +127,41 @@ export function AppointmentForm({
     () => fsUsers.filter((user) => user.businessUnitId === businessUnitId),
     [businessUnitId, fsUsers],
   );
+  const filteredProducts = useMemo(
+    () =>
+      products.filter(
+        (product) =>
+          !product.businessUnitIds.length ||
+          product.businessUnitIds.includes(businessUnitId),
+      ),
+    [businessUnitId, products],
+  );
+  const blockingMessages = useMemo(() => {
+    const messages: string[] = [];
+    if (businessUnits.length === 0) messages.push("事業部が設定されていません。");
+    if (businessUnitId && filteredIsUsers.length === 0) {
+      messages.push("IS担当者が設定されていません。");
+    }
+    if (requireFsUser && businessUnitId && filteredFsUsers.length === 0) {
+      messages.push("FS担当者が設定されていません。");
+    }
+    if (businessUnitId && filteredProducts.length === 0) {
+      messages.push("商品マスタが設定されていません。");
+    }
+    if (industries.length === 0) {
+      messages.push("業種マスタが設定されていません。");
+    }
+    return messages;
+  }, [
+    businessUnitId,
+    businessUnits.length,
+    filteredFsUsers.length,
+    filteredIsUsers.length,
+    filteredProducts.length,
+    industries.length,
+    requireFsUser,
+  ]);
+  const hasBlockingMessages = blockingMessages.length > 0;
 
   useEffect(() => {
     if (!filteredIsUsers.some((user) => user.id === appointmentSetterUserId)) {
@@ -216,6 +257,7 @@ export function AppointmentForm({
     Object.assign(body, dynamicValues, { customFields: dynamicValues });
     setPending(true);
     setError("");
+    setNotice("");
     setCreated(null);
     const response = await fetch(submitEndpoint, {
       method: "POST",
@@ -229,6 +271,21 @@ export function AppointmentForm({
       return;
     }
     setCreated(result);
+    router.refresh();
+  }
+
+  async function createDefaultIndustries() {
+    setBootstrappingIndustries(true);
+    setError("");
+    setNotice("");
+    const response = await fetch("/api/industries/bootstrap", { method: "POST" });
+    const result = await response.json().catch(() => ({}));
+    setBootstrappingIndustries(false);
+    if (!response.ok) {
+      setError(result.message ?? "業種マスタの作成に失敗しました。");
+      return;
+    }
+    setNotice(`初期業種を${result.count ?? 0}件作成しました。`);
     router.refresh();
   }
 
@@ -277,6 +334,13 @@ export function AppointmentForm({
     );
     const common = { name: field.fieldKey, required: field.required, placeholder: field.placeholder ?? "" };
     if (field.fieldKey === "businessUnitId") {
+      if (businessUnits.length === 0) {
+        return (
+          <div key={field.fieldKey} className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+            事業部が設定されていません。
+          </div>
+        );
+      }
       return (
         <label key={field.fieldKey}>
           {label}
@@ -297,6 +361,13 @@ export function AppointmentForm({
       );
     }
     if (field.fieldKey === "appointmentSetterUserId") {
+      if (filteredIsUsers.length === 0) {
+        return (
+          <div key={field.fieldKey} className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+            IS担当者が設定されていません。
+          </div>
+        );
+      }
       return (
         <label key={field.fieldKey}>
           {label}
@@ -308,6 +379,13 @@ export function AppointmentForm({
       );
     }
     if (field.fieldKey === "assignedFsUserId") {
+      if (requireFsUser && filteredFsUsers.length === 0) {
+        return (
+          <div key={field.fieldKey} className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+            FS担当者が設定されていません。
+          </div>
+        );
+      }
       return (
         <label key={field.fieldKey}>
           {label}
@@ -347,12 +425,41 @@ export function AppointmentForm({
       return <label key={field.fieldKey} className="flex items-center gap-2 text-sm font-bold text-slate-600"><input name={field.fieldKey} type="checkbox" defaultChecked={Boolean(field.defaultValue)} />{field.label}</label>;
     }
     if (field.fieldType === "SELECT" || field.fieldType === "USER" || field.fieldType === "BUSINESS_UNIT" || field.fieldType === "PRODUCT") {
+      const selectOptions = optionsFor(field);
+      if (field.fieldKey === "industryId" && selectOptions.length === 0) {
+        return (
+          <div key={field.fieldKey} className="md:col-span-2 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="font-bold">
+              {canManageIndustryMaster
+                ? "業種マスタが未設定です。アポ登録を行うには業種を追加してください。"
+                : "業種マスタが未設定のため、アポ登録できません。管理者に設定を依頼してください。"}
+            </p>
+            {canManageIndustryMaster ? (
+              <button
+                className="secondary-button mt-3 py-2 text-xs"
+                disabled={bootstrappingIndustries}
+                type="button"
+                onClick={createDefaultIndustries}
+              >
+                {bootstrappingIndustries ? "作成中..." : "初期業種を作成"}
+              </button>
+            ) : null}
+          </div>
+        );
+      }
+      if ((field.fieldKey === "primaryProductId" || field.fieldKey === "additionalProductIds") && selectOptions.length === 0) {
+        return (
+          <div key={field.fieldKey} className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
+            商品マスタが設定されていません。
+          </div>
+        );
+      }
       return (
         <label key={field.fieldKey}>
           {label}
           <select className="text-field" {...common} defaultValue={String(fieldValue(field) ?? "")}>
             {!field.required ? <option value="">未設定</option> : <option value="">選択してください</option>}
-            {optionsFor(field).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            {selectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
       );
@@ -388,10 +495,20 @@ export function AppointmentForm({
           {error}
         </p>
       ) : null}
-      {filteredIsUsers.length === 0 ? (
-        <p role="alert" className="rounded-lg bg-amber-50 px-4 py-3 text-sm font-bold text-amber-700">
-          この事業部にはIS担当者が設定されていません。
+      {notice ? (
+        <p role="status" className="rounded-lg bg-green-50 px-4 py-3 text-sm font-bold text-green-700">
+          {notice}
         </p>
+      ) : null}
+      {hasBlockingMessages ? (
+        <div role="alert" className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          <p className="font-bold">アポ登録に必要な設定が不足しています。</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {blockingMessages.map((message) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {created ? (
         <div role="status" className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
@@ -721,7 +838,7 @@ export function AppointmentForm({
       ) : null}
 
       <div className="sticky bottom-4 flex justify-end">
-        <button className="primary-button min-w-40" disabled={pending || filteredIsUsers.length === 0}>
+        <button className="primary-button min-w-40" disabled={pending || hasBlockingMessages}>
           {pending ? "保存中..." : "アポ登録"}
         </button>
       </div>

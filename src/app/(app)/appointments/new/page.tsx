@@ -12,6 +12,7 @@ import {
   canCreateInternalAppointment,
   getInternalAppointmentUsers,
 } from "@/lib/internal-appointments";
+import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +23,10 @@ export default async function NewAppointmentPage() {
   if (!(await canCreateInternalAppointment(context))) redirect("/dashboard");
 
   const canAdminister = canAdministrateInternalAppointments(context);
+  const canManageIndustryMaster =
+    hasPermission(context.membership.role, Permission.MANAGE_ORGANIZATION) ||
+    hasPermission(context.membership.role, Permission.MANAGE_PRODUCTS) ||
+    hasPermission(context.membership.role, Permission.MANAGE_KPI);
   const businessUnits = canAdminister
     ? await getAccessibleBusinessUnits(context)
     : (
@@ -157,6 +162,8 @@ export default async function NewAppointmentPage() {
         callLists={callLists}
         companies={companies}
         formConfigs={formConfigs}
+        canManageIndustryMaster={canManageIndustryMaster}
+        requireFsUser
       />
     </div>
   );

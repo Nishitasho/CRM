@@ -198,6 +198,25 @@ async function hasActiveBusinessUnitMembership(input: {
   return Boolean(membership);
 }
 
+async function assertIndustryAvailable(input: {
+  organizationId: string;
+  industryId: string;
+}) {
+  const industry = await prisma.industry.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      id: input.industryId,
+      isActive: true,
+    },
+    select: { id: true },
+  });
+  if (!industry) {
+    throw new BadRequestError(
+      "選択した業種が見つかりません。業種マスタを確認してください。",
+    );
+  }
+}
+
 async function findOrCreateCompany(
   tx: Prisma.TransactionClient,
   organizationId: string,
@@ -355,6 +374,10 @@ export async function createInternalAppointment(
   if (!(await assertBusinessUnitAccess(context, input.businessUnitId))) {
     throw new BadRequestError("事業部が見つかりません。");
   }
+  await assertIndustryAvailable({
+    organizationId: context.organization.id,
+    industryId: input.industryId,
+  });
   const canAdminister = canAdministrateInternalAppointments(context);
   const appointmentSetterUserId =
     input.appointmentSetterUserId ?? context.user.id;

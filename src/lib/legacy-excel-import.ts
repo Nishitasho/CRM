@@ -220,6 +220,7 @@ export type LegacyExcelApplyInput = {
   confirmed: boolean;
   confirmText: string;
   applyTargets?: LegacyExcelApplyTargets;
+  unresolvedDeliveryProjectConfirmText?: string;
   manualMatches?: Record<
     string,
     | {
@@ -236,6 +237,7 @@ export type LegacyExcelApplyTargets = {
   deals: boolean;
   dealLineItems: boolean;
   deliveryProjects: boolean;
+  unresolvedDeliveryProjects: boolean;
   activities: boolean;
   dailyMetrics: boolean;
   kpiTargets: boolean;
@@ -247,10 +249,14 @@ export const defaultLegacyExcelApplyTargets: LegacyExcelApplyTargets = {
   deals: true,
   dealLineItems: true,
   deliveryProjects: true,
+  unresolvedDeliveryProjects: false,
   activities: true,
   dailyMetrics: false,
   kpiTargets: false,
 };
+
+export const legacyExcelUnresolvedDeliveryProjectConfirmText =
+  "元商談未紐付けのCS案件を作成することを理解しました";
 
 export type LegacyExcelWorkbookInput = {
   buffer: Buffer;
@@ -261,6 +267,80 @@ export function normalizeApplyTargets(
   input?: Partial<LegacyExcelApplyTargets> | null,
 ): LegacyExcelApplyTargets {
   return { ...defaultLegacyExcelApplyTargets, ...(input ?? {}) };
+}
+
+export function getLegacyExcelUnresolvedDeliveryProjectConfirmText() {
+  return legacyExcelUnresolvedDeliveryProjectConfirmText;
+}
+
+export type LegacyExcelApplyPlan = {
+  companies: number;
+  contacts: number;
+  deals: number;
+  dealLineItems: number;
+  activities: number;
+  autoDeliveryProjects: number;
+  reviewDeliveryProjects: number;
+  unresolvedDeliveryProjects: number;
+  dailyMetrics: number;
+  kpiTargets: number;
+};
+
+export function getLegacyExcelApplyPlan(
+  dryRun: Pick<
+    LegacyExcelDryRunResult,
+    "totals" | "crossFileMatches" | "hpProjectCandidates"
+  >,
+  applyTargets?: Partial<LegacyExcelApplyTargets> | null,
+  manualMatches?: LegacyExcelApplyInput["manualMatches"],
+): LegacyExcelApplyPlan {
+  const targets = normalizeApplyTargets(applyTargets);
+  const matchById = new Map(
+    dryRun.crossFileMatches.map((match) => [match.hpCandidateId, match]),
+  );
+  let autoDeliveryProjects = 0;
+  let reviewDeliveryProjects = 0;
+  let unresolvedDeliveryProjects = 0;
+
+  if (targets.deliveryProjects) {
+    for (const candidate of dryRun.hpProjectCandidates) {
+      const match = matchById.get(candidate.id);
+      const manual = manualMatches?.[candidate.id];
+      if (manual?.progressCandidateId) {
+        reviewDeliveryProjects += 1;
+        continue;
+      }
+      if (manual?.decision === "UNRESOLVED") {
+        if (targets.unresolvedDeliveryProjects) unresolvedDeliveryProjects += 1;
+        continue;
+      }
+      if (match?.decision === "AUTO") {
+        autoDeliveryProjects += 1;
+        continue;
+      }
+      if (match?.decision === "UNRESOLVED" && targets.unresolvedDeliveryProjects) {
+        unresolvedDeliveryProjects += 1;
+      }
+    }
+  }
+
+  const deliveryProjectActivities =
+    autoDeliveryProjects + reviewDeliveryProjects + unresolvedDeliveryProjects;
+  return {
+    companies: targets.companiesContacts ? dryRun.totals.companyCandidates : 0,
+    contacts: targets.companiesContacts ? dryRun.totals.contactCandidates : 0,
+    deals: targets.deals ? dryRun.totals.progressDealCandidates : 0,
+    dealLineItems: targets.dealLineItems ? dryRun.totals.dealLineItemCandidates : 0,
+    activities: targets.activities
+      ? (targets.deals ? dryRun.totals.progressDealCandidates : 0) +
+        deliveryProjectActivities
+      : 0,
+    autoDeliveryProjects,
+    reviewDeliveryProjects,
+    unresolvedDeliveryProjects,
+    dailyMetrics: targets.dailyMetrics ? dryRun.totals.dailyMetricRows : 0,
+    kpiTargets: targets.kpiTargets ? dryRun.totals.kpiTargetRows : 0,
+  };
 }
 
 type AnalyzeOptions = {
@@ -1071,26 +1151,17 @@ export async function applyLegacyExcelImport(input: {
     }
   }
 
-  const runtimeMatches =
-    input.dryRun.hpProjectCandidates.length > 0
-      ? matchLegacyProjects(input.dryRun.hpProjectCandidates, [
-          ...input.dryRun.progressCandidates,
-          ...(await getExistingLegacyDealCandidates(input.organizationId)),
-        ])
-      : [];
-
   if (applyTargets.deliveryProjects) for (const candidate of input.dryRun.hpProjectCandidates) {
-    const dryRunMatch = resolveProjectMatch(
+    const match = resolveProjectMatchForApply(
       candidate.id,
       input.dryRun.crossFileMatches,
+      applyTargets,
       input.manualMatches,
     );
-    const manualMatch = input.manualMatches?.[candidate.id];
-    const runtimeMatch =
-      manualMatch || dryRunMatch?.decision !== "UNRESOLVED"
-        ? null
-        : resolveProjectMatch(candidate.id, runtimeMatches);
-    const match = runtimeMatch ?? dryRunMatch;
+    if (!match) {
+      skipped += 1;
+      continue;
+    }
     const linkedProgress = match?.progressCandidateId
       ? progressResults.get(match.progressCandidateId)
       : undefined;
@@ -2228,6 +2299,37 @@ function resolveProjectMatch(
     score: top?.score ?? 0,
     reasons: top?.reasons ?? [],
   };
+}
+
+function resolveProjectMatchForApply(
+  hpCandidateId: string,
+  matches: LegacyCrossFileMatch[],
+  applyTargets: LegacyExcelApplyTargets,
+  manualMatches?: LegacyExcelApplyInput["manualMatches"],
+): ResolvedProjectMatch | null {
+  const manual = manualMatches?.[hpCandidateId];
+  const match = matches.find((item) => item.hpCandidateId === hpCandidateId);
+
+  if (manual?.progressCandidateId) {
+    return resolveProjectMatch(hpCandidateId, matches, manualMatches);
+  }
+  if (manual?.decision === "UNRESOLVED") {
+    return applyTargets.unresolvedDeliveryProjects
+      ? { decision: "UNRESOLVED", progressCandidateId: null, score: 0, reasons: [] }
+      : null;
+  }
+  if (match?.decision === "AUTO") {
+    return resolveProjectMatch(hpCandidateId, matches);
+  }
+  if (match?.decision === "UNRESOLVED" && applyTargets.unresolvedDeliveryProjects) {
+    return {
+      decision: "UNRESOLVED",
+      progressCandidateId: null,
+      score: match.score,
+      reasons: [],
+    };
+  }
+  return null;
 }
 
 type ResolvedProjectMatch = {

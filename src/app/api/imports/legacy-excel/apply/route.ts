@@ -8,6 +8,7 @@ import {
   applyLegacyExcelImport,
   defaultLegacyExcelApplyTargets,
   getLegacyExcelConfirmText,
+  getLegacyExcelUnresolvedDeliveryProjectConfirmText,
   normalizeApplyTargets,
   type LegacyExcelDryRunResult,
 } from "@/lib/legacy-excel-import";
@@ -25,11 +26,13 @@ const applySchema = z.object({
       deals: z.boolean().optional(),
       dealLineItems: z.boolean().optional(),
       deliveryProjects: z.boolean().optional(),
+      unresolvedDeliveryProjects: z.boolean().optional(),
       activities: z.boolean().optional(),
       dailyMetrics: z.boolean().optional(),
       kpiTargets: z.boolean().optional(),
     })
     .optional(),
+  unresolvedDeliveryProjectConfirmText: z.string().optional(),
   manualMatches: z
     .record(
       z.object({
@@ -75,6 +78,24 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    if (applyTargets.unresolvedDeliveryProjects && !applyTargets.deliveryProjects) {
+      return NextResponse.json(
+        { message: "未紐付けCS案件を反映する場合は、CS案件も反映対象にしてください。" },
+        { status: 400 },
+      );
+    }
+    if (
+      applyTargets.unresolvedDeliveryProjects &&
+      input.unresolvedDeliveryProjectConfirmText !==
+        getLegacyExcelUnresolvedDeliveryProjectConfirmText()
+    ) {
+      return NextResponse.json(
+        {
+          message: `未紐付けCS案件の本登録には「${getLegacyExcelUnresolvedDeliveryProjectConfirmText()}」の確認入力が必要です。`,
+        },
+        { status: 400 },
+      );
+    }
 
     const job = await prisma.importJob.findFirst({
       where: {
@@ -113,6 +134,8 @@ export async function POST(request: Request) {
           ...mapping,
           applyTargets,
           manualMatches: input.manualMatches ?? {},
+          unresolvedDeliveryProjectConfirmText:
+            input.unresolvedDeliveryProjectConfirmText ?? "",
           applyStartedAt: new Date().toISOString(),
         } as Prisma.InputJsonValue,
       },

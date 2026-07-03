@@ -3,6 +3,7 @@ import {
   analyzeLegacyExcelWorkbook,
   analyzeLegacyExcelWorkbooks,
   excelSerialToDateString,
+  getLegacyExcelApplyPlan,
   mapLegacyProgressStatus,
   normalizeDomain,
   normalizeLegacyName,
@@ -181,6 +182,59 @@ describe("legacy Excel import", () => {
     expect(result.kpiTargetCandidates).toHaveLength(1);
     expect(result.priceBookCandidates).toHaveLength(1);
     expect(result.totals.progressDealCandidates).toBe(0);
+  });
+
+  it("plans delivery project apply targets safely by match decision", () => {
+    const dryRun = {
+      totals: {
+        companyCandidates: 3,
+        contactCandidates: 2,
+        progressDealCandidates: 3,
+        dealLineItemCandidates: 3,
+        dailyMetricRows: 4,
+        kpiTargetRows: 5,
+      },
+      hpProjectCandidates: [
+        { id: "hp-auto" },
+        { id: "hp-review" },
+        { id: "hp-unresolved" },
+      ],
+      crossFileMatches: [
+        {
+          hpCandidateId: "hp-auto",
+          decision: "AUTO",
+          candidates: [{ progressCandidateId: "deal-auto" }],
+        },
+        {
+          hpCandidateId: "hp-review",
+          decision: "REVIEW",
+          candidates: [{ progressCandidateId: "deal-review" }],
+        },
+        {
+          hpCandidateId: "hp-unresolved",
+          decision: "UNRESOLVED",
+          candidates: [],
+        },
+      ],
+    } as never;
+
+    const initialPlan = getLegacyExcelApplyPlan(dryRun);
+    expect(initialPlan.autoDeliveryProjects).toBe(1);
+    expect(initialPlan.reviewDeliveryProjects).toBe(0);
+    expect(initialPlan.unresolvedDeliveryProjects).toBe(0);
+    expect(initialPlan.dailyMetrics).toBe(0);
+    expect(initialPlan.kpiTargets).toBe(0);
+
+    const reviewedPlan = getLegacyExcelApplyPlan(dryRun, undefined, {
+      "hp-review": { progressCandidateId: "deal-review" },
+    });
+    expect(reviewedPlan.reviewDeliveryProjects).toBe(1);
+    expect(reviewedPlan.unresolvedDeliveryProjects).toBe(0);
+
+    const unresolvedPlan = getLegacyExcelApplyPlan(dryRun, {
+      unresolvedDeliveryProjects: true,
+    });
+    expect(unresolvedPlan.unresolvedDeliveryProjects).toBe(1);
   });
 });
 

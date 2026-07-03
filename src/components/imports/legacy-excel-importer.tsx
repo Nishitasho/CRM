@@ -70,18 +70,22 @@ type ApplyTargets = {
   deals: boolean;
   dealLineItems: boolean;
   deliveryProjects: boolean;
+  unresolvedDeliveryProjects: boolean;
   activities: boolean;
   dailyMetrics: boolean;
   kpiTargets: boolean;
 };
 
 const confirmText = "本当に反映する";
+const unresolvedConfirmText =
+  "元商談未紐付けのCS案件を作成することを理解しました";
 const defaultApplyTargets: ApplyTargets = {
   masters: true,
   companiesContacts: true,
   deals: true,
   dealLineItems: true,
   deliveryProjects: true,
+  unresolvedDeliveryProjects: false,
   activities: true,
   dailyMetrics: false,
   kpiTargets: false,
@@ -96,6 +100,83 @@ function onlyXlsxFiles(files: File[]) {
   return files.filter((file) => file.name.toLowerCase().endsWith(".xlsx"));
 }
 
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function buildApplyPreview(
+  result: DryRunResult,
+  applyTargets: ApplyTargets,
+  manualMatches: Record<string, ManualMatch>,
+) {
+  let autoDeliveryProjects = 0;
+  let reviewDeliveryProjects = 0;
+  let unresolvedDeliveryProjects = 0;
+  const matchById = new Map(
+    result.crossFileMatches.map((match) => [match.hpCandidateId, match]),
+  );
+
+  if (applyTargets.deliveryProjects) {
+    for (const match of result.crossFileMatches) {
+      const manual = manualMatches[match.hpCandidateId];
+      if (manual?.progressCandidateId) {
+        reviewDeliveryProjects += 1;
+        continue;
+      }
+      if (manual?.decision === "UNRESOLVED") {
+        if (applyTargets.unresolvedDeliveryProjects) {
+          unresolvedDeliveryProjects += 1;
+        }
+        continue;
+      }
+      if (match.decision === "AUTO") {
+        autoDeliveryProjects += 1;
+      } else if (
+        match.decision === "UNRESOLVED" &&
+        applyTargets.unresolvedDeliveryProjects
+      ) {
+        unresolvedDeliveryProjects += 1;
+      }
+    }
+  }
+
+  const deliveryProjectActivities =
+    autoDeliveryProjects + reviewDeliveryProjects + unresolvedDeliveryProjects;
+  return {
+    companies: applyTargets.companiesContacts
+      ? numberValue(result.totals.companyCandidates)
+      : 0,
+    contacts: applyTargets.companiesContacts
+      ? numberValue(result.totals.contactCandidates)
+      : 0,
+    deals: applyTargets.deals
+      ? numberValue(result.totals.progressDealCandidates)
+      : 0,
+    dealLineItems: applyTargets.dealLineItems
+      ? numberValue(result.totals.dealLineItemCandidates)
+      : 0,
+    activities: applyTargets.activities
+      ? (applyTargets.deals ? numberValue(result.totals.progressDealCandidates) : 0) +
+        deliveryProjectActivities
+      : 0,
+    autoDeliveryProjects,
+    reviewDeliveryProjects,
+    unresolvedDeliveryProjects,
+    dailyMetrics: applyTargets.dailyMetrics
+      ? numberValue(result.totals.dailyMetricRows)
+      : 0,
+    kpiTargets: applyTargets.kpiTargets
+      ? numberValue(result.totals.kpiTargetRows)
+      : 0,
+    reviewTotal: Array.from(matchById.values()).filter(
+      (match) => match.decision === "REVIEW",
+    ).length,
+    unresolvedTotal: Array.from(matchById.values()).filter(
+      (match) => match.decision === "UNRESOLVED",
+    ).length,
+  };
+}
+
 export function LegacyExcelImporter({
   histories,
 }: {
@@ -108,6 +189,7 @@ export function LegacyExcelImporter({
     useState<ApplyTargets>(defaultApplyTargets);
   const [confirmed, setConfirmed] = useState(false);
   const [confirmInput, setConfirmInput] = useState("");
+  const [unresolvedConfirmInput, setUnresolvedConfirmInput] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -117,8 +199,13 @@ export function LegacyExcelImporter({
     result &&
       confirmed &&
       confirmInput === confirmText &&
+      (!applyTargets.unresolvedDeliveryProjects ||
+        unresolvedConfirmInput === unresolvedConfirmText) &&
       !pending,
   );
+  const applyPreview = result
+    ? buildApplyPreview(result, applyTargets, manualMatches)
+    : null;
   const reviewCount = useMemo(
     () => result?.crossFileMatches.filter((match) => match.decision === "REVIEW").length ?? 0,
     [result],
@@ -141,6 +228,7 @@ export function LegacyExcelImporter({
     setMessage("");
     setManualMatches({});
     setApplyTargets(defaultApplyTargets);
+    setUnresolvedConfirmInput("");
     const form = new FormData(formElement);
     form.delete("files");
     form.delete("file");
@@ -188,6 +276,7 @@ export function LegacyExcelImporter({
         confirmed,
         confirmText: confirmInput,
         applyTargets,
+        unresolvedDeliveryProjectConfirmText: unresolvedConfirmInput,
         manualMatches,
       }),
     });
@@ -210,6 +299,7 @@ export function LegacyExcelImporter({
         next.dealLineItems = false;
       }
       if (!next.deals) next.dealLineItems = false;
+      if (!next.deliveryProjects) next.unresolvedDeliveryProjects = false;
       return next;
     });
   }
@@ -447,7 +537,9 @@ export function LegacyExcelImporter({
                           }
                         >
                           <option value="">自動判定を使う</option>
-                          <option value="__unresolved">紐付けしない</option>
+                          <option value="__unresolved">
+                            紐付けしない（UNRESOLVEDで作成）
+                          </option>
                           {match.candidates.map((candidate) => (
                             <option
                               key={candidate.progressCandidateId}
@@ -502,11 +594,20 @@ export function LegacyExcelImporter({
                 onChange={(checked) => updateApplyTarget("dealLineItems", checked)}
               />
               <ApplyTargetCheckbox
-                label="CS案件"
-                description={countText(result, ["hpDeliveryProjectCandidates"])}
+                label="CS案件（AUTO・手動REVIEW）"
+                description={`AUTO ${applyPreview?.autoDeliveryProjects ?? 0}件 / 手動REVIEW ${applyPreview?.reviewDeliveryProjects ?? 0}件`}
                 checked={applyTargets.deliveryProjects}
                 onChange={(checked) =>
                   updateApplyTarget("deliveryProjects", checked)
+                }
+              />
+              <ApplyTargetCheckbox
+                label="未紐付けCS案件"
+                description={`UNRESOLVED ${applyPreview?.unresolvedDeliveryProjects ?? 0}件 / 候補 ${applyPreview?.unresolvedTotal ?? 0}件`}
+                checked={applyTargets.unresolvedDeliveryProjects}
+                disabled={!applyTargets.deliveryProjects}
+                onChange={(checked) =>
+                  updateApplyTarget("unresolvedDeliveryProjects", checked)
                 }
               />
               <ApplyTargetCheckbox
@@ -529,8 +630,41 @@ export function LegacyExcelImporter({
               />
             </div>
             <p className="mt-3 text-xs font-semibold text-amber-700">
-              DailyMetricEntry / KpiTargetはExcel集計値の二重計上を避けるため初期OFFです。
+              CS案件はAUTO紐付けのみ初期ONです。REVIEWは手動選択済みのみ、UNRESOLVEDは追加確認がある場合だけApplyします。DailyMetricEntry / KpiTargetはExcel集計値の二重計上を避けるため初期OFFです。
             </p>
+            {applyPreview ? (
+              <div className="mt-5 rounded-xl border border-line bg-slate-50 p-4">
+                <h3 className="text-sm font-bold">Apply前の最終件数</h3>
+                <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
+                  <ApplyPreviewCount label="会社" value={applyPreview.companies} />
+                  <ApplyPreviewCount label="担当者" value={applyPreview.contacts} />
+                  <ApplyPreviewCount label="商談" value={applyPreview.deals} />
+                  <ApplyPreviewCount label="商品明細" value={applyPreview.dealLineItems} />
+                  <ApplyPreviewCount label="Activity" value={applyPreview.activities} />
+                  <ApplyPreviewCount label="AUTO CS案件" value={applyPreview.autoDeliveryProjects} />
+                  <ApplyPreviewCount label="REVIEW CS案件" value={applyPreview.reviewDeliveryProjects} />
+                  <ApplyPreviewCount label="UNRESOLVED CS案件" value={applyPreview.unresolvedDeliveryProjects} />
+                  <ApplyPreviewCount label="DailyMetricEntry" value={applyPreview.dailyMetrics} />
+                  <ApplyPreviewCount label="KpiTarget" value={applyPreview.kpiTargets} />
+                </div>
+              </div>
+            ) : null}
+            {applyTargets.unresolvedDeliveryProjects ? (
+              <label className="mt-5 block">
+                <span className="field-label">未紐付けCS案件の追加確認</span>
+                <input
+                  className="text-field"
+                  value={unresolvedConfirmInput}
+                  onChange={(event) =>
+                    setUnresolvedConfirmInput(event.target.value)
+                  }
+                  placeholder={unresolvedConfirmText}
+                />
+                <span className="mt-1 block text-xs text-amber-700">
+                  UNRESOLVEDのCS案件は元商談なしで作成されます。
+                </span>
+              </label>
+            ) : null}
             <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
               <label className="flex items-center gap-2 text-sm font-semibold">
                 <input
@@ -646,6 +780,21 @@ function ApplyTargetCheckbox({
       </span>
       <span className="mt-1 block text-xs text-slate-500">{description}</span>
     </label>
+  );
+}
+
+function ApplyPreviewCount({
+  label,
+  value,
+}: {
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="rounded-lg bg-white px-3 py-2">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 font-bold text-slate-900">{value.toLocaleString()}件</p>
+    </div>
   );
 }
 

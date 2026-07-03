@@ -252,6 +252,11 @@ export const defaultLegacyExcelApplyTargets: LegacyExcelApplyTargets = {
   kpiTargets: false,
 };
 
+export type LegacyExcelWorkbookInput = {
+  buffer: Buffer;
+  sourceName: string;
+};
+
 export function normalizeApplyTargets(
   input?: Partial<LegacyExcelApplyTargets> | null,
 ): LegacyExcelApplyTargets {
@@ -314,7 +319,61 @@ export function analyzeLegacyExcelWorkbook(
   options: AnalyzeOptions = {},
 ): LegacyExcelDryRunResult {
   const workbookFingerprint = createHash("sha256").update(buffer).digest("hex");
-  const sheets = parseXlsxWorkbook(buffer);
+  return analyzeLegacyExcelParsedWorkbooks(
+    [
+      {
+        sourceName,
+        workbookFingerprint,
+        sheets: parseXlsxWorkbook(buffer),
+      },
+    ],
+    { ...options, sourceName, workbookFingerprint },
+  );
+}
+
+export function analyzeLegacyExcelWorkbooks(
+  files: LegacyExcelWorkbookInput[],
+  options: AnalyzeOptions = {},
+): LegacyExcelDryRunResult {
+  if (files.length === 0) throw new Error("Excelファイルを選択してください。");
+
+  const combinedHash = createHash("sha256");
+  const workbooks = files.map((file) => {
+    const workbookFingerprint = createHash("sha256")
+      .update(file.buffer)
+      .digest("hex");
+    combinedHash.update(file.sourceName);
+    combinedHash.update("\0");
+    combinedHash.update(workbookFingerprint);
+    combinedHash.update("\0");
+    return {
+      sourceName: file.sourceName,
+      workbookFingerprint,
+      sheets: parseXlsxWorkbook(file.buffer),
+    };
+  });
+
+  const sourceName = files.map((file) => file.sourceName).join(" + ");
+  const workbookFingerprint = combinedHash.digest("hex");
+  return analyzeLegacyExcelParsedWorkbooks(workbooks, {
+    ...options,
+    sourceName,
+    workbookFingerprint,
+  });
+}
+
+function analyzeLegacyExcelParsedWorkbooks(
+  workbooks: Array<{
+    sourceName: string;
+    workbookFingerprint: string;
+    sheets: ParsedWorkbookSheet[];
+  }>,
+  options: AnalyzeOptions & {
+    sourceName: string;
+    workbookFingerprint: string;
+  },
+): LegacyExcelDryRunResult {
+  const { sourceName, workbookFingerprint } = options;
   const selectedSheets =
     options.selectedSheets && options.selectedSheets.length > 0
       ? new Set(options.selectedSheets)
@@ -340,7 +399,15 @@ export function analyzeLegacyExcelWorkbook(
   let missingRequiredRows = 0;
   let skippedRows = 0;
 
-  for (const sheet of sheets) {
+  for (const workbook of workbooks) {
+    for (const rawSheet of workbook.sheets) {
+      const sheet =
+        workbooks.length > 1
+          ? {
+              ...rawSheet,
+              sheetName: `${workbook.sourceName} / ${rawSheet.sheetName}`,
+            }
+          : rawSheet;
     const type = detectLegacySheetType(sheet.sheetName);
     const selected = selectedSheets ? selectedSheets.has(sheet.sheetName) : type !== "ignored";
     const parsed = selected ? parseMatrixRows(sheet, type) : null;
@@ -358,8 +425,8 @@ export function analyzeLegacyExcelWorkbook(
       for (const parsedRow of parsed?.rows ?? []) {
         const candidate = toProgressDealCandidate(
           parsedRow,
-          sourceName,
-          workbookFingerprint,
+          workbook.sourceName,
+          workbook.workbookFingerprint,
         );
         if (!candidate.companyName) {
           missingRequiredRows += 1;
@@ -399,8 +466,8 @@ export function analyzeLegacyExcelWorkbook(
       for (const parsedRow of parsed?.rows ?? []) {
         const candidate = toHpProjectCandidate(
           parsedRow,
-          sourceName,
-          workbookFingerprint,
+          workbook.sourceName,
+          workbook.workbookFingerprint,
         );
         if (!candidate.projectName && !candidate.companyName) {
           missingRequiredRows += 1;
@@ -434,25 +501,28 @@ export function analyzeLegacyExcelWorkbook(
 
     if (type === "is_daily_metrics") {
       const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
-        toDailyMetricCandidates(parsedRow, sourceName, workbookFingerprint),
+        toDailyMetricCandidates(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
       );
       dailyMetricCandidates.push(...candidates);
       dailyMetricRows += candidates.length || dataRows;
     }
     if (type === "monthly_kpi_targets") {
       const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
-        toKpiTargetCandidates(parsedRow, sourceName, workbookFingerprint),
+        toKpiTargetCandidates(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
       );
       kpiTargetCandidates.push(...candidates);
       kpiTargetRows += candidates.length || dataRows;
     }
     if (type === "price_book") {
       const candidates = (parsed?.rows ?? [])
-        .map((parsedRow) => toPriceBookCandidate(parsedRow, sourceName, workbookFingerprint))
+        .map((parsedRow) =>
+          toPriceBookCandidate(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
+        )
         .filter((candidate) => candidate.productName);
       priceBookCandidates.push(...candidates);
       priceBookRows += candidates.length || dataRows;
     }
+  }
   }
 
   const crossFileMatches = matchLegacyProjects(

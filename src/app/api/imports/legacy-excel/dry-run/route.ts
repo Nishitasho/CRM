@@ -4,7 +4,7 @@ import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
-  analyzeLegacyExcelWorkbook,
+  analyzeLegacyExcelWorkbooks,
   getExistingLegacyDealCandidates,
 } from "@/lib/legacy-excel-import";
 import { Permission, requirePermission } from "@/lib/permissions";
@@ -25,21 +25,28 @@ export async function POST(request: Request) {
     }
 
     const form = await request.formData();
-    const file = form.get("file");
-    if (!(file instanceof File)) {
+    const files = form
+      .getAll("files")
+      .filter((value): value is File => value instanceof File && value.size > 0);
+    const legacyFile = form.get("file");
+    if (legacyFile instanceof File && legacyFile.size > 0 && files.length === 0) {
+      files.push(legacyFile);
+    }
+
+    if (files.length === 0) {
       return NextResponse.json(
         { message: "Excelファイルを選択してください。" },
         { status: 400 },
       );
     }
-    if (!isXlsxFile(file)) {
+    if (files.some((file) => !isXlsxFile(file))) {
       return NextResponse.json(
         { message: "Excel移行は.xlsxファイルに対応しています。" },
         { status: 400 },
       );
     }
     const maxBytes = Number(process.env.LEGACY_EXCEL_IMPORT_MAX_BYTES ?? 20 * 1024 * 1024);
-    if (file.size > maxBytes) {
+    if (files.some((file) => file.size > maxBytes)) {
       return NextResponse.json(
         { message: "ファイルサイズが上限を超えています。" },
         { status: 400 },
@@ -50,9 +57,14 @@ export async function POST(request: Request) {
       .getAll("selectedSheets")
       .map((value) => String(value))
       .filter(Boolean);
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const workbooks = await Promise.all(
+      files.map(async (file) => ({
+        buffer: Buffer.from(await file.arrayBuffer()),
+        sourceName: file.name,
+      })),
+    );
     const existingDealCandidates = await getExistingLegacyDealCandidates(context.organization.id);
-    const result = analyzeLegacyExcelWorkbook(buffer, file.name, {
+    const result = analyzeLegacyExcelWorkbooks(workbooks, {
       selectedSheets,
       existingDealCandidates,
     });

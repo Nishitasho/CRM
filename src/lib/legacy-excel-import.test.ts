@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeLegacyExcelWorkbook,
+  analyzeLegacyExcelWorkbooks,
   excelSerialToDateString,
   mapLegacyProgressStatus,
   normalizeDomain,
@@ -48,6 +49,35 @@ describe("legacy Excel import", () => {
     );
 
     expect(result.crossFileMatches[0].score).toBeGreaterThanOrEqual(85);
+    expect(result.crossFileMatches[0].decision).toBe("AUTO");
+    expect(result.totals.autoLinkedProjects).toBe(1);
+  });
+
+  it("auto links progress and HP sheets uploaded as separate workbooks", () => {
+    const result = analyzeLegacyExcelWorkbooks([
+      {
+        sourceName: "progress.xlsx",
+        buffer: makeWorkbook({
+          "【HD】案件管理シート": [
+            ["案件名", "進捗", "商材", "電話番号", "Webサイト", "受注日"],
+            ["株式会社テスト", "A受注", "HP", "03-1234-5678", "https://example.com", "2026/06/10"],
+          ],
+        }),
+      },
+      {
+        sourceName: "hp-production.xlsx",
+        buffer: makeWorkbook({
+          "※ここ触る※全案件": [
+            ["案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日"],
+            ["テスト", "制作中", "HP", "0312345678", "example.com", "2026/06/11"],
+          ],
+        }),
+      },
+    ]);
+
+    expect(result.sourceName).toBe("progress.xlsx + hp-production.xlsx");
+    expect(result.totals.progressDealCandidates).toBe(1);
+    expect(result.totals.hpDeliveryProjectCandidates).toBe(1);
     expect(result.crossFileMatches[0].decision).toBe("AUTO");
     expect(result.totals.autoLinkedProjects).toBe(1);
   });

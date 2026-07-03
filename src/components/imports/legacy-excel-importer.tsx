@@ -221,8 +221,9 @@ export function LegacyExcelImporter({
             <input
               className="text-field"
               type="file"
-              name="file"
+              name="files"
               accept=".xlsx"
+              multiple
               required
             />
           </label>
@@ -231,7 +232,7 @@ export function LegacyExcelImporter({
           </button>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          進捗管理シート、HP制作管理シート、または両方を含むExcelをアップロードできます。Apply前に必ずDry Run結果を確認します。
+          進捗管理シートとHP制作管理シートは、1つのExcelでも別々のExcelでも同時にアップロードできます。Apply前に必ずDry Run結果を確認します。
         </p>
       </form>
 

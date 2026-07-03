@@ -7,6 +7,10 @@ import {
   analyzeLegacyExcelWorkbooks,
   getExistingLegacyDealCandidates,
 } from "@/lib/legacy-excel-import";
+import {
+  analyzeLegacyReviewedExcelWorkbook,
+  isLegacyReviewedExcelWorkbook,
+} from "@/lib/legacy-excel-review-workbook";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { isXlsxFile } from "@/lib/spreadsheet";
@@ -57,17 +61,38 @@ export async function POST(request: Request) {
       .getAll("selectedSheets")
       .map((value) => String(value))
       .filter(Boolean);
+    const mode = String(form.get("mode") ?? "raw");
     const workbooks = await Promise.all(
       files.map(async (file) => ({
         buffer: Buffer.from(await file.arrayBuffer()),
         sourceName: file.name,
       })),
     );
-    const existingDealCandidates = await getExistingLegacyDealCandidates(context.organization.id);
-    const result = analyzeLegacyExcelWorkbooks(workbooks, {
-      selectedSheets,
-      existingDealCandidates,
-    });
+    const reviewedMode =
+      mode === "reviewed" ||
+      (workbooks.length === 1 && isLegacyReviewedExcelWorkbook(workbooks[0].buffer));
+    if (reviewedMode && workbooks.length !== 1) {
+      return NextResponse.json(
+        { message: "Review済みExcelは1ファイルずつDry Runしてください。" },
+        { status: 400 },
+      );
+    }
+    const reviewed = reviewedMode
+      ? analyzeLegacyReviewedExcelWorkbook(
+          workbooks[0].buffer,
+          workbooks[0].sourceName,
+        )
+      : null;
+    const existingDealCandidates = reviewedMode
+      ? []
+      : await getExistingLegacyDealCandidates(context.organization.id);
+    const result =
+      reviewed?.dryRun ??
+      analyzeLegacyExcelWorkbooks(workbooks, {
+        selectedSheets,
+        existingDealCandidates,
+      });
+    const manualMatches = reviewed?.manualMatches ?? {};
     const job = await prisma.importJob.create({
       data: {
         organizationId: context.organization.id,
@@ -77,13 +102,16 @@ export async function POST(request: Request) {
         totalRows: result.totals.readRows,
         mapping: {
           dryRunSummary: result,
-          manualMatches: {},
-          nextStep: "review_cross_file_matches",
+          manualMatches,
+          importMode: reviewedMode ? "reviewed_excel" : "raw_excel",
+          nextStep: reviewedMode
+            ? "confirm_reviewed_excel_apply_targets"
+            : "review_cross_file_matches",
         } as Prisma.InputJsonValue,
       },
     });
 
-    return NextResponse.json({ ...result, importJobId: job.id });
+    return NextResponse.json({ ...result, importJobId: job.id, manualMatches });
   } catch (error) {
     return apiError(error);
   }

@@ -29,7 +29,12 @@ export type LegacySheetType =
   | "production_definition"
   | "ignored";
 
-export type LegacyMatchDecision = "AUTO" | "REVIEW" | "UNRESOLVED" | "MANUAL";
+export type LegacyMatchDecision =
+  | "AUTO"
+  | "REVIEW"
+  | "UNRESOLVED"
+  | "MANUAL"
+  | "IGNORE";
 
 export type LegacyStageMapping = {
   label: string;
@@ -225,7 +230,7 @@ export type LegacyExcelApplyInput = {
     string,
     | {
         progressCandidateId?: string;
-        decision?: "MANUAL" | "UNRESOLVED";
+        decision?: "MANUAL" | "UNRESOLVED" | "IGNORE";
       }
     | undefined
   >;
@@ -306,12 +311,16 @@ export function getLegacyExcelApplyPlan(
     for (const candidate of dryRun.hpProjectCandidates) {
       const match = matchById.get(candidate.id);
       const manual = manualMatches?.[candidate.id];
+      if (manual?.decision === "IGNORE") continue;
       if (manual?.progressCandidateId) {
         reviewDeliveryProjects += 1;
         continue;
       }
       if (manual?.decision === "UNRESOLVED") {
         if (targets.unresolvedDeliveryProjects) unresolvedDeliveryProjects += 1;
+        continue;
+      }
+      if (match?.decision === "IGNORE") {
         continue;
       }
       if (match?.decision === "AUTO") {
@@ -2271,6 +2280,9 @@ function resolveProjectMatch(
 ): ResolvedProjectMatch | null {
   const manual = manualMatches?.[hpCandidateId];
   const match = matches.find((item) => item.hpCandidateId === hpCandidateId);
+  if (manual?.decision === "IGNORE") {
+    return null;
+  }
   if (manual?.decision === "UNRESOLVED") {
     return { decision: "UNRESOLVED", progressCandidateId: null, score: 0, reasons: [] };
   }
@@ -2310,6 +2322,9 @@ function resolveProjectMatchForApply(
   const manual = manualMatches?.[hpCandidateId];
   const match = matches.find((item) => item.hpCandidateId === hpCandidateId);
 
+  if (manual?.decision === "IGNORE" || match?.decision === "IGNORE") {
+    return null;
+  }
   if (manual?.progressCandidateId) {
     return resolveProjectMatch(hpCandidateId, matches, manualMatches);
   }
@@ -2333,7 +2348,7 @@ function resolveProjectMatchForApply(
 }
 
 type ResolvedProjectMatch = {
-  decision: Exclude<LegacyMatchDecision, "REVIEW">;
+  decision: Exclude<LegacyMatchDecision, "REVIEW" | "IGNORE">;
   progressCandidateId: string | null;
   companyId?: string | null;
   dealId?: string | null;

@@ -22,7 +22,7 @@ type CrossFileMatch = {
   estimatedCompanyName: string;
   estimatedDealName: string;
   score: number;
-  decision: "AUTO" | "REVIEW" | "UNRESOLVED" | "MANUAL";
+  decision: "AUTO" | "REVIEW" | "UNRESOLVED" | "MANUAL" | "IGNORE";
   warnings: string[];
   candidates: CrossFileCandidate[];
 };
@@ -61,7 +61,7 @@ type ImportHistoryItem = {
 
 type ManualMatch = {
   progressCandidateId?: string;
-  decision?: "MANUAL" | "UNRESOLVED";
+  decision?: "MANUAL" | "UNRESOLVED" | "IGNORE";
 };
 
 type ApplyTargets = {
@@ -119,6 +119,7 @@ function buildApplyPreview(
   if (applyTargets.deliveryProjects) {
     for (const match of result.crossFileMatches) {
       const manual = manualMatches[match.hpCandidateId];
+      if (manual?.decision === "IGNORE") continue;
       if (manual?.progressCandidateId) {
         reviewDeliveryProjects += 1;
         continue;
@@ -127,6 +128,9 @@ function buildApplyPreview(
         if (applyTargets.unresolvedDeliveryProjects) {
           unresolvedDeliveryProjects += 1;
         }
+        continue;
+      }
+      if (match.decision === "IGNORE") {
         continue;
       }
       if (match.decision === "AUTO") {
@@ -194,6 +198,7 @@ export function LegacyExcelImporter({
   const [error, setError] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [mode, setMode] = useState<"raw" | "reviewed">("raw");
 
   const canApply = Boolean(
     result &&
@@ -233,6 +238,7 @@ export function LegacyExcelImporter({
     form.delete("files");
     form.delete("file");
     files.forEach((file) => form.append("files", file));
+    form.set("mode", mode);
     const response = await fetch("/api/imports/legacy-excel/dry-run", {
       method: "POST",
       body: form,
@@ -243,6 +249,7 @@ export function LegacyExcelImporter({
       setError(json.message ?? "dry runに失敗しました。");
       return;
     }
+    setManualMatches(json.manualMatches ?? {});
     setResult(json);
   }
 
@@ -305,13 +312,19 @@ export function LegacyExcelImporter({
   }
 
   function updateManualMatch(hpCandidateId: string, value: string) {
-    setManualMatches((current) => ({
-      ...current,
-      [hpCandidateId]:
-        value === "__unresolved"
-          ? { decision: "UNRESOLVED" }
-          : { decision: "MANUAL", progressCandidateId: value },
-    }));
+    setManualMatches((current) => {
+      const next = { ...current };
+      if (!value) {
+        delete next[hpCandidateId];
+      } else if (value === "__unresolved") {
+        next[hpCandidateId] = { decision: "UNRESOLVED" };
+      } else if (value === "__ignore") {
+        next[hpCandidateId] = { decision: "IGNORE" };
+      } else {
+        next[hpCandidateId] = { decision: "MANUAL", progressCandidateId: value };
+      }
+      return next;
+    });
   }
 
   function downloadWarningsCsv() {
@@ -347,6 +360,46 @@ export function LegacyExcelImporter({
   return (
     <div className="space-y-6">
       <form onSubmit={dryRun} className="card p-6">
+        <div className="mb-5 grid gap-3 md:grid-cols-2">
+          <label
+            className={[
+              "rounded-lg border p-4 text-sm",
+              mode === "raw" ? "border-orange-300 bg-orange-50" : "border-line",
+            ].join(" ")}
+          >
+            <span className="flex items-center gap-2 font-bold">
+              <input
+                type="radio"
+                value="raw"
+                checked={mode === "raw"}
+                onChange={() => setMode("raw")}
+              />
+              Raw Excel Dry Run
+            </span>
+            <span className="mt-1 block text-xs text-slate-500">
+              進捗管理シート・HP制作管理シートをそのまま解析します。
+            </span>
+          </label>
+          <label
+            className={[
+              "rounded-lg border p-4 text-sm",
+              mode === "reviewed" ? "border-orange-300 bg-orange-50" : "border-line",
+            ].join(" ")}
+          >
+            <span className="flex items-center gap-2 font-bold">
+              <input
+                type="radio"
+                value="reviewed"
+                checked={mode === "reviewed"}
+                onChange={() => setMode("reviewed")}
+              />
+              Review済みExcel Dry Run
+            </span>
+            <span className="mt-1 block text-xs text-slate-500">
+              salesnest_import_review.xlsx / ready.xlsx のapplyとselectedDealKeyを優先します。
+            </span>
+          </label>
+        </div>
         <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
           <label
             className={[
@@ -374,7 +427,9 @@ export function LegacyExcelImporter({
               ここにExcelをドロップ
             </span>
             <span className="mt-1 block text-xs text-slate-500">
-              進捗管理シートとHP制作管理シートをまとめてドロップできます。
+              {mode === "raw"
+                ? "進捗管理シートとHP制作管理シートをまとめてドロップできます。"
+                : "Review済みExcelは1ファイルずつドロップしてください。"}
             </span>
             <input
               className="mt-4 block w-full text-sm"
@@ -407,7 +462,9 @@ export function LegacyExcelImporter({
           </button>
         </div>
         <p className="mt-3 text-xs text-slate-500">
-          進捗管理シートとHP制作管理シートは、1つのExcelでも別々のExcelでも同時にアップロードできます。Apply前に必ずDry Run結果を確認します。
+          {mode === "raw"
+            ? "進捗管理シートとHP制作管理シートは、1つのExcelでも別々のExcelでも同時にアップロードできます。Apply前に必ずDry Run結果を確認します。"
+            : "Review済みExcelでは、Excel上のapply=false行は取り込み対象外として扱われます。"}
         </p>
       </form>
 
@@ -528,7 +585,9 @@ export function LegacyExcelImporter({
                         <select
                           className="text-field min-w-[220px]"
                           value={
-                            manualMatches[match.hpCandidateId]?.decision === "UNRESOLVED"
+                            manualMatches[match.hpCandidateId]?.decision === "IGNORE"
+                              ? "__ignore"
+                              : manualMatches[match.hpCandidateId]?.decision === "UNRESOLVED"
                               ? "__unresolved"
                               : manualMatches[match.hpCandidateId]?.progressCandidateId ?? ""
                           }
@@ -537,6 +596,7 @@ export function LegacyExcelImporter({
                           }
                         >
                           <option value="">自動判定を使う</option>
+                          <option value="__ignore">取り込まない</option>
                           <option value="__unresolved">
                             紐付けしない（UNRESOLVEDで作成）
                           </option>
@@ -750,6 +810,9 @@ function decisionClass(decision: CrossFileMatch["decision"]) {
   }
   if (decision === "MANUAL") {
     return "rounded-full bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700";
+  }
+  if (decision === "IGNORE") {
+    return "rounded-full bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600";
   }
   return "rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600";
 }

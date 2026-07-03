@@ -37,7 +37,7 @@ const applySchema = z.object({
     .record(
       z.object({
         progressCandidateId: z.string().optional(),
-        decision: z.enum(["MANUAL", "UNRESOLVED"]).optional(),
+        decision: z.enum(["MANUAL", "UNRESOLVED", "IGNORE"]).optional(),
       }),
     )
     .optional(),
@@ -133,7 +133,10 @@ export async function POST(request: Request) {
         mapping: {
           ...mapping,
           applyTargets,
-          manualMatches: input.manualMatches ?? {},
+          manualMatches: {
+            ...((mapping.manualMatches ?? {}) as Record<string, unknown>),
+            ...(input.manualMatches ?? {}),
+          },
           unresolvedDeliveryProjectConfirmText:
             input.unresolvedDeliveryProjectConfirmText ?? "",
           applyStartedAt: new Date().toISOString(),
@@ -147,7 +150,12 @@ export async function POST(request: Request) {
       importJobId: job.id,
       dryRun,
       applyTargets,
-      manualMatches: input.manualMatches,
+      manualMatches: {
+        ...((mapping.manualMatches ?? {}) as NonNullable<
+          Parameters<typeof applyLegacyExcelImport>[0]["manualMatches"]
+        >),
+        ...(input.manualMatches ?? {}),
+      },
     });
     const metadata = getRequestMetadata(request);
     await prisma.auditLog.create({

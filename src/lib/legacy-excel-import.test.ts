@@ -11,6 +11,12 @@ import {
   parseLegacyDate,
   parseMoney,
 } from "./legacy-excel-import";
+import {
+  analyzeLegacyReviewedExcelWorkbook,
+  generateLegacyExcelReviewArtifacts,
+} from "./legacy-excel-review-workbook";
+import { parseXlsxWorkbook } from "./spreadsheet";
+import { writeSimpleXlsxWorkbook } from "./simple-xlsx";
 
 describe("legacy Excel import", () => {
   it("generates deal and delivery project candidates from target sheets", () => {
@@ -235,6 +241,221 @@ describe("legacy Excel import", () => {
       unresolvedDeliveryProjects: true,
     });
     expect(unresolvedPlan.unresolvedDeliveryProjects).toBe(1);
+  });
+
+  it("generates review workbooks with editable cross-file match defaults", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【HD】案件管理シート": [
+          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "受注日"],
+          ["株式会社AUTO", "AUTO 導入案件", "A受注", "HP", "03-1111-1111", "auto.example.com", "2026/06/10"],
+          ["株式会社REVIEW", "別案件", "E商談", "", "", "", ""],
+        ],
+        "※ここ触る※全案件": [
+          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日"],
+          ["AUTO", "AUTO 制作案件", "制作中", "HP", "0311111111", "auto.example.com", "2026/06/11"],
+          ["REVIEW", "制作案件", "制作中", "", "", "", ""],
+          ["未照合", "未照合 制作案件", "制作中", "HP", "", "", ""],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    const artifacts = generateLegacyExcelReviewArtifacts(result);
+    const reviewSheets = parseXlsxWorkbook(artifacts.reviewWorkbook);
+    const crossFileSheet = reviewSheets.find(
+      (sheet) => sheet.sheetName === "cross_file_matches",
+    );
+    expect(crossFileSheet).toBeTruthy();
+    const header = crossFileSheet?.rows[0] ?? [];
+    const decisionIndex = header.indexOf("matchDecision");
+    const applyIndex = header.indexOf("apply");
+    const decisions = crossFileSheet?.rows.slice(1).map((row) => row[decisionIndex]);
+    const applyValues = crossFileSheet?.rows.slice(1).map((row) => row[applyIndex]);
+
+    expect(decisions).toContain("AUTO");
+    expect(decisions).toContain("REVIEW");
+    expect(decisions).toContain("UNRESOLVED");
+    expect(applyValues?.filter((value) => value === "TRUE")).toHaveLength(1);
+    expect(applyValues?.filter((value) => value === "FALSE")).toHaveLength(2);
+    expect(artifacts.warningsCsv).toContain("warningType");
+  });
+
+  it("reads reviewed workbooks and applies selected matches only", () => {
+    const workbook = writeSimpleXlsxWorkbook([
+      {
+        name: "summary",
+        rows: [
+          ["key", "value"],
+          ["format", "salesnest_legacy_excel_review"],
+          ["version", "1"],
+          ["sourceName", "review.xlsx"],
+          ["workbookFingerprint", "original-fingerprint"],
+        ],
+      },
+      {
+        name: "deals",
+        rows: [
+          [
+            "apply",
+            "dealKey",
+            "sourceKey",
+            "originalSheetName",
+            "originalRowNumber",
+            "rowFingerprint",
+            "companyName",
+            "contactName",
+            "dealName",
+            "phone",
+            "domain",
+            "productName",
+            "businessUnitName",
+            "progress",
+          ],
+          [
+            "TRUE",
+            "deal-review",
+            "progress:source",
+            "案件管理シート",
+            "2",
+            "deal-row",
+            "株式会社レビュー",
+            "山田",
+            "レビュー導入案件",
+            "",
+            "",
+            "HP",
+            "HD事業部",
+            "A受注",
+          ],
+        ],
+      },
+      {
+        name: "cs_projects",
+        rows: [
+          [
+            "apply",
+            "hpSourceKey",
+            "sourceKey",
+            "originalSheetName",
+            "originalRowNumber",
+            "rowFingerprint",
+            "projectName",
+            "companyName",
+            "contactName",
+            "productName",
+            "businessUnitName",
+            "progress",
+            "matchDecision",
+          ],
+          [
+            "FALSE",
+            "hp-ignore",
+            "hp:ignore",
+            "HP管理シート",
+            "5",
+            "ignore-row",
+            "無視制作案件",
+            "株式会社無視",
+            "",
+            "HP",
+            "HD事業部",
+            "制作中",
+            "REVIEW",
+          ],
+          [
+            "TRUE",
+            "hp-selected",
+            "hp:selected",
+            "HP管理シート",
+            "6",
+            "selected-row",
+            "レビュー制作案件",
+            "株式会社レビュー",
+            "山田",
+            "HP",
+            "HD事業部",
+            "制作中",
+            "REVIEW",
+          ],
+        ],
+      },
+      {
+        name: "cross_file_matches",
+        rows: [
+          [
+            "hpSourceKey",
+            "hpSheetName",
+            "hpRowNumber",
+            "hpProjectName",
+            "suggestedCompanyKey",
+            "suggestedCompanyName",
+            "suggestedDealKey",
+            "suggestedDealName",
+            "matchScore",
+            "matchDecision",
+            "matchReasons",
+            "selectedCompanyKey",
+            "selectedDealKey",
+            "apply",
+            "note",
+          ],
+          [
+            "hp-ignore",
+            "HP管理シート",
+            "5",
+            "無視制作案件",
+            "",
+            "",
+            "",
+            "",
+            "70",
+            "REVIEW",
+            "normalized_company_name",
+            "",
+            "",
+            "FALSE",
+            "",
+          ],
+          [
+            "hp-selected",
+            "HP管理シート",
+            "6",
+            "レビュー制作案件",
+            "company:レビュー",
+            "株式会社レビュー",
+            "deal-review",
+            "レビュー導入案件",
+            "70",
+            "REVIEW",
+            "normalized_company_name",
+            "company:レビュー",
+            "deal-review",
+            "TRUE",
+            "",
+          ],
+        ],
+      },
+    ]);
+
+    const reviewed = analyzeLegacyReviewedExcelWorkbook(workbook, "review.xlsx");
+    expect(reviewed.dryRun.workbookFingerprint).toBe("original-fingerprint");
+    expect(reviewed.dryRun.crossFileMatches[0].decision).toBe("IGNORE");
+    expect(reviewed.manualMatches["hp-ignore"]?.decision).toBe("IGNORE");
+    expect(reviewed.manualMatches["hp-selected"]?.progressCandidateId).toBe(
+      "deal-review",
+    );
+
+    const plan = getLegacyExcelApplyPlan(
+      reviewed.dryRun,
+      undefined,
+      reviewed.manualMatches,
+    );
+    expect(plan.autoDeliveryProjects).toBe(0);
+    expect(plan.reviewDeliveryProjects).toBe(1);
+    expect(plan.unresolvedDeliveryProjects).toBe(0);
+    expect(plan.dailyMetrics).toBe(0);
+    expect(plan.kpiTargets).toBe(0);
   });
 });
 

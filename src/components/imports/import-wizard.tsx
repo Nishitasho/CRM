@@ -1,5 +1,5 @@
 "use client";
-import { FormEvent, useState } from "react";
+import { DragEvent, FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 type Field = { value: string; label: string; required?: boolean };
 type Preview = {
@@ -68,6 +68,18 @@ const aliases: Record<
     contactEmail: ["担当者メール", "担当者メールアドレス", "顧客メール"],
   },
 };
+const importAccept =
+  ".csv,.tsv,.txt,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+function formatImportFileSize(size: number) {
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)}KB`;
+  return `${(size / 1024 / 1024).toFixed(1)}MB`;
+}
+
+function isSupportedImportFile(file: File) {
+  return /\.(csv|tsv|txt|xlsx)$/i.test(file.name);
+}
+
 export function ImportWizard({
   fields,
 }: {
@@ -82,11 +94,36 @@ export function ImportWizard({
   const [mode, setMode] = useState("UPSERT");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+
+  function selectFile(file: File | null) {
+    if (file && !isSupportedImportFile(file)) {
+      setError("CSV、TSV、TXT、XLSXファイルを指定してください。");
+      setSelectedFile(null);
+      return;
+    }
+    setError("");
+    setPreview(null);
+    setSelectedFile(file);
+  }
+
+  function dropFile(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setDragActive(false);
+    selectFile(Array.from(event.dataTransfer.files)[0] ?? null);
+  }
+
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPending(true);
     setError("");
-    const form = new FormData(event.currentTarget);
+    const formElement = event.currentTarget;
+    const input = formElement.elements.namedItem("file") as HTMLInputElement | null;
+    const file = selectedFile ?? input?.files?.[0] ?? null;
+    const form = new FormData(formElement);
+    form.delete("file");
+    if (file) form.append("file", file);
     const response = await fetch("/api/imports/preview", {
       method: "POST",
       body: form,
@@ -156,12 +193,48 @@ export function ImportWizard({
           </label>
           <form onSubmit={upload} className="lg:col-span-1">
             <span className="field-label">ファイル</span>
-            <input
-              className="text-field"
-              name="file"
-              type="file"
-              accept=".csv,.tsv,.txt,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            />
+            <label
+              className={[
+                "block rounded-xl border border-dashed px-4 py-5 transition",
+                dragActive
+                  ? "border-orange-400 bg-orange-50"
+                  : "border-line bg-white hover:bg-orange-50/40",
+              ].join(" ")}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDragActive(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setDragActive(true);
+              }}
+              onDragLeave={(event) => {
+                event.preventDefault();
+                setDragActive(false);
+              }}
+              onDrop={dropFile}
+            >
+              <span className="block text-sm font-semibold text-slate-900">
+                ここにファイルをドロップ
+              </span>
+              <span className="mt-1 block text-xs text-slate-500">
+                CSV、TSV、XLSXを読み込めます。
+              </span>
+              <input
+                className="mt-4 block w-full text-sm"
+                name="file"
+                type="file"
+                accept={importAccept}
+                onChange={(event) =>
+                  selectFile(event.currentTarget.files?.[0] ?? null)
+                }
+              />
+              {selectedFile ? (
+                <span className="mt-3 inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
+                  {selectedFile.name} / {formatImportFileSize(selectedFile.size)}
+                </span>
+              ) : null}
+            </label>
             <span className="field-label mt-3">貼り付け</span>
             <textarea
               className="text-field min-h-24"

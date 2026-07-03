@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { DragEvent, FormEvent, useMemo, useState } from "react";
 
 type CrossFileCandidate = {
   progressCandidateId: string;
@@ -87,6 +87,15 @@ const defaultApplyTargets: ApplyTargets = {
   kpiTargets: false,
 };
 
+function formatFileSize(size: number) {
+  if (size < 1024 * 1024) return `${Math.ceil(size / 1024)}KB`;
+  return `${(size / 1024 / 1024).toFixed(1)}MB`;
+}
+
+function onlyXlsxFiles(files: File[]) {
+  return files.filter((file) => file.name.toLowerCase().endsWith(".xlsx"));
+}
+
 export function LegacyExcelImporter({
   histories,
 }: {
@@ -101,6 +110,8 @@ export function LegacyExcelImporter({
   const [confirmInput, setConfirmInput] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
 
   const canApply = Boolean(
     result &&
@@ -115,14 +126,28 @@ export function LegacyExcelImporter({
 
   async function dryRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const formElement = event.currentTarget;
+    const input = formElement.elements.namedItem("files") as HTMLInputElement | null;
+    const files =
+      selectedFiles.length > 0
+        ? selectedFiles
+        : Array.from(input?.files ?? []);
+    if (files.length === 0) {
+      setError("Excelファイルをドロップまたは選択してください。");
+      return;
+    }
     setPending(true);
     setError("");
     setMessage("");
     setManualMatches({});
     setApplyTargets(defaultApplyTargets);
+    const form = new FormData(formElement);
+    form.delete("files");
+    form.delete("file");
+    files.forEach((file) => form.append("files", file));
     const response = await fetch("/api/imports/legacy-excel/dry-run", {
       method: "POST",
-      body: new FormData(event.currentTarget),
+      body: form,
     });
     const json = await response.json();
     setPending(false);
@@ -131,6 +156,23 @@ export function LegacyExcelImporter({
       return;
     }
     setResult(json);
+  }
+
+  function selectFiles(files: File[]) {
+    const xlsxFiles = onlyXlsxFiles(files);
+    if (xlsxFiles.length !== files.length) {
+      setError(".xlsxファイルのみアップロードできます。");
+    } else {
+      setError("");
+    }
+    setSelectedFiles(xlsxFiles);
+    setResult(null);
+  }
+
+  function dropFiles(event: DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    setDragActive(false);
+    selectFiles(Array.from(event.dataTransfer.files));
   }
 
   async function apply() {
@@ -216,16 +258,54 @@ export function LegacyExcelImporter({
     <div className="space-y-6">
       <form onSubmit={dryRun} className="card p-6">
         <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-end">
-          <label>
+          <label
+            className={[
+              "block rounded-xl border border-dashed px-5 py-6 transition",
+              dragActive
+                ? "border-orange-400 bg-orange-50"
+                : "border-line bg-white hover:bg-orange-50/40",
+            ].join(" ")}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              setDragActive(false);
+            }}
+            onDrop={dropFiles}
+          >
             <span className="field-label">Excelファイル</span>
+            <span className="mt-2 block text-sm font-semibold text-slate-900">
+              ここにExcelをドロップ
+            </span>
+            <span className="mt-1 block text-xs text-slate-500">
+              進捗管理シートとHP制作管理シートをまとめてドロップできます。
+            </span>
             <input
-              className="text-field"
+              className="mt-4 block w-full text-sm"
               type="file"
               name="files"
               accept=".xlsx"
               multiple
-              required
+              onChange={(event) => selectFiles(Array.from(event.currentTarget.files ?? []))}
             />
+            {selectedFiles.length > 0 ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {selectedFiles.map((file) => (
+                  <span
+                    key={`${file.name}:${file.size}:${file.lastModified}`}
+                    className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
+                  >
+                    {file.name} / {formatFileSize(file.size)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </label>
           <button className="primary-button" disabled={pending}>
             {pending ? "解析中..." : "Dry Run"}

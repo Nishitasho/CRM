@@ -295,15 +295,20 @@ export function LegacyExcelImporter({
               onChange={(event) => selectFiles(Array.from(event.currentTarget.files ?? []))}
             />
             {selectedFiles.length > 0 ? (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {selectedFiles.map((file) => (
-                  <span
-                    key={`${file.name}:${file.size}:${file.lastModified}`}
-                    className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
-                  >
-                    {file.name} / {formatFileSize(file.size)}
-                  </span>
-                ))}
+              <div className="mt-4 space-y-2">
+                <p className="text-xs font-semibold text-slate-600">
+                  選択済み {selectedFiles.length}件
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {selectedFiles.map((file) => (
+                    <span
+                      key={`${file.name}:${file.size}:${file.lastModified}`}
+                      className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
+                    >
+                      {file.name} / {formatFileSize(file.size)}
+                    </span>
+                  ))}
+                </div>
               </div>
             ) : null}
           </label>

@@ -94,36 +94,46 @@ export function ImportWizard({
   const [mode, setMode] = useState("UPSERT");
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
 
-  function selectFile(file: File | null) {
-    if (file && !isSupportedImportFile(file)) {
+  function selectFiles(files: File[]) {
+    const invalidFile = files.find((file) => !isSupportedImportFile(file));
+    if (invalidFile) {
       setError("CSV、TSV、TXT、XLSXファイルを指定してください。");
-      setSelectedFile(null);
+      setSelectedFiles([]);
       return;
     }
     setError("");
     setPreview(null);
-    setSelectedFile(file);
+    setSelectedFiles(files);
   }
 
   function dropFile(event: DragEvent<HTMLLabelElement>) {
     event.preventDefault();
     setDragActive(false);
-    selectFile(Array.from(event.dataTransfer.files)[0] ?? null);
+    selectFiles(Array.from(event.dataTransfer.files));
   }
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setPending(true);
     setError("");
     const formElement = event.currentTarget;
     const input = formElement.elements.namedItem("file") as HTMLInputElement | null;
-    const file = selectedFile ?? input?.files?.[0] ?? null;
+    const files =
+      selectedFiles.length > 0
+        ? selectedFiles
+        : Array.from(input?.files ?? []);
+    if (files.length > 1) {
+      setError(
+        "通常インポートは1ファイルずつ読み込みます。進捗管理シートとHP制作管理シートをまとめる場合は「Excel移行」を使ってください。",
+      );
+      return;
+    }
+    setPending(true);
     const form = new FormData(formElement);
     form.delete("file");
-    if (file) form.append("file", file);
+    if (files[0]) form.append("file", files[0]);
     const response = await fetch("/api/imports/preview", {
       method: "POST",
       body: form,
@@ -226,13 +236,30 @@ export function ImportWizard({
                 type="file"
                 accept={importAccept}
                 onChange={(event) =>
-                  selectFile(event.currentTarget.files?.[0] ?? null)
+                  selectFiles(Array.from(event.currentTarget.files ?? []))
                 }
               />
-              {selectedFile ? (
-                <span className="mt-3 inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700">
-                  {selectedFile.name} / {formatImportFileSize(selectedFile.size)}
-                </span>
+              {selectedFiles.length > 0 ? (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs font-semibold text-slate-600">
+                    選択済み {selectedFiles.length}件
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedFiles.map((file) => (
+                      <span
+                        key={`${file.name}:${file.size}:${file.lastModified}`}
+                        className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-700"
+                      >
+                        {file.name} / {formatImportFileSize(file.size)}
+                      </span>
+                    ))}
+                  </div>
+                  {selectedFiles.length > 1 ? (
+                    <p className="text-xs text-slate-500">
+                      複数Excelをまとめて読み込む場合は、右上の「Excel移行」からDry Runしてください。
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
             </label>
             <span className="field-label mt-3">貼り付け</span>

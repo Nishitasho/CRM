@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type Option = { id: string; name: string };
 type Pipeline = {
@@ -34,21 +34,28 @@ export function RecordForm({
   recordId?: string;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const defaultPipeline = String(initial?.pipelineId ?? pipelines[0]?.id ?? "");
   const [pipelineId, setPipelineId] = useState(defaultPipeline);
+  const queryCompanyId = type === "deal" ? searchParams.get("companyId") : "";
+  const queryCompanyName =
+    type === "deal" ? searchParams.get("companyName") : "";
   const associatedCompanyId =
     type === "deal" && typeof initial?.companyId === "string"
       ? initial.companyId
-      : "";
+      : (queryCompanyId ?? "");
   const associatedCompanyName =
     type === "deal" && typeof initial?.companyName === "string"
       ? initial.companyName
-      : "";
+      : (queryCompanyName ?? "");
   const endpoint = `/api/${type === "contact" ? "contacts" : type === "company" ? "companies" : "deals"}${recordId ? `/${recordId}` : ""}`;
   const basePath = `/${type === "contact" ? "contacts" : type === "company" ? "companies" : "deals"}`;
   const value = (key: string): string | number => {
+    if (type === "deal" && key === "name" && associatedCompanyName) {
+      return `${associatedCompanyName} 商談`;
+    }
     const current = initial?.[key];
     return typeof current === "string" || typeof current === "number"
       ? current

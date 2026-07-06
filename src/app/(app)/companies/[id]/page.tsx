@@ -120,7 +120,7 @@ export default async function CompanyDetailPage({
             {canEdit ? (
               <Link
                 className="primary-button"
-                href={`/deals/new?companyId=${id}`}
+                href={`/deals/new?companyId=${id}&companyName=${encodeURIComponent(item.name)}`}
               >
                 商談を作成
               </Link>

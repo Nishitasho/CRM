@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { ObjectType, Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
@@ -6,7 +6,12 @@ import {
   assertBusinessUnitAccess,
   getBusinessUnitSelection,
 } from "@/lib/business-units";
-import { createRecordActivity, ownerScope, validateOwner } from "@/lib/crm";
+import {
+  assertObjectAccess,
+  createRecordActivity,
+  ownerScope,
+  validateOwner,
+} from "@/lib/crm";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { dealSchema, listQuerySchema } from "@/lib/validation";
@@ -77,12 +82,16 @@ export async function POST(request: Request) {
       );
     requirePermission(context.membership.role, Permission.CRM_WRITE);
     const input = dealSchema.parse(await request.json());
-    const ownerUserId = input.ownerUserId ?? context.user.id;
+    const { companyId, ...dealInput } = input;
+    const ownerUserId = dealInput.ownerUserId ?? context.user.id;
     await validateOwner(context.organization.id, ownerUserId);
+    if (companyId) {
+      await assertObjectAccess(context, "COMPANY", companyId, true);
+    }
     const stage = await prisma.pipelineStage.findFirst({
       where: {
-        id: input.stageId,
-        pipelineId: input.pipelineId,
+        id: dealInput.stageId,
+        pipelineId: dealInput.pipelineId,
         organizationId: context.organization.id,
       },
       include: { pipeline: { select: { businessUnitId: true } } },
@@ -92,7 +101,7 @@ export async function POST(request: Request) {
         { message: "パイプラインまたはステージが正しくありません。" },
         { status: 400 },
       );
-    if (stage.stageType === "LOST" && !input.lostReason)
+    if (stage.stageType === "LOST" && !dealInput.lostReason)
       return NextResponse.json(
         { message: "失注理由を入力してください。" },
         { status: 400 },
@@ -108,19 +117,54 @@ export async function POST(request: Request) {
     const deal = await prisma.$transaction(async (tx) => {
       const created = await tx.deal.create({
         data: {
-          ...input,
+          ...dealInput,
           ownerUserId,
           organizationId: context.organization.id,
           businessUnitId: stage.pipeline.businessUnitId,
-          amount: input.amount ?? null,
+          amount: dealInput.amount ?? null,
           probability: stage.probability,
           status: stage.stageType,
           closeDate:
             stage.stageType === "WON"
-              ? (input.closeDate ?? new Date())
-              : input.closeDate,
+              ? (dealInput.closeDate ?? new Date())
+              : dealInput.closeDate,
         },
       });
+      if (companyId) {
+        await tx.objectAssociation.upsert({
+          where: {
+            organizationId_sourceObjectType_sourceObjectId_targetObjectType_targetObjectId:
+              {
+                organizationId: context.organization.id,
+                sourceObjectType: ObjectType.COMPANY,
+                sourceObjectId: companyId,
+                targetObjectType: ObjectType.DEAL,
+                targetObjectId: created.id,
+              },
+          },
+          update: {
+            label: "商談会社",
+            isPrimary: true,
+          },
+          create: {
+            organizationId: context.organization.id,
+            sourceObjectType: ObjectType.COMPANY,
+            sourceObjectId: companyId,
+            targetObjectType: ObjectType.DEAL,
+            targetObjectId: created.id,
+            label: "商談会社",
+            isPrimary: true,
+          },
+        });
+        await createRecordActivity(tx, {
+          organizationId: context.organization.id,
+          actorUserId: context.user.id,
+          objectType: "COMPANY",
+          objectId: companyId,
+          type: "SYSTEM_EVENT",
+          title: `商談「${created.name}」を作成しました`,
+        });
+      }
       await createRecordActivity(tx, {
         organizationId: context.organization.id,
         actorUserId: context.user.id,

@@ -38,6 +38,14 @@ export function RecordForm({
   const [pending, setPending] = useState(false);
   const defaultPipeline = String(initial?.pipelineId ?? pipelines[0]?.id ?? "");
   const [pipelineId, setPipelineId] = useState(defaultPipeline);
+  const associatedCompanyId =
+    type === "deal" && typeof initial?.companyId === "string"
+      ? initial.companyId
+      : "";
+  const associatedCompanyName =
+    type === "deal" && typeof initial?.companyName === "string"
+      ? initial.companyName
+      : "";
   const endpoint = `/api/${type === "contact" ? "contacts" : type === "company" ? "companies" : "deals"}${recordId ? `/${recordId}` : ""}`;
   const basePath = `/${type === "contact" ? "contacts" : type === "company" ? "companies" : "deals"}`;
   const value = (key: string): string | number => {
@@ -201,6 +209,21 @@ export function RecordForm({
         ) : null}
         {type === "deal" ? (
           <>
+            {associatedCompanyId ? (
+              <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 md:col-span-2">
+                <input
+                  type="hidden"
+                  name="companyId"
+                  value={associatedCompanyId}
+                />
+                <p className="text-xs font-semibold uppercase tracking-wide text-orange-700">
+                  関連会社
+                </p>
+                <p className="mt-1 text-sm font-bold text-slate-900">
+                  {associatedCompanyName || "選択済みの会社"}
+                </p>
+              </div>
+            ) : null}
             <Field
               label="商談名"
               name="name"

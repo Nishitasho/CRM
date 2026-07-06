@@ -78,12 +78,13 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 403 },
       );
     canEditRecord(context, current.ownerUserId);
-    const input = dealSchema.parse(await request.json());
-    await validateOwner(context.organization.id, input.ownerUserId);
+    const dealInput = { ...dealSchema.parse(await request.json()) };
+    delete dealInput.companyId;
+    await validateOwner(context.organization.id, dealInput.ownerUserId);
     const stage = await prisma.pipelineStage.findFirst({
       where: {
-        id: input.stageId,
-        pipelineId: input.pipelineId,
+        id: dealInput.stageId,
+        pipelineId: dealInput.pipelineId,
         organizationId: context.organization.id,
       },
       include: { pipeline: { select: { businessUnitId: true } } },
@@ -101,15 +102,19 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 403 },
       );
     }
-    if (stage.stageType === "LOST" && !input.primaryLossReasonId && !input.lostReason)
+    if (
+      stage.stageType === "LOST" &&
+      !dealInput.primaryLossReasonId &&
+      !dealInput.lostReason
+    )
       return NextResponse.json(
         { message: "失注理由を選択してください。" },
         { status: 400 },
       );
-    if (input.primaryLossReasonId) {
+    if (dealInput.primaryLossReasonId) {
       const reason = await prisma.lossReasonDefinition.findFirst({
         where: {
-          id: input.primaryLossReasonId,
+          id: dealInput.primaryLossReasonId,
           organizationId: context.organization.id,
           isActive: true,
         },
@@ -119,7 +124,7 @@ export async function PATCH(request: Request, { params }: Params) {
           { message: "失注理由が見つかりません。" },
           { status: 400 },
         );
-      if (reason.requiresNote && !input.lossReasonNote)
+      if (reason.requiresNote && !dealInput.lossReasonNote)
         return NextResponse.json(
           { message: "この失注理由では補足を入力してください。" },
           { status: 400 },
@@ -131,7 +136,7 @@ export async function PATCH(request: Request, { params }: Params) {
       stageId: stage.id,
     });
     const effectiveMissing = missing.filter(
-      (item) => !(item === "失注理由" && input.primaryLossReasonId),
+      (item) => !(item === "失注理由" && dealInput.primaryLossReasonId),
     );
     if (effectiveMissing.length)
       return NextResponse.json(
@@ -142,7 +147,7 @@ export async function PATCH(request: Request, { params }: Params) {
       const updated = await tx.deal.update({
         where: { id },
         data: {
-          ...input,
+          ...dealInput,
           businessUnitId: stage.pipeline.businessUnitId,
           probability: stage.probability,
           status: stage.stageType,
@@ -153,8 +158,8 @@ export async function PATCH(request: Request, { params }: Params) {
           lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"
-              ? (input.closeDate ?? current.closeDate ?? new Date())
-              : input.closeDate,
+              ? (dealInput.closeDate ?? current.closeDate ?? new Date())
+              : dealInput.closeDate,
         },
       });
       await createRecordActivity(tx, {
@@ -163,16 +168,16 @@ export async function PATCH(request: Request, { params }: Params) {
         objectType: "DEAL",
         objectId: id,
         type:
-          current.stageId === input.stageId
+          current.stageId === dealInput.stageId
             ? "PROPERTY_UPDATED"
             : "STAGE_CHANGED",
         title:
-          current.stageId === input.stageId
+          current.stageId === dealInput.stageId
             ? "基本情報を更新しました"
             : `ステージを「${stage.name}」へ変更しました`,
         metadata: {
           before: { stageId: current.stageId, name: current.name },
-          after: { stageId: input.stageId, name: input.name },
+          after: { stageId: dealInput.stageId, name: dealInput.name },
         },
       });
       await syncCrossSellPerformanceEvents(tx, {

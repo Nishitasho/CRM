@@ -190,6 +190,7 @@ export const companySchema = z.object({
 
 export const dealSchema = z.object({
   ownerUserId: optionalUuid,
+  companyId: optionalUuid,
   pipelineId: z.string().uuid("パイプラインを選択してください。"),
   stageId: z.string().uuid("ステージを選択してください。"),
   name: z.string().trim().min(1, "商談名を入力してください。").max(200),

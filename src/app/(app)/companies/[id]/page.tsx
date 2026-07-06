@@ -116,9 +116,19 @@ export default async function CompanyDetailPage({
           "会社の基本情報、活動履歴、関連データを確認できます。"
         }
         action={
-          <Link className="secondary-button" href="/companies">
-            一覧へ戻る
-          </Link>
+          <div className="flex flex-wrap justify-end gap-3">
+            {canEdit ? (
+              <Link
+                className="primary-button"
+                href={`/deals/new?companyId=${id}`}
+              >
+                商談を作成
+              </Link>
+            ) : null}
+            <Link className="secondary-button" href="/companies">
+              一覧へ戻る
+            </Link>
+          </div>
         }
       />
       <RecordDetail

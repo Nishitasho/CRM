@@ -1249,8 +1249,10 @@ export async function applyLegacyExcelImport(input: {
   actorUserId: string;
   importJobId: string;
   dryRun: LegacyExcelDryRunResult;
+  referenceDryRun?: LegacyExcelDryRunResult;
   applyTargets?: LegacyExcelApplyTargets;
   manualMatches?: LegacyExcelApplyInput["manualMatches"];
+  updateImportJob?: boolean;
 }) {
   const applyTargets = normalizeApplyTargets(input.applyTargets);
   const progressResults = new Map<string, AppliedProgressResult>();
@@ -1373,27 +1375,29 @@ export async function applyLegacyExcelImport(input: {
   }
 
   const status = errors.length > 0 ? "FAILED" : "COMPLETED";
-  await prisma.importJob.update({
-    where: { id: input.importJobId, organizationId: input.organizationId },
-    data: {
-      status,
-      successCount: created + updated,
-      skippedCount: skipped,
-      errorCount: errors.length,
-      errorReport: errors as Prisma.InputJsonValue,
-      mapping: {
-        ...input.dryRun,
-        applySummary: {
-          applyTargets,
-          created,
-          updated,
-          skipped,
-          warnings,
-          errors,
-        },
-      } as Prisma.InputJsonValue,
-    },
-  });
+  if (input.updateImportJob !== false) {
+    await prisma.importJob.update({
+      where: { id: input.importJobId, organizationId: input.organizationId },
+      data: {
+        status,
+        successCount: created + updated,
+        skippedCount: skipped,
+        errorCount: errors.length,
+        errorReport: errors as Prisma.InputJsonValue,
+        mapping: {
+          ...input.dryRun,
+          applySummary: {
+            applyTargets,
+            created,
+            updated,
+            skipped,
+            warnings,
+            errors,
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
 
   return {
     status,
@@ -2426,6 +2430,7 @@ async function applyHpProjectCandidate(
     actorUserId: string;
     importJobId: string;
     dryRun: LegacyExcelDryRunResult;
+    referenceDryRun?: LegacyExcelDryRunResult;
   },
   candidate: HpDeliveryProjectCandidate,
   match: ResolvedProjectMatch | null,
@@ -2435,7 +2440,15 @@ async function applyHpProjectCandidate(
   const existingProjectLink = await findLegacyLinkTarget(tx, input, candidate, "DELIVERY_PROJECT");
   if (existingProjectLink) return { created: 0, updated: 0, skipped: 1, warnings: [] };
   const businessUnit = await ensureBusinessUnit(tx, input.organizationId, candidate.businessUnitName);
-  const resolved = await resolveProjectTarget(tx, input, candidate, match, linkedProgress);
+  const persistedLinkedProgress =
+    linkedProgress ?? (await findPersistedProgressResult(tx, input, match));
+  const resolved = await resolveProjectTarget(
+    tx,
+    input,
+    candidate,
+    match,
+    persistedLinkedProgress,
+  );
   const owner = await findUserByName(tx, input.organizationId, candidate.csOwnerName);
   const existingByDeal = resolved.dealId
     ? await tx.deliveryProject.findFirst({
@@ -2506,6 +2519,55 @@ async function applyHpProjectCandidate(
     updated: 0,
     skipped: 0,
     warnings: resolved.dealId ? [] : [`${candidate.sheetName}:${candidate.rowNumber} は元商談未紐付けで登録しました。`],
+  };
+}
+
+async function findPersistedProgressResult(
+  tx: Tx,
+  input: {
+    organizationId: string;
+    dryRun: LegacyExcelDryRunResult;
+    referenceDryRun?: LegacyExcelDryRunResult;
+  },
+  match: ResolvedProjectMatch | null,
+): Promise<AppliedProgressResult | undefined> {
+  if (!match?.progressCandidateId) return undefined;
+  const progressCandidate = (
+    input.referenceDryRun ?? input.dryRun
+  ).progressCandidates.find(
+    (candidate) => candidate.id === match.progressCandidateId,
+  );
+  if (!progressCandidate) return undefined;
+  const dealId = await findLegacyLinkTarget(
+    tx,
+    input,
+    progressCandidate,
+    "DEAL",
+  );
+  if (!dealId) return undefined;
+  const companyId = await resolveAssociatedId(
+    tx,
+    input.organizationId,
+    "DEAL",
+    dealId,
+    "COMPANY",
+  );
+  const contactId = await resolveAssociatedId(
+    tx,
+    input.organizationId,
+    "DEAL",
+    dealId,
+    "CONTACT",
+  );
+  return {
+    companyId: companyId ?? "",
+    contactId,
+    dealId,
+    productId: null,
+    lineItemId: null,
+    created: 0,
+    updated: 0,
+    skipped: 1,
   };
 }
 

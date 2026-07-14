@@ -1,6 +1,7 @@
 "use client";
 
 import { DragEvent, FormEvent, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type CrossFileCandidate = {
   progressCandidateId: string;
@@ -74,6 +75,21 @@ type ApplyTargets = {
   activities: boolean;
   dailyMetrics: boolean;
   kpiTargets: boolean;
+};
+
+type ApplyResponse = {
+  complete?: boolean;
+  created: number;
+  updated: number;
+  skipped: number;
+  errors?: Array<{ row: string; message: string }>;
+  message?: string;
+  progress?: {
+    progressIndex: number;
+    progressTotal: number;
+    projectIndex: number;
+    projectTotal: number;
+  };
 };
 
 const confirmText = "本当に反映する";
@@ -186,7 +202,9 @@ export function LegacyExcelImporter({
 }: {
   histories: ImportHistoryItem[];
 }) {
+  const router = useRouter();
   const [pending, setPending] = useState(false);
+  const [resumeJobId, setResumeJobId] = useState<string | null>(null);
   const [result, setResult] = useState<DryRunResult | null>(null);
   const [manualMatches, setManualMatches] = useState<Record<string, ManualMatch>>({});
   const [applyTargets, setApplyTargets] =
@@ -275,27 +293,76 @@ export function LegacyExcelImporter({
     setPending(true);
     setError("");
     setMessage("");
-    const response = await fetch("/api/imports/legacy-excel/apply", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    try {
+      const json = await runApplyRequests({
         importJobId: result.importJobId,
         confirmed,
         confirmText: confirmInput,
         applyTargets,
         unresolvedDeliveryProjectConfirmText: unresolvedConfirmInput,
         manualMatches,
-      }),
-    });
-    const json = await response.json();
-    setPending(false);
-    if (!response.ok) {
-      setError(json.message ?? "本登録に失敗しました。");
-      return;
+      });
+      setMessage(
+        `本登録が完了しました。作成/更新 ${json.created + json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors?.length ?? 0}件`,
+      );
+      router.refresh();
+    } catch (applyError) {
+      setError(
+        applyError instanceof Error
+          ? applyError.message
+          : "本登録に失敗しました。移行履歴から再開できます。",
+      );
+    } finally {
+      setPending(false);
     }
-    setMessage(
-      `本登録が完了しました。作成/更新 ${json.created + json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors?.length ?? 0}件`,
-    );
+  }
+
+  async function resumeApply(importJobId: string) {
+    setPending(true);
+    setResumeJobId(importJobId);
+    setError("");
+    setMessage("本登録を途中から再開しています。");
+    try {
+      const json = await runApplyRequests({ importJobId, resume: true });
+      setMessage(
+        `本登録が完了しました。作成/更新 ${json.created + json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors?.length ?? 0}件`,
+      );
+      router.refresh();
+    } catch (applyError) {
+      setError(
+        applyError instanceof Error
+          ? applyError.message
+          : "再開処理に失敗しました。もう一度再開できます。",
+      );
+    } finally {
+      setPending(false);
+      setResumeJobId(null);
+    }
+  }
+
+  async function runApplyRequests(initialBody: Record<string, unknown>) {
+    let body = initialBody;
+    for (let requestCount = 0; requestCount < 200; requestCount += 1) {
+      const response = await fetch("/api/imports/legacy-excel/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await readApiResponse(response);
+      if (!response.ok) {
+        throw new Error(
+          json.message ?? "本登録に失敗しました。移行履歴から再開できます。",
+        );
+      }
+      if (json.complete !== false) return json;
+      if (json.progress) {
+        setMessage(
+          `本登録中: 商談系 ${json.progress.progressIndex}/${json.progress.progressTotal}、CS案件 ${json.progress.projectIndex}/${json.progress.projectTotal}`,
+        );
+      }
+      body = { importJobId: initialBody.importJobId, resume: true };
+    }
+    throw new Error("本登録の分割回数が上限に達しました。移行履歴から再開してください。");
   }
 
   function updateApplyTarget(key: keyof ApplyTargets, checked: boolean) {
@@ -772,6 +839,7 @@ export function LegacyExcelImporter({
                 <th className="py-2 text-right">成功</th>
                 <th className="py-2 text-right">スキップ</th>
                 <th className="py-2 text-right">エラー</th>
+                <th className="py-2 text-right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -784,11 +852,25 @@ export function LegacyExcelImporter({
                   <td className="py-2 text-right">{item.successCount}</td>
                   <td className="py-2 text-right">{item.skippedCount}</td>
                   <td className="py-2 text-right">{item.errorCount}</td>
+                  <td className="py-2 text-right">
+                    {item.status === "PROCESSING" || item.status === "FAILED" ? (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={pending}
+                        onClick={() => resumeApply(item.id)}
+                      >
+                        {resumeJobId === item.id ? "再開中" : "本登録を再開"}
+                      </button>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
                 </tr>
               ))}
               {histories.length === 0 ? (
                 <tr>
-                  <td className="py-6 text-center text-sm text-slate-500" colSpan={7}>
+                  <td className="py-6 text-center text-sm text-slate-500" colSpan={8}>
                     まだ移行履歴はありません。
                   </td>
                 </tr>
@@ -799,6 +881,19 @@ export function LegacyExcelImporter({
       </section>
     </div>
   );
+}
+
+async function readApiResponse(response: Response): Promise<ApplyResponse> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as ApplyResponse;
+  } catch {
+    throw new Error(
+      response.ok
+        ? "本登録の応答を読み取れませんでした。移行履歴から再開してください。"
+        : "本登録がサーバーで中断されました。移行履歴から安全に再開できます。",
+    );
+  }
 }
 
 function decisionClass(decision: CrossFileMatch["decision"]) {

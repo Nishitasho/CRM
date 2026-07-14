@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseSpreadsheetText, parseXlsx } from "./spreadsheet";
+import {
+  parseSpreadsheetText,
+  parseXlsx,
+  parseXlsxWorkbook,
+} from "./spreadsheet";
 
 describe("spreadsheet helpers", () => {
   it("parses pasted spreadsheet tables", () => {
@@ -40,6 +44,32 @@ describe("spreadsheet helpers", () => {
       sheetName: "顧客一覧",
       truncated: false,
     });
+  });
+
+  it("parses namespace-prefixed workbook and worksheet tags", () => {
+    const parsed = parseXlsxWorkbook(
+      makeZip({
+        "xl/workbook.xml":
+          '<x:workbook xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheets><x:sheet name="IMPORT_READY_COMPANIES" sheetId="1" r:id="rId1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" /></x:sheets></x:workbook>',
+        "xl/_rels/workbook.xml.rels":
+          '<Relationships><Relationship Id="rId1" Type="worksheet" Target="/xl/worksheets/sheet1.xml" /></Relationships>',
+        "xl/styles.xml":
+          '<x:styleSheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:cellXfs count="1"><x:xf numFmtId="0" /></x:cellXfs></x:styleSheet>',
+        "xl/worksheets/sheet1.xml":
+          '<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheetData><x:row r="1"><x:c r="A1" t="str"><x:v>importAction</x:v></x:c><x:c r="B1" t="str"><x:v>companyKey</x:v></x:c></x:row><x:row r="2"><x:c r="A2" t="str"><x:v>IMPORT</x:v></x:c><x:c r="B2" t="str"><x:v>company:test</x:v></x:c></x:row></x:sheetData></x:worksheet>',
+      }),
+    );
+
+    expect(parsed).toEqual([
+      {
+        sheetName: "IMPORT_READY_COMPANIES",
+        rows: [
+          ["importAction", "companyKey"],
+          ["IMPORT", "company:test"],
+        ],
+        rowNumbers: [1, 2],
+      },
+    ]);
   });
 });
 

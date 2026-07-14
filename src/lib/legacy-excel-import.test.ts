@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeLegacyExcelWorkbook,
   analyzeLegacyExcelWorkbooks,
+  buildLegacyPrimaryAssociationData,
   cleanLegacyCellValue,
   excelSerialToDateString,
   getLegacyExcelApplyPlan,
@@ -21,6 +22,35 @@ import { parseXlsxWorkbook } from "./spreadsheet";
 import { writeSimpleXlsxWorkbook } from "./simple-xlsx";
 
 describe("legacy Excel import", () => {
+  it("builds canonical contact and deal associations", () => {
+    expect(
+      buildLegacyPrimaryAssociationData("org-1", {
+        companyId: "company-1",
+        contactId: "contact-1",
+        dealId: "deal-1",
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        sourceObjectType: "CONTACT",
+        sourceObjectId: "contact-1",
+        targetObjectType: "COMPANY",
+        targetObjectId: "company-1",
+      }),
+      expect.objectContaining({
+        sourceObjectType: "DEAL",
+        sourceObjectId: "deal-1",
+        targetObjectType: "COMPANY",
+        targetObjectId: "company-1",
+      }),
+      expect.objectContaining({
+        sourceObjectType: "DEAL",
+        sourceObjectId: "deal-1",
+        targetObjectType: "CONTACT",
+        targetObjectId: "contact-1",
+      }),
+    ]);
+  });
+
   it("treats unchecked Excel cells and blank-date placeholders as empty", () => {
     expect(cleanLegacyCellValue("FALSE")).toBe("");
     expect(cleanLegacyCellValue("true")).toBe("");

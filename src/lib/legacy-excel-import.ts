@@ -2288,6 +2288,13 @@ async function applyProgressCandidate(
     const contactId = deal
       ? await resolveAssociatedId(tx, input.organizationId, "DEAL", deal.id, "CONTACT")
       : null;
+    const repairedAssociations = deal
+      ? await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
+          companyId,
+          contactId,
+          dealId: deal.id,
+        })
+      : 0;
     return {
       companyId: companyId ?? "",
       contactId,
@@ -2295,8 +2302,8 @@ async function applyProgressCandidate(
       productId: null,
       lineItemId: null,
       created: 0,
-      updated: 0,
-      skipped: 1,
+      updated: repairedAssociations > 0 ? 1 : 0,
+      skipped: repairedAssociations > 0 ? 0 : 1,
     };
   }
   const businessUnit = await ensureBusinessUnit(
@@ -2353,32 +2360,10 @@ async function applyProgressCandidate(
         customFields: mergeLegacyCustomFields({}, candidate.raw, "DEAL") as Prisma.InputJsonValue,
       },
     });
-    await tx.objectAssociation.createMany({
-      data: [
-        {
-          organizationId: input.organizationId,
-          sourceObjectType: "COMPANY",
-          sourceObjectId: company.id,
-          targetObjectType: "DEAL",
-          targetObjectId: deal.id,
-          label: "移行元商談",
-          isPrimary: true,
-        },
-        ...(contact
-          ? [
-              {
-                organizationId: input.organizationId,
-                sourceObjectType: "CONTACT" as const,
-                sourceObjectId: contact.id,
-                targetObjectType: "DEAL" as const,
-                targetObjectId: deal.id,
-                label: "商談担当者",
-                isPrimary: true,
-              },
-            ]
-          : []),
-      ],
-      skipDuplicates: true,
+    await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
+      companyId: company.id,
+      contactId: contact?.id ?? null,
+      dealId: deal.id,
     });
     await ensureDealParticipant(tx, input.organizationId, deal.id, candidate.isOwnerName, "APPOINTMENT_SETTER", "IS");
     await ensureDealParticipant(tx, input.organizationId, deal.id, candidate.fsOwnerName, "CLOSER", "FS");
@@ -2810,16 +2795,31 @@ async function findOrCreateContact(
   const existingLinks = await tx.objectAssociation.findMany({
     where: {
       organizationId: input.organizationId,
-      sourceObjectType: "COMPANY",
-      sourceObjectId: companyId,
-      targetObjectType: "CONTACT",
+      OR: [
+        {
+          sourceObjectType: "CONTACT",
+          targetObjectType: "COMPANY",
+          targetObjectId: companyId,
+        },
+        {
+          sourceObjectType: "COMPANY",
+          sourceObjectId: companyId,
+          targetObjectType: "CONTACT",
+        },
+      ],
     },
   });
   if (existingLinks.length > 0) {
     const contacts = await tx.contact.findMany({
       where: {
         organizationId: input.organizationId,
-        id: { in: existingLinks.map((link) => link.targetObjectId) },
+        id: {
+          in: existingLinks.map((link) =>
+            link.sourceObjectType === "CONTACT"
+              ? link.sourceObjectId
+              : link.targetObjectId,
+          ),
+        },
         deletedAt: null,
       },
     });
@@ -2828,7 +2828,14 @@ async function findOrCreateContact(
         normalizeLegacyName([contact.lastName, contact.firstName].filter(Boolean).join(" ")) ===
         candidate.normalized.normalizedContactName,
     );
-    if (matched) return matched;
+    if (matched) {
+      await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
+        companyId,
+        contactId: matched.id,
+        dealId: null,
+      });
+      return matched;
+    }
   }
   const contact = await tx.contact.create({
     data: {
@@ -2841,21 +2848,75 @@ async function findOrCreateContact(
       } as Prisma.InputJsonValue,
     },
   });
-  await tx.objectAssociation.createMany({
-    data: [
-      {
-        organizationId: input.organizationId,
-        sourceObjectType: "COMPANY",
-        sourceObjectId: companyId,
-        targetObjectType: "CONTACT",
-        targetObjectId: contact.id,
-        label: "担当者",
-        isPrimary: true,
-      },
-    ],
-    skipDuplicates: true,
+  await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
+    companyId,
+    contactId: contact.id,
+    dealId: null,
   });
   return contact;
+}
+
+async function ensureLegacyPrimaryAssociations(
+  tx: Tx,
+  organizationId: string,
+  input: {
+    companyId: string | null;
+    contactId: string | null;
+    dealId: string | null;
+  },
+) {
+  const data = buildLegacyPrimaryAssociationData(organizationId, input);
+  if (data.length === 0) return 0;
+  const result = await tx.objectAssociation.createMany({
+    data,
+    skipDuplicates: true,
+  });
+  return result.count;
+}
+
+export function buildLegacyPrimaryAssociationData(
+  organizationId: string,
+  input: {
+    companyId: string | null;
+    contactId: string | null;
+    dealId: string | null;
+  },
+) {
+  const data: Prisma.ObjectAssociationCreateManyInput[] = [];
+  if (input.contactId && input.companyId) {
+    data.push({
+      organizationId,
+      sourceObjectType: "CONTACT",
+      sourceObjectId: input.contactId,
+      targetObjectType: "COMPANY",
+      targetObjectId: input.companyId,
+      label: "所属会社",
+      isPrimary: true,
+    });
+  }
+  if (input.dealId && input.companyId) {
+    data.push({
+      organizationId,
+      sourceObjectType: "DEAL",
+      sourceObjectId: input.dealId,
+      targetObjectType: "COMPANY",
+      targetObjectId: input.companyId,
+      label: "主会社",
+      isPrimary: true,
+    });
+  }
+  if (input.dealId && input.contactId) {
+    data.push({
+      organizationId,
+      sourceObjectType: "DEAL",
+      sourceObjectId: input.dealId,
+      targetObjectType: "CONTACT",
+      targetObjectId: input.contactId,
+      label: "主担当者",
+      isPrimary: true,
+    });
+  }
+  return data;
 }
 
 async function ensureProduct(

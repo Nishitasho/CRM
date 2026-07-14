@@ -2867,11 +2867,45 @@ async function ensureLegacyPrimaryAssociations(
 ) {
   const data = buildLegacyPrimaryAssociationData(organizationId, input);
   if (data.length === 0) return 0;
-  const result = await tx.objectAssociation.createMany({
+  const created = await tx.objectAssociation.createMany({
     data,
     skipDuplicates: true,
   });
-  return result.count;
+  const reverseAssociations: Prisma.ObjectAssociationWhereInput[] = [];
+  if (input.contactId && input.companyId) {
+    reverseAssociations.push({
+      sourceObjectType: "COMPANY",
+      sourceObjectId: input.companyId,
+      targetObjectType: "CONTACT",
+      targetObjectId: input.contactId,
+      label: "担当者",
+    });
+  }
+  if (input.dealId && input.companyId) {
+    reverseAssociations.push({
+      sourceObjectType: "COMPANY",
+      sourceObjectId: input.companyId,
+      targetObjectType: "DEAL",
+      targetObjectId: input.dealId,
+      label: "移行元商談",
+    });
+  }
+  if (input.dealId && input.contactId) {
+    reverseAssociations.push({
+      sourceObjectType: "CONTACT",
+      sourceObjectId: input.contactId,
+      targetObjectType: "DEAL",
+      targetObjectId: input.dealId,
+      label: "商談担当者",
+    });
+  }
+  const deleted = await tx.objectAssociation.deleteMany({
+    where: {
+      organizationId,
+      OR: reverseAssociations,
+    },
+  });
+  return created.count + deleted.count;
 }
 
 export function buildLegacyPrimaryAssociationData(

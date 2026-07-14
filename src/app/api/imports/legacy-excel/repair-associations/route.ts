@@ -19,6 +19,7 @@ const repairSchema = z.object({
 });
 
 const REPAIR_BATCH_SIZE = 25;
+const ASSOCIATION_REPAIR_VERSION = 2;
 
 const associationRepairTargets = {
   masters: false,
@@ -71,7 +72,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const storedProgress = readRepairProgress(mapping.associationRepairProgress);
+    const storedProgress =
+      mapping.associationRepairVersion === ASSOCIATION_REPAIR_VERSION
+        ? readRepairProgress(mapping.associationRepairProgress)
+        : readRepairProgress(undefined);
     if (storedProgress.complete) {
       return NextResponse.json(storedProgress);
     }
@@ -106,16 +110,19 @@ export async function POST(request: Request) {
       skipped: storedProgress.skipped + result.skipped,
       errors: [...storedProgress.errors, ...result.errors],
     };
+    const nextMapping: Prisma.JsonObject = {
+      ...mapping,
+      associationRepairVersion: ASSOCIATION_REPAIR_VERSION,
+      associationRepairProgress: nextProgress,
+      ...(complete
+        ? { associationRepairCompletedAt: new Date().toISOString() }
+        : {}),
+    };
+    if (!complete) delete nextMapping.associationRepairCompletedAt;
     await prisma.importJob.update({
       where: { id: job.id, organizationId: context.organization.id },
       data: {
-        mapping: {
-          ...mapping,
-          associationRepairProgress: nextProgress,
-          ...(complete
-            ? { associationRepairCompletedAt: new Date().toISOString() }
-            : {}),
-        } as Prisma.InputJsonValue,
+        mapping: nextMapping as Prisma.InputJsonValue,
       },
     });
 

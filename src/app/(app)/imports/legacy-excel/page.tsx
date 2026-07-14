@@ -23,6 +23,7 @@ export default async function LegacyExcelImportPage() {
     const mapping = job.mapping as {
       dryRunSummary?: { sourceName?: string };
       associationRepairCompletedAt?: string;
+      associationRepairVersion?: number;
     };
     return {
       id: job.id,
@@ -35,7 +36,9 @@ export default async function LegacyExcelImportPage() {
         timeZone: "Asia/Tokyo",
       }),
       sourceName: mapping.dryRunSummary?.sourceName ?? "",
-      associationRepairCompleted: Boolean(mapping.associationRepairCompletedAt),
+      associationRepairCompleted:
+        Boolean(mapping.associationRepairCompletedAt) &&
+        mapping.associationRepairVersion === 2,
     };
   });
 

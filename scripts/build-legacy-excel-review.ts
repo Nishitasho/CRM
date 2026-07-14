@@ -4,7 +4,10 @@ import {
   analyzeLegacyExcelWorkbooks,
   type LegacyExcelWorkbookInput,
 } from "../src/lib/legacy-excel-import";
-import { generateLegacyExcelReviewArtifacts } from "../src/lib/legacy-excel-review-workbook";
+import {
+  generateLegacyExcelReviewArtifacts,
+  generateLegacyMigrationMasterArtifacts,
+} from "../src/lib/legacy-excel-review-workbook";
 
 type Args = {
   inputPaths: string[];
@@ -26,8 +29,13 @@ async function main() {
   );
   const dryRun = analyzeLegacyExcelWorkbooks(files);
   const artifacts = generateLegacyExcelReviewArtifacts(dryRun);
+  const masterArtifacts = generateLegacyMigrationMasterArtifacts(dryRun);
   await fs.mkdir(args.outputDir, { recursive: true });
   await Promise.all([
+    fs.writeFile(
+      path.join(args.outputDir, "salesnest_migration_master.xlsx"),
+      masterArtifacts.masterWorkbook,
+    ),
     fs.writeFile(
       path.join(args.outputDir, "salesnest_import_review.xlsx"),
       artifacts.reviewWorkbook,
@@ -36,7 +44,7 @@ async function main() {
       path.join(args.outputDir, "salesnest_import_ready.xlsx"),
       artifacts.readyWorkbook,
     ),
-    fs.writeFile(path.join(args.outputDir, "warnings.csv"), artifacts.warningsCsv),
+    fs.writeFile(path.join(args.outputDir, "warnings.csv"), masterArtifacts.warningsCsv),
   ]);
   console.log(
     JSON.stringify(
@@ -44,6 +52,7 @@ async function main() {
         outputDir: args.outputDir,
         totals: dryRun.totals,
         files: [
+          "salesnest_migration_master.xlsx",
           "salesnest_import_review.xlsx",
           "salesnest_import_ready.xlsx",
           "warnings.csv",

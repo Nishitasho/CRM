@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   analyzeLegacyExcelWorkbook,
   analyzeLegacyExcelWorkbooks,
+  cleanLegacyCellValue,
   excelSerialToDateString,
   getLegacyExcelApplyPlan,
   mapLegacyProgressStatus,
@@ -14,11 +15,19 @@ import {
 import {
   analyzeLegacyReviewedExcelWorkbook,
   generateLegacyExcelReviewArtifacts,
+  generateLegacyMigrationMasterArtifacts,
 } from "./legacy-excel-review-workbook";
 import { parseXlsxWorkbook } from "./spreadsheet";
 import { writeSimpleXlsxWorkbook } from "./simple-xlsx";
 
 describe("legacy Excel import", () => {
+  it("treats unchecked Excel cells and blank-date placeholders as empty", () => {
+    expect(cleanLegacyCellValue("FALSE")).toBe("");
+    expect(cleanLegacyCellValue("true")).toBe("");
+    expect(cleanLegacyCellValue("1899-12-30")).toBe("");
+    expect(cleanLegacyCellValue("https://example.com")).toBe("https://example.com");
+  });
+
   it("generates deal and delivery project candidates from target sheets", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
@@ -89,6 +98,77 @@ describe("legacy Excel import", () => {
     expect(result.totals.autoLinkedProjects).toBe(1);
   });
 
+  it("excludes H2 and LL sheets and does not re-import HP status views", () => {
+    const result = analyzeLegacyExcelWorkbooks([
+      {
+        sourceName: "【新】進捗管理シート.xlsx",
+        buffer: makeWorkbook({
+          "【HD】案件管理シート": [
+            ["案件名", "進捗", "商材"],
+            ["株式会社対象", "A受注", "HP"],
+          ],
+          "【H2】案件管理シート": [
+            ["案件名", "進捗", "商材"],
+            ["株式会社H2", "A受注", "HP"],
+          ],
+          "【LL】案件管理シート": [
+            ["案件名", "進捗", "商材"],
+            ["株式会社LL", "A受注", "HP"],
+          ],
+        }),
+      },
+      {
+        sourceName: "HP制作 管理シート.xlsx",
+        buffer: makeWorkbook({
+          "【新】HP管理シート": [
+            ["案件名", "進捗", "完成HP"],
+            ["株式会社対象", "制作中", "https://target.example.com"],
+          ],
+          "初稿提出済み": [
+            ["案件名", "進捗", "完成HP"],
+            ["株式会社対象", "初稿提出済み", "https://target.example.com"],
+          ],
+        }),
+      },
+    ]);
+
+    expect(result.progressCandidates.map((row) => row.companyName)).toEqual([
+      "株式会社対象",
+    ]);
+    expect(result.hpProjectCandidates).toHaveLength(1);
+    expect(result.hpProjectCandidates[0].projectName).toBe("株式会社対象");
+  });
+
+  it("uses only the authoritative current and 2025 HP tabs", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【新】HP管理シート": [
+          ["案件名", "進捗", "初稿予定日", "ネクスト内容・修正内容", "ドメイン案件", "完成HP"],
+          ["店舗A", "制作中", "早ければ早いだけ", "写真待ち", "FALSE", ""],
+        ],
+        "※ここ触る※全案件": [
+          ["案件名", "進捗", "初稿予定日", "備考", "完成HP"],
+          ["店舗A", "制作中", "2026/07/20", "旧表の補足", "https://shop-a.example.com"],
+        ],
+        "2025年": [
+          ["案件名", "進捗", "初稿予定日", "備考", "完成HP"],
+          ["店舗B", "納品", "2025/12/20", "過去案件", "https://shop-b.example.com"],
+        ],
+      }),
+      "HP制作 管理シート.xlsx",
+    );
+
+    expect(result.hpProjectCandidates).toHaveLength(2);
+    const shopA = result.hpProjectCandidates.find((row) => row.projectName === "店舗A");
+    expect(shopA?.memo).toContain("早ければ早いだけ");
+    expect(shopA?.memo).toContain("写真待ち");
+    expect(shopA?.memo).not.toContain("旧表の補足");
+    expect(shopA?.domain).toBe("");
+    expect(
+      result.hpProjectCandidates.map((row) => row.sheetName).sort(),
+    ).toEqual(["2025年", "【新】HP管理シート"].sort());
+  });
+
   it("keeps company-name-only matches in review range", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
@@ -154,12 +234,27 @@ describe("legacy Excel import", () => {
     expect(normalizeDomain("https://www.Example.com/path?q=1")).toBe("example.com");
     expect(excelSerialToDateString(45658)).toBe("2025-01-01");
     expect(parseLegacyDate("2026年6月5日")).toBe("2026-06-05");
+    expect(parseLegacyDate("1899-12-30")).toBeNull();
     expect(parseMoney("¥120,000円")).toBe(120000);
   });
 
   it("maps legacy progress values to deal stages", () => {
     expect(mapLegacyProgressStatus("AA課金").stageName).toBe("課金済み");
     expect(mapLegacyProgressStatus("A受注").status).toBe("WON");
+    expect(mapLegacyProgressStatus("B素材回収待ち")).toMatchObject({
+      stageName: "素材回収待ち",
+      status: "OPEN",
+    });
+    expect(mapLegacyProgressStatus("E2前確通過商談")).toMatchObject({
+      stageName: "前確通過商談",
+      status: "OPEN",
+    });
+    expect(mapLegacyProgressStatus("長期追客リスト")).toMatchObject({
+      stageName: "長期追客",
+      status: "OPEN",
+    });
+    expect(mapLegacyProgressStatus("無効商談").status).toBe("LOST");
+    expect(mapLegacyProgressStatus("前確(条件NG)").status).toBe("LOST");
     expect(mapLegacyProgressStatus("XCアポ失注").status).toBe("LOST");
     expect(mapLegacyProgressStatus("XAA受注キャンセル").status).toBe("CANCELLED");
     expect(mapLegacyProgressStatus("独自進捗").label).toBe("不明");
@@ -279,6 +374,127 @@ describe("legacy Excel import", () => {
     expect(applyValues?.filter((value) => value === "TRUE")).toHaveLength(1);
     expect(applyValues?.filter((value) => value === "FALSE")).toHaveLength(2);
     expect(artifacts.warningsCsv).toContain("warningType");
+  });
+
+  it("generates a migration master workbook that CRM can read from IMPORT_READY sheets", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【HD】案件管理シート": [
+          [
+            "会社名",
+            "案件名",
+            "進捗（現在の進捗を書く）",
+            "商材",
+            "電話番号",
+            "Webサイト",
+            "受注日",
+            "FS担当者",
+          ],
+          ["株式会社複数", "複数 導入案件", "A受注", "HP", "03-2222-2222", "multi.example.com", "2026/06/10", "佐藤"],
+          ["複数株式会社", "複数 導入案件", "A受注", "MEO", "03-2222-2222", "multi.example.com", "2026/06/10", "佐藤"],
+          ["株式会社AUTO", "AUTO 導入案件", "A受注", "HP", "03-1111-1111", "auto.example.com", "2026/06/10", "佐藤"],
+          ["株式会社失注", "失注 導入案件", "XCアポ失注", "HP", "03-9999-9999", "lost.example.com", "", "佐藤"],
+        ],
+        "HP制作 管理シート": [
+          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日", "公開予定日", "CS担当"],
+          ["株式会社AUTO", "AUTO 制作案件", "制作中", "HP", "0311111111", "auto.example.com", "2026/06/11", "2026/07/01", "鈴木"],
+          ["株式会社失注", "失注 制作案件", "制作中", "HP", "0399999999", "lost.example.com", "2026/06/11", "2026/07/01", "鈴木"],
+          ["", "Bestie", "初稿提出済み", "HP", "", "", "", "", "鈴木"],
+          ["", "HP制作案件", "", "HP", "", "", "", "", ""],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    const artifacts = generateLegacyMigrationMasterArtifacts(result);
+    const sheets = parseXlsxWorkbook(artifacts.masterWorkbook);
+    const sheetNames = sheets.map((sheet) => sheet.sheetName);
+    expect(sheetNames).toContain("会社確認");
+    expect(sheetNames).toContain("商品明細");
+    expect(sheetNames).toContain("IMPORT_READY_CS_PROJECTS");
+    expect(sheetNames).not.toContain("DailyMetricEntry");
+    expect(sheetNames).not.toContain("KpiTarget");
+
+    const lineItemSheet = sheets.find((sheet) => sheet.sheetName === "商品明細");
+    const lineItemHeader = lineItemSheet?.rows[0] ?? [];
+    const dealGroupIndex = lineItemHeader.indexOf("dealGroupId");
+    const productIndex = lineItemHeader.indexOf("productName");
+    const dealSheet = sheets.find((sheet) => sheet.sheetName === "商談確認");
+    const dealHeader = dealSheet?.rows[0] ?? [];
+    const dealCompanyIndex = dealHeader.indexOf("finalCompanyName");
+    const masterDealGroupIndex = dealHeader.indexOf("dealGroupId");
+    const originalProgressIndex = dealHeader.indexOf(
+      "商談の進捗（現在の進捗を書く）",
+    );
+    expect(originalProgressIndex).toBeGreaterThan(-1);
+    expect(dealSheet?.rows.slice(1).some((row) => row[originalProgressIndex] === "A受注")).toBe(
+      true,
+    );
+    const multiDealGroupId = dealSheet?.rows
+      .slice(1)
+      .find((row) => row[dealCompanyIndex]?.includes("複数"))?.[masterDealGroupIndex];
+    const multiRows =
+      lineItemSheet?.rows
+        .slice(1)
+        .filter(
+          (row) =>
+            row[dealGroupIndex] === multiDealGroupId &&
+            ["HP", "MEO"].includes(row[productIndex]),
+        ) ?? [];
+    expect(new Set(multiRows.map((row) => row[dealGroupIndex])).size).toBe(1);
+
+    const csSheet = sheets.find((sheet) => sheet.sheetName === "CS案件確認");
+    const csHeader = csSheet?.rows[0] ?? [];
+    const csBuIndex = csHeader.indexOf("csBusinessUnit");
+    const csStatusIndex = csHeader.indexOf("sourceDealDecision");
+    const csImportIndex = csHeader.indexOf("decision");
+    expect(csSheet?.rows.slice(1).every((row) => row[csBuIndex] === "HD事業部")).toBe(true);
+    const lostCsRow = csSheet?.rows
+      .slice(1)
+      .find((row) => row.join("|").includes("失注 制作案件"));
+    expect(lostCsRow?.[csStatusIndex]).not.toBe("LINK_TO_DEAL");
+    expect(lostCsRow?.[csStatusIndex]).toBe("COMPANY_ONLY");
+    expect(lostCsRow?.[csImportIndex]).toBe("IMPORT");
+    const unmatchedCsRow = csSheet?.rows
+      .slice(1)
+      .find((row) => row.join("|").includes("Bestie"));
+    const csCompanyIndex = csHeader.indexOf("companyGroupId");
+    expect(unmatchedCsRow?.[csCompanyIndex]).toBe("company:bestie");
+    expect(unmatchedCsRow?.[csStatusIndex]).toBe("COMPANY_ONLY");
+    expect(unmatchedCsRow?.[csImportIndex]).toBe("IMPORT");
+    const placeholderCsRow = csSheet?.rows
+      .slice(1)
+      .find((row) => row[csHeader.indexOf("projectName")] === "HP制作案件");
+    expect(placeholderCsRow?.[csStatusIndex]).toBe("IGNORE");
+    expect(placeholderCsRow?.[csImportIndex]).toBe("IGNORE");
+
+    const parsed = analyzeLegacyReviewedExcelWorkbook(
+      artifacts.masterWorkbook,
+      "salesnest_migration_master.xlsx",
+    );
+    expect(parsed.dryRun.totals.dailyMetricRows).toBe(0);
+    expect(parsed.dryRun.totals.kpiTargetRows).toBe(0);
+    expect(parsed.dryRun.totals.hpDeliveryProjectCandidates).toBe(3);
+    expect(
+      parsed.dryRun.crossFileMatches.some((match) => match.decision === "AUTO"),
+    ).toBe(true);
+    expect(
+      parsed.dryRun.hpProjectCandidates.every(
+        (candidate) => candidate.businessUnitName === "HD事業部",
+      ),
+    ).toBe(true);
+    const groupedCandidates = parsed.dryRun.progressCandidates.filter(
+      (candidate) => candidate.companyName === "株式会社複数",
+    );
+    expect(groupedCandidates).toHaveLength(2);
+    expect(groupedCandidates.every((candidate) => candidate.progress === "A受注")).toBe(true);
+
+    const readyCompanySheet = sheets.find(
+      (sheet) => sheet.sheetName === "IMPORT_READY_COMPANIES",
+    );
+    expect(
+      readyCompanySheet?.rows.some((row) => row.join("|").includes("company:複数")),
+    ).toBe(true);
   });
 
   it("reads reviewed workbooks and applies selected matches only", () => {

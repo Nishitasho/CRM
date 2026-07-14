@@ -362,6 +362,7 @@ type Tx = Prisma.TransactionClient;
 const PROGRESS_SHEET_PATTERN = /案件管理シート/;
 const HP_SHEET_PATTERN =
   /HP管理シート|全案件|FSからの共有|制作定義|HP制作|制作管理/;
+const AUTHORITATIVE_HP_SHEETS = new Set(["【新】HP管理シート", "2025年"]);
 const DAILY_SHEET_PATTERN = /IS管理シート|日次|架電|行動/;
 const MONTHLY_SHEET_PATTERN = /月間進捗|月次|目標/;
 const FORECAST_SHEET_PATTERN = /ヨミ表|forecast/i;
@@ -489,6 +490,12 @@ function analyzeLegacyExcelParsedWorkbooks(
   let skippedRows = 0;
 
   for (const workbook of workbooks) {
+    const hasAuthoritativeHpSheets = workbook.sheets.some((sheet) =>
+      AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(sheet.sheetName)),
+    );
+    const hpSupplementalNotes = hasAuthoritativeHpSheets
+      ? new Map<string, string>()
+      : collectHpSupplementalNotes(workbook.sheets);
     for (const rawSheet of workbook.sheets) {
       const sheet =
         workbooks.length > 1
@@ -497,8 +504,16 @@ function analyzeLegacyExcelParsedWorkbooks(
               sheetName: `${workbook.sourceName} / ${rawSheet.sheetName}`,
             }
           : rawSheet;
-    const type = detectLegacySheetType(sheet.sheetName);
-    const selected = selectedSheets ? selectedSheets.has(sheet.sheetName) : type !== "ignored";
+    const detectedType = detectLegacySheetType(rawSheet.sheetName);
+    const type =
+      hasAuthoritativeHpSheets &&
+      detectedType === "hp_delivery_projects" &&
+      !AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(rawSheet.sheetName))
+        ? "ignored"
+        : detectedType;
+    const selected = selectedSheets
+      ? selectedSheets.has(sheet.sheetName) || selectedSheets.has(rawSheet.sheetName)
+      : type !== "ignored";
     const parsed = selected ? parseMatrixRows(sheet, type) : null;
     const dataRows = parsed?.rows.length ?? 0;
     sheetSummaries.push({
@@ -534,7 +549,6 @@ function analyzeLegacyExcelParsedWorkbooks(
           if (!isKnownProduct(candidate.productName)) unknownProductNames.add(candidate.productName);
         }
         if (candidate.stage.label === "不明") unknownProgressValues.add(candidate.progress);
-        invalidDates += countInvalidDates(candidate.raw);
         amountErrors += countAmountErrors(candidate.raw);
         if (sampleRows.length < 12) {
           sampleRows.push({
@@ -558,10 +572,16 @@ function analyzeLegacyExcelParsedWorkbooks(
           workbook.sourceName,
           workbook.workbookFingerprint,
         );
-        if (!candidate.projectName && !candidate.companyName) {
+        if (!candidate.companyName) {
           missingRequiredRows += 1;
           skippedRows += 1;
           continue;
+        }
+        const supplementalNote = hpSupplementalNotes.get(
+          candidate.normalized.normalizedProjectName,
+        );
+        if (supplementalNote) {
+          candidate.memo = joinLegacyText(candidate.memo, supplementalNote);
         }
         hpProjectCandidates.push(candidate);
         companyKeys.add(candidate.normalized.normalizedCompanyName || candidate.companyName);
@@ -573,7 +593,6 @@ function analyzeLegacyExcelParsedWorkbooks(
         if (candidate.productName && !isKnownProduct(candidate.productName)) {
           unknownProductNames.add(candidate.productName);
         }
-        invalidDates += countInvalidDates(candidate.raw);
         if (sampleRows.length < 12) {
           sampleRows.push({
             kind: "delivery_project",
@@ -613,6 +632,13 @@ function analyzeLegacyExcelParsedWorkbooks(
     }
   }
   }
+
+  const deduplicatedHpProjects = deduplicateHpProjectCandidates(hpProjectCandidates);
+  hpProjectCandidates.splice(0, hpProjectCandidates.length, ...deduplicatedHpProjects);
+  invalidDates = [...progressCandidates, ...hpProjectCandidates].reduce(
+    (count, candidate) => count + countInvalidDates(candidate.raw),
+    0,
+  );
 
   const crossFileMatches = matchLegacyProjects(
     hpProjectCandidates,
@@ -675,6 +701,8 @@ function analyzeLegacyExcelParsedWorkbooks(
 }
 
 export function detectLegacySheetType(sheetName: string): LegacySheetType {
+  if (isExcludedLegacyBusinessSheet(sheetName)) return "ignored";
+  if (/^2025年$/.test(sourceSheetTitle(sheetName))) return "hp_delivery_projects";
   if (PROGRESS_SHEET_PATTERN.test(sheetName)) return "progress_deals";
   if (HP_SHEET_PATTERN.test(sheetName)) {
     if (/制作定義/.test(sheetName)) return "production_definition";
@@ -685,6 +713,142 @@ export function detectLegacySheetType(sheetName: string): LegacySheetType {
   if (FORECAST_SHEET_PATTERN.test(sheetName)) return "forecast_definition";
   if (PRICE_SHEET_PATTERN.test(sheetName)) return "price_book";
   return "ignored";
+}
+
+function isExcludedLegacyBusinessSheet(sheetName: string) {
+  const title = sourceSheetTitle(sheetName);
+  return /【(?:H2|LL)】|[（(](?:H2|LL)[）)]/i.test(title);
+}
+
+function sourceSheetTitle(sheetName: string) {
+  return sheetName.split(" / ").at(-1)?.trim() ?? sheetName.trim();
+}
+
+function collectHpSupplementalNotes(sheets: ParsedWorkbookSheet[]) {
+  const notes = new Map<string, string>();
+  for (const sheet of sheets.filter((item) => item.sheetName === "FSからの共有")) {
+    const headerIndex = findHeaderRow(sheet.rows, ["案件", "備考"]);
+    if (headerIndex === -1) continue;
+    const headers = uniqueHeaders(
+      sheet.rows[headerIndex].map((header, index) => header || `列${index + 1}`),
+    );
+    for (const row of sheet.rows.slice(headerIndex + 1)) {
+      const values = rowToObject(headers, row);
+      const projectName = getValue(values, ["案件名", "プロジェクト名"]);
+      const note = getValue(values, ["備考", "メモ", "内容"]);
+      const key = normalizeLegacyName(projectName);
+      if (!key || !note) continue;
+      notes.set(key, joinLegacyText(notes.get(key), `【FSからの共有】${note}`));
+    }
+  }
+  return notes;
+}
+
+function deduplicateHpProjectCandidates(candidates: HpDeliveryProjectCandidate[]) {
+  const result: HpDeliveryProjectCandidate[] = [];
+  const firstByProject = new Map<string, number>();
+
+  for (const candidate of candidates) {
+    const projectKey = candidate.normalized.normalizedProjectName;
+    const existingIndex = projectKey ? firstByProject.get(projectKey) : undefined;
+    if (existingIndex === undefined) {
+      firstByProject.set(projectKey, result.length);
+      result.push(candidate);
+      continue;
+    }
+
+    const existing = result[existingIndex];
+    if (sourceSheetTitle(existing.sheetName) === sourceSheetTitle(candidate.sheetName)) {
+      result.push(candidate);
+      continue;
+    }
+
+    const primary = hpSourcePriority(candidate) > hpSourcePriority(existing)
+      ? candidate
+      : existing;
+    const secondary = primary === candidate ? existing : candidate;
+    result[existingIndex] = mergeHpProjectCandidate(primary, secondary);
+  }
+
+  return result;
+}
+
+function hpSourcePriority(candidate: HpDeliveryProjectCandidate) {
+  const title = sourceSheetTitle(candidate.sheetName);
+  if (title === "【新】HP管理シート") return 30;
+  if (title === "2025年") return 20;
+  if (title === "※ここ触る※全案件") return 10;
+  return 0;
+}
+
+function mergeHpProjectCandidate(
+  primary: HpDeliveryProjectCandidate,
+  secondary: HpDeliveryProjectCandidate,
+): HpDeliveryProjectCandidate {
+  const raw = { ...secondary.raw };
+  for (const [key, value] of Object.entries(primary.raw)) {
+    if (cleanLegacyCellValue(value) || !(key in raw)) raw[key] = value;
+  }
+  raw["統合元行"] = joinLegacyText(
+    raw["統合元行"],
+    `${primary.sheetName}:${primary.rowNumber}`,
+    `${secondary.sheetName}:${secondary.rowNumber}`,
+  );
+
+  return {
+    ...primary,
+    raw,
+    normalized: {
+      ...primary.normalized,
+      normalizedPhone:
+        primary.normalized.normalizedPhone || secondary.normalized.normalizedPhone,
+      normalizedDomain:
+        primary.normalized.normalizedDomain || secondary.normalized.normalizedDomain,
+      normalizedContactName:
+        primary.normalized.normalizedContactName || secondary.normalized.normalizedContactName,
+      ownerName: primary.normalized.ownerName || secondary.normalized.ownerName,
+      salesOwnerName:
+        primary.normalized.salesOwnerName || secondary.normalized.salesOwnerName,
+    },
+    contactName: primary.contactName || secondary.contactName,
+    phone: primary.phone || secondary.phone,
+    domain: primary.domain || secondary.domain,
+    productName: primary.productName || secondary.productName,
+    progress: primary.progress || secondary.progress,
+    businessUnitName: primary.businessUnitName || secondary.businessUnitName,
+    csOwnerName: primary.csOwnerName || secondary.csOwnerName,
+    salesOwnerName: primary.salesOwnerName || secondary.salesOwnerName,
+    hearingDate: primary.hearingDate || secondary.hearingDate,
+    expectedPublishDate:
+      primary.expectedPublishDate || secondary.expectedPublishDate,
+    actualPublishDate: primary.actualPublishDate || secondary.actualPublishDate,
+    nextAction: joinLegacyText(primary.nextAction, secondary.nextAction),
+    nextActionDate: primary.nextActionDate || secondary.nextActionDate,
+    memo: joinLegacyText(primary.memo, secondary.memo),
+  };
+}
+
+function buildHpNarrativeMemo(values: Record<string, string>) {
+  const notes: string[] = [];
+  for (const [columnName, rawValue] of Object.entries(values)) {
+    const value = cleanLegacyCellValue(rawValue);
+    if (!value) continue;
+    const normalizedColumn = normalizeHeader(columnName);
+    const isNarrative = /備考|メモ|内容|ヒアリングシート|その他|こだわり|ネクスト|修正/.test(
+      normalizedColumn,
+    );
+    const isDateNote = normalizedColumn.includes("日") && !parseLegacyDate(value);
+    if (!isNarrative && !isDateNote) continue;
+    const label = columnName.replace(/\s+/g, "");
+    notes.push(`【${label}】${value}`);
+  }
+  return joinLegacyText(...notes);
+}
+
+function joinLegacyText(...values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)),
+  ).join("\n\n");
 }
 
 export function normalizeLegacyName(value: string) {
@@ -753,11 +917,29 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
   if (/^D商談済み回答待ち/.test(value)) {
     return openStage(value, "回答待ち低", 45);
   }
+  if (/^B素材回収待ち/.test(value)) {
+    return openStage(value, "素材回収待ち", 70);
+  }
+  if (/^E2前確通過商談/.test(value)) {
+    return openStage(value, "前確通過商談", 35);
+  }
+  if (/^E2商談/.test(value)) {
+    return openStage(value, "商談予定", 35);
+  }
   if (/^E商談/.test(value)) {
     return openStage(value, "商談予定", 35);
   }
   if (/^F日程変更中/.test(value)) {
     return openStage(value, "日程変更中", 25);
+  }
+  if (/^長期追客リスト/.test(value)) {
+    return openStage(value, "長期追客", 10);
+  }
+  if (/^無効商談/.test(value)) {
+    return lostStage(value, "無効商談");
+  }
+  if (/^前確\((?:付き合いNG|営業失注|条件NG|物理NG)\)/.test(value)) {
+    return lostStage(value, value);
   }
   if (/^XCアポ失注/.test(value)) {
     return lostStage(value, "アポ失注");
@@ -1239,7 +1421,9 @@ function parseMatrixRows(sheet: ParsedWorkbookSheet, type: LegacySheetType) {
       rowNumber: sheet.rowNumbers[headerIndex + 1 + offset] ?? headerIndex + 2 + offset,
       values: rowToObject(headers, row),
     }))
-    .filter((row) => Object.values(row.values).some((value) => value.trim()));
+    .filter((row) =>
+      Object.values(row.values).some((value) => cleanLegacyCellValue(value)),
+    );
   return {
     headerRowNumber: sheet.rowNumbers[headerIndex] ?? headerIndex + 1,
     rows,
@@ -1290,8 +1474,16 @@ function toProgressDealCandidate(
   const contactName = getValue(values, ["担当者名", "先方担当者", "代表者", "担当者"]);
   const phone = getValue(values, ["電話番号", "TEL", "店舗電話", "携帯電話"]);
   const domain = getValue(values, ["ドメイン", "URL", "Webサイト", "サイトURL", "HP"]);
-  const productName = getValue(values, ["商材", "獲得商材", "商品", "プロダクト"]);
-  const progress = getValue(values, ["進捗", "ステータス"]) || "未分類";
+  const rawProductName = getValue(values, ["商材", "獲得商材", "商品", "プロダクト"]);
+  const productName = isExcelBlankDate(rawProductName) ? "" : rawProductName;
+  const progress =
+    getValue(values, [
+      "商談の進捗（現在の進捗を書く）",
+      "進捗（現在の進捗を書く）",
+      "商談の進捗",
+      "進捗",
+      "ステータス",
+    ]) || "未分類";
   const businessUnitName =
     getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, productName);
   const isOwnerName = getValue(values, ["IS担当者", "アポ担当", "IS"]);
@@ -1390,12 +1582,34 @@ function toHpProjectCandidate(
     businessUnitName,
     csOwnerName,
     salesOwnerName,
-    hearingDate: parseLegacyDate(getValue(values, ["ヒアリング日", "共有日", "FS共有日"])),
+    hearingDate: parseLegacyDate(
+      getValue(values, [
+        "ヒアリング実施日",
+        "初期ヒアリングMTG日",
+        "ヒアリングMTG実施日",
+        "ヒアリング日",
+        "共有日",
+        "FS共有日",
+      ]),
+    ),
     expectedPublishDate: parseLegacyDate(getValue(values, ["公開予定日", "納品予定日", "公開予定"])),
     actualPublishDate: parseLegacyDate(getValue(values, ["公開日", "納品日", "公開済日"])),
-    nextAction: getValue(values, ["次回アクション", "ネクストアクション", "対応内容"]),
-    nextActionDate: parseLegacyDate(getValue(values, ["次回対応日", "ネクストアクション日", "対応期限"])),
-    memo: getValue(values, ["メモ", "備考", "制作メモ", "FS共有"]),
+    nextAction: getValue(values, [
+      "ネクスト内容",
+      "修正内容",
+      "次回アクション",
+      "ネクストアクション",
+      "対応内容",
+    ]),
+    nextActionDate: parseLegacyDate(
+      getValue(values, [
+        "ネクスト日",
+        "次回対応日",
+        "ネクストアクション日",
+        "対応期限",
+      ]),
+    ),
+    memo: buildHpNarrativeMemo(values),
   };
 }
 
@@ -1562,11 +1776,23 @@ function buildNormalizedKeys(input: {
 }
 
 function getValue(row: Record<string, string>, labels: string[]) {
-  const entry = Object.entries(row).find(([key]) => {
+  for (const [key, rawValue] of Object.entries(row)) {
     const normalizedKey = normalizeHeader(key);
-    return labels.some((label) => normalizedKey.includes(normalizeHeader(label)));
-  });
-  return entry?.[1]?.trim() ?? "";
+    if (!labels.some((label) => normalizedKey.includes(normalizeHeader(label)))) {
+      continue;
+    }
+    const value = cleanLegacyCellValue(rawValue);
+    if (value) return value;
+  }
+  return "";
+}
+
+export function cleanLegacyCellValue(value: string | null | undefined) {
+  const normalized = String(value ?? "").trim().normalize("NFKC");
+  if (!normalized || /^(?:TRUE|FALSE)$/i.test(normalized) || isExcelBlankDate(normalized)) {
+    return "";
+  }
+  return normalized;
 }
 
 function normalizeHeader(value: string) {
@@ -1584,7 +1810,7 @@ function normalizeComparable(value: string) {
 export function parseLegacyDate(value: string | null | undefined) {
   if (!value) return null;
   const input = String(value).trim().normalize("NFKC");
-  if (!input) return null;
+  if (!input || isExcelBlankDate(input)) return null;
   const serial = Number(input);
   if (Number.isFinite(serial) && serial > 20000 && serial < 80000) {
     return excelSerialToDateString(serial);
@@ -1604,6 +1830,10 @@ export function parseLegacyDate(value: string | null | undefined) {
     String(date.getMonth() + 1).padStart(2, "0"),
     String(date.getDate()).padStart(2, "0"),
   ].join("-");
+}
+
+function isExcelBlankDate(value: string) {
+  return /^(?:1899-12-30|1899-12-31|1900-01-00)$/.test(value.trim());
 }
 
 function parseLegacyMonth(value: string | null | undefined) {
@@ -1654,7 +1884,13 @@ export function parseMoney(value: string | null | undefined) {
 
 function countInvalidDates(row: Record<string, string>) {
   return Object.entries(row).filter(([key, value]) => {
-    if (!normalizeHeader(key).includes("日") || !value.trim()) return false;
+    if (
+      !normalizeHeader(key).includes("日") ||
+      !value.trim() ||
+      isExcelBlankDate(value)
+    ) {
+      return false;
+    }
     return parseLegacyDate(value) === null;
   }).length;
 }

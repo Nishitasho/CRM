@@ -22,6 +22,7 @@ export default async function LegacyExcelImportPage() {
   const histories = jobs.map((job) => {
     const mapping = job.mapping as {
       dryRunSummary?: { sourceName?: string };
+      associationRepairCompletedAt?: string;
     };
     return {
       id: job.id,
@@ -34,6 +35,7 @@ export default async function LegacyExcelImportPage() {
         timeZone: "Asia/Tokyo",
       }),
       sourceName: mapping.dryRunSummary?.sourceName ?? "",
+      associationRepairCompleted: Boolean(mapping.associationRepairCompletedAt),
     };
   });
 

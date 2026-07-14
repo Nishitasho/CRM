@@ -58,6 +58,7 @@ type ImportHistoryItem = {
   skippedCount: number;
   createdAt: string;
   sourceName: string;
+  associationRepairCompleted: boolean;
 };
 
 type ManualMatch = {
@@ -90,6 +91,16 @@ type ApplyResponse = {
     projectIndex: number;
     projectTotal: number;
   };
+};
+
+type AssociationRepairResponse = {
+  complete: boolean;
+  index: number;
+  total: number;
+  updated: number;
+  skipped: number;
+  errors: Array<{ row: string; message: string }>;
+  message?: string;
 };
 
 const confirmText = "本当に反映する";
@@ -205,6 +216,7 @@ export function LegacyExcelImporter({
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [resumeJobId, setResumeJobId] = useState<string | null>(null);
+  const [repairJobId, setRepairJobId] = useState<string | null>(null);
   const [result, setResult] = useState<DryRunResult | null>(null);
   const [manualMatches, setManualMatches] = useState<Record<string, ManualMatch>>({});
   const [applyTargets, setApplyTargets] =
@@ -363,6 +375,47 @@ export function LegacyExcelImporter({
       body = { importJobId: initialBody.importJobId, resume: true };
     }
     throw new Error("本登録の分割回数が上限に達しました。移行履歴から再開してください。");
+  }
+
+  async function repairAssociations(importJobId: string) {
+    setPending(true);
+    setRepairJobId(importJobId);
+    setError("");
+    setMessage("会社・コンタクト・商談の関連付けを補修しています。");
+    try {
+      for (let requestCount = 0; requestCount < 100; requestCount += 1) {
+        const response = await fetch(
+          "/api/imports/legacy-excel/repair-associations",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ importJobId }),
+          },
+        );
+        const json = await readAssociationRepairResponse(response);
+        if (!response.ok) {
+          throw new Error(json.message ?? "関連付けの補修に失敗しました。");
+        }
+        if (json.complete) {
+          setMessage(
+            `関連付けの補修が完了しました。更新 ${json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors.length}件`,
+          );
+          router.refresh();
+          return;
+        }
+        setMessage(`関連付け補修中: ${json.index}/${json.total}`);
+      }
+      throw new Error("関連付け補修の分割回数が上限に達しました。");
+    } catch (repairError) {
+      setError(
+        repairError instanceof Error
+          ? repairError.message
+          : "関連付けの補修に失敗しました。もう一度実行できます。",
+      );
+    } finally {
+      setPending(false);
+      setRepairJobId(null);
+    }
   }
 
   function updateApplyTarget(key: keyof ApplyTargets, checked: boolean) {
@@ -862,6 +915,16 @@ export function LegacyExcelImporter({
                       >
                         {resumeJobId === item.id ? "再開中" : "本登録を再開"}
                       </button>
+                    ) : item.status === "COMPLETED" &&
+                      !item.associationRepairCompleted ? (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={pending}
+                        onClick={() => repairAssociations(item.id)}
+                      >
+                        {repairJobId === item.id ? "補修中" : "関連付けを補修"}
+                      </button>
                     ) : (
                       "-"
                     )}
@@ -892,6 +955,21 @@ async function readApiResponse(response: Response): Promise<ApplyResponse> {
       response.ok
         ? "本登録の応答を読み取れませんでした。移行履歴から再開してください。"
         : "本登録がサーバーで中断されました。移行履歴から安全に再開できます。",
+    );
+  }
+}
+
+async function readAssociationRepairResponse(
+  response: Response,
+): Promise<AssociationRepairResponse> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as AssociationRepairResponse;
+  } catch {
+    throw new Error(
+      response.ok
+        ? "関連付け補修の応答を読み取れませんでした。"
+        : "関連付け補修がサーバーで中断されました。もう一度実行できます。",
     );
   }
 }

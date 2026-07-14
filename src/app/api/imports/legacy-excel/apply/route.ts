@@ -15,6 +15,8 @@ import {
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
+export const maxDuration = 300;
+
 const applySchema = z.object({
   importJobId: z.string().uuid(),
   confirmed: z.boolean(),

@@ -73,3 +73,41 @@ function formatCustomValue(value: unknown, fieldType: string) {
   }
   return String(value);
 }
+
+const looseFieldLabels: Record<string, string> = {
+  storeName: "店舗名",
+  businessType: "業態",
+  storeCount: "店舗数",
+  customerStatus: "顧客区分",
+  appointmentAcquiredDate: "アポ獲得日",
+  meetingDate: "商談日",
+  collectedDate: "回収日",
+  billingDate: "課金日",
+  legacyProgress: "移行元の進捗",
+  nextAction: "次回アクション",
+  nextActionDate: "次回アクション日",
+};
+
+export function getLooseCustomFieldValues(
+  rawValues: unknown,
+  excludedPropertyNames: string[] = [],
+) {
+  const values =
+    rawValues && typeof rawValues === "object" && !Array.isArray(rawValues)
+      ? (rawValues as Record<string, unknown>)
+      : {};
+  const excluded = new Set(excludedPropertyNames);
+  return Object.entries(values)
+    .filter(([key, value]) => {
+      if (excluded.has(key) || value === null || value === undefined || value === "") {
+        return false;
+      }
+      if (/id$/i.test(key) || key === "legacySourceKey") return false;
+      return typeof value !== "object" || Array.isArray(value);
+    })
+    .map(([key, value]) => ({
+      key,
+      label: looseFieldLabels[key] ?? key,
+      value: Array.isArray(value) ? value.join("、") : String(value),
+    }));
+}

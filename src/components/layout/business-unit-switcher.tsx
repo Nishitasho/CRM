@@ -34,13 +34,13 @@ export function BusinessUnitSwitcher({
   }
 
   return (
-    <label className="flex items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 shadow-sm">
+    <label className="flex w-full items-center gap-2 rounded-lg border border-line bg-white px-3 py-2 shadow-sm md:w-auto">
       <span className="hidden text-xs font-semibold text-slate-500 sm:inline">
         事業部
       </span>
       <select
         aria-label="事業部を切り替え"
-        className="min-w-32 bg-transparent text-sm font-semibold text-ink outline-none"
+        className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-ink outline-none md:min-w-32"
         value={selectedBusinessUnitId ?? ""}
         onChange={switchBusinessUnit}
         disabled={pending}

@@ -4,6 +4,7 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
+import { ensureCoreCrmDefaults } from "@/lib/core-crm";
 import { getCrmFormOptions } from "@/lib/page-data";
 import { prisma } from "@/lib/prisma";
 
@@ -17,7 +18,11 @@ export default async function NewDealPage({
   const params = await searchParams;
   const companyId = isUuid(params.companyId) ? params.companyId : undefined;
   const businessUnitSelection = await getBusinessUnitSelection(context);
-  const [{ members, pipelines, customProperties }, company] =
+  await ensureCoreCrmDefaults(prisma, {
+    organizationId: context.organization.id,
+    userId: context.user.id,
+  });
+  const [{ members, pipelines, customProperties }, company, products] =
     await Promise.all([
       getCrmFormOptions(
         context.organization.id,
@@ -34,7 +39,17 @@ export default async function NewDealPage({
             select: { id: true, name: true, ownerUserId: true },
           })
         : null,
+      prisma.product.findMany({
+        where: { organizationId: context.organization.id, status: "ACTIVE" },
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      }),
     ]);
+  const defaultPipeline = pipelines[0];
+  const defaultStage =
+    defaultPipeline?.stages.find((stage) => stage.name === "E商談") ??
+    defaultPipeline?.stages.find((stage) => /^E2/.test(stage.name)) ??
+    defaultPipeline?.stages[0];
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -44,19 +59,27 @@ export default async function NewDealPage({
         description={`${businessUnitSelection.selectedBusinessUnitName}の商談として登録します。`}
       />
       <RecordForm
+        key={businessUnitSelection.selectedBusinessUnitId ?? "all"}
         type="deal"
         members={members}
         pipelines={pipelines}
-        initial={
-          company
+        products={products}
+        businessUnits={businessUnitSelection.units}
+        initial={{
+          businessUnitId:
+            businessUnitSelection.selectedBusinessUnitId ??
+            businessUnitSelection.units[0]?.id,
+          pipelineId: defaultPipeline?.id,
+          stageId: defaultStage?.id,
+          ownerUserId: company?.ownerUserId ?? context.user.id,
+          ...(company
             ? {
                 companyId: company.id,
                 companyName: company.name,
                 name: `${company.name} 商談`,
-                ownerUserId: company.ownerUserId ?? context.user.id,
               }
-            : undefined
-        }
+            : {}),
+        }}
         customProperties={customProperties.filter(
           (property) => property.objectType === "DEAL",
         )}

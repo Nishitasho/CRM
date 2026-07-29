@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { apiError } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canEditRecord } from "@/lib/crm";
+import { syncDealBillingStage } from "@/lib/deal-billing";
 import { validateDealLineItemCustomFields } from "@/lib/product-properties";
 import { prisma } from "@/lib/prisma";
 import { dealLineItemSchema } from "@/lib/validation";
@@ -69,34 +70,47 @@ export async function PATCH(request: Request, { params }: Params) {
         { message: customFields.message },
         { status: 400 },
       );
-    const item = await prisma.dealLineItem.update({
-      where: { id },
-      data: {
-        productId: input.productId ?? null,
-        priceBookEntryId: input.priceBookEntryId ?? null,
-        businessUnitId: input.businessUnitId ?? current.deal.businessUnitId,
-        name: input.name,
-        quantity: input.quantity,
-        unitPriceAmount: input.unitPriceAmount,
-        initialFee: input.initialFee,
-        recurringFee: input.recurringFee,
-        revenueAmount: input.revenueAmount,
-        grossProfitAmount: input.grossProfitAmount,
-        expectedRevenueAmount: input.expectedRevenueAmount,
-        expectedGrossProfitAmount: input.expectedGrossProfitAmount,
-        collectedAmount: input.collectedAmount,
-        contractedAt: input.contractedAt,
-        collectedAt: input.collectedAt,
-        billingStartedAt: input.billingStartedAt,
-        cancelledAt: input.cancelledAt,
-        status: input.status,
-        lossReasonId: input.lossReasonId ?? null,
-        lossReasonNote: input.lossReasonNote,
-        lostAt: ["LOST", "CANCELLED", "NOT_SELECTED"].includes(input.status)
-          ? (current.lostAt ?? new Date())
-          : null,
-        customFields: customFields.value as Prisma.InputJsonValue,
-      },
+    const status =
+      input.status === "WON" && input.billingStartedAt
+        ? ("BILLED" as const)
+        : input.status;
+    const item = await prisma.$transaction(async (tx) => {
+      const updated = await tx.dealLineItem.update({
+        where: { id },
+        data: {
+          productId: input.productId ?? null,
+          priceBookEntryId: input.priceBookEntryId ?? null,
+          businessUnitId: input.businessUnitId ?? current.deal.businessUnitId,
+          name: input.name,
+          quantity: input.quantity,
+          unitPriceAmount: input.unitPriceAmount,
+          initialFee: input.initialFee,
+          recurringFee: input.recurringFee,
+          revenueAmount: input.revenueAmount,
+          grossProfitAmount: input.grossProfitAmount,
+          expectedRevenueAmount: input.expectedRevenueAmount,
+          expectedGrossProfitAmount: input.expectedGrossProfitAmount,
+          collectedAmount: input.collectedAmount,
+          meetingAt: input.meetingAt,
+          contractedAt: input.contractedAt,
+          collectedAt: input.collectedAt,
+          billingStartedAt: input.billingStartedAt,
+          cancelledAt: input.cancelledAt,
+          status,
+          lossReasonId: input.lossReasonId ?? null,
+          lossReasonNote: input.lossReasonNote,
+          lostAt: ["LOST", "CANCELLED", "NOT_SELECTED"].includes(status)
+            ? (current.lostAt ?? new Date())
+            : null,
+          customFields: customFields.value as Prisma.InputJsonValue,
+        },
+      });
+      await syncDealBillingStage(tx, {
+        organizationId: context.organization.id,
+        dealId: current.dealId,
+        actorUserId: context.user.id,
+      });
+      return updated;
     });
     return NextResponse.json({ item });
   } catch (error) {

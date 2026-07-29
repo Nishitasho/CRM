@@ -7,6 +7,7 @@ import {
   crmFormSchema,
   customPropertySchema,
   dealSchema,
+  dealStageSchema,
   emailLogSchema,
   meetingBookingSchema,
   pipelineStageSchema,
@@ -68,6 +69,23 @@ describe("CRM validation", () => {
         sortOrder: 1,
       }),
     ).toThrow();
+  });
+
+  it("accepts stage transition property values for bulk missing-field save", () => {
+    const result = dealStageSchema.parse({
+      stageId: "00000000-0000-4000-8000-000000000001",
+      propertyValues: {
+        "customFields.appointmentAcquiredDate": "2026-06-25",
+        forecastCategoryId: "00000000-0000-4000-8000-000000000002",
+        "participants.closerUserId": "00000000-0000-4000-8000-000000000003",
+      },
+    });
+
+    expect(result.propertyValues).toMatchObject({
+      "customFields.appointmentAcquiredDate": "2026-06-25",
+      forecastCategoryId: "00000000-0000-4000-8000-000000000002",
+      "participants.closerUserId": "00000000-0000-4000-8000-000000000003",
+    });
   });
 
   it("accepts custom properties and saved search views", () => {

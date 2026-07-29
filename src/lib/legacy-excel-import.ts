@@ -2,7 +2,6 @@ import { createHash } from "crypto";
 import {
   ActivityType,
   DealStatus,
-  DeliveryProjectStatus,
   Prisma,
   StageType,
   TaskPriority,
@@ -11,6 +10,14 @@ import {
   WorkFunction,
 } from "@prisma/client";
 import { prisma } from "./prisma";
+import {
+  canonicalSpreadsheetDeliveryStageName,
+  dealStatusForSpreadsheetStage,
+  deliveryProjectStatusForStageName,
+  salesStagesForBusinessUnit,
+  spreadsheetDeliveryStages,
+  spreadsheetSalesStageByName,
+} from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
 export type LegacyExcelFileType =
@@ -170,7 +177,12 @@ export type LegacyCrossFileMatch = {
 };
 
 export type LegacyCustomPropertyPlan = {
-  objectType: "COMPANY" | "CONTACT" | "DEAL" | "DEAL_LINE_ITEM" | "DELIVERY_PROJECT";
+  objectType:
+    | "COMPANY"
+    | "CONTACT"
+    | "DEAL"
+    | "DEAL_LINE_ITEM"
+    | "DELIVERY_PROJECT";
   name: string;
   label: string;
   fieldType: "TEXT" | "NUMBER" | "DATE";
@@ -242,6 +254,8 @@ export type LegacyExcelApplyTargets = {
   deals: boolean;
   dealLineItems: boolean;
   deliveryProjects: boolean;
+  autoDeliveryProjects: boolean;
+  reviewDeliveryProjects: boolean;
   unresolvedDeliveryProjects: boolean;
   activities: boolean;
   dailyMetrics: boolean;
@@ -254,6 +268,8 @@ export const defaultLegacyExcelApplyTargets: LegacyExcelApplyTargets = {
   deals: true,
   dealLineItems: true,
   deliveryProjects: true,
+  autoDeliveryProjects: true,
+  reviewDeliveryProjects: false,
   unresolvedDeliveryProjects: false,
   activities: true,
   dailyMetrics: false,
@@ -271,7 +287,22 @@ export type LegacyExcelWorkbookInput = {
 export function normalizeApplyTargets(
   input?: Partial<LegacyExcelApplyTargets> | null,
 ): LegacyExcelApplyTargets {
-  return { ...defaultLegacyExcelApplyTargets, ...(input ?? {}) };
+  const provided = input ?? {};
+  const targets = { ...defaultLegacyExcelApplyTargets, ...provided };
+  if (
+    provided.deliveryProjects === false &&
+    provided.autoDeliveryProjects === undefined &&
+    provided.reviewDeliveryProjects === undefined
+  ) {
+    targets.autoDeliveryProjects = false;
+    targets.reviewDeliveryProjects = false;
+    targets.unresolvedDeliveryProjects = false;
+  }
+  targets.deliveryProjects =
+    targets.autoDeliveryProjects ||
+    targets.reviewDeliveryProjects ||
+    targets.unresolvedDeliveryProjects;
+  return targets;
 }
 
 export function getLegacyExcelUnresolvedDeliveryProjectConfirmText() {
@@ -313,7 +344,7 @@ export function getLegacyExcelApplyPlan(
       const manual = manualMatches?.[candidate.id];
       if (manual?.decision === "IGNORE") continue;
       if (manual?.progressCandidateId) {
-        reviewDeliveryProjects += 1;
+        if (targets.reviewDeliveryProjects) reviewDeliveryProjects += 1;
         continue;
       }
       if (manual?.decision === "UNRESOLVED") {
@@ -323,11 +354,14 @@ export function getLegacyExcelApplyPlan(
       if (match?.decision === "IGNORE") {
         continue;
       }
-      if (match?.decision === "AUTO") {
+      if (match?.decision === "AUTO" && targets.autoDeliveryProjects) {
         autoDeliveryProjects += 1;
         continue;
       }
-      if (match?.decision === "UNRESOLVED" && targets.unresolvedDeliveryProjects) {
+      if (
+        match?.decision === "UNRESOLVED" &&
+        targets.unresolvedDeliveryProjects
+      ) {
         unresolvedDeliveryProjects += 1;
       }
     }
@@ -339,7 +373,9 @@ export function getLegacyExcelApplyPlan(
     companies: targets.companiesContacts ? dryRun.totals.companyCandidates : 0,
     contacts: targets.companiesContacts ? dryRun.totals.contactCandidates : 0,
     deals: targets.deals ? dryRun.totals.progressDealCandidates : 0,
-    dealLineItems: targets.dealLineItems ? dryRun.totals.dealLineItemCandidates : 0,
+    dealLineItems: targets.dealLineItems
+      ? dryRun.totals.dealLineItemCandidates
+      : 0,
     activities: targets.activities
       ? (targets.deals ? dryRun.totals.progressDealCandidates : 0) +
         deliveryProjectActivities
@@ -387,7 +423,10 @@ const CUSTOM_PROPERTY_TARGETS: Array<{
   objectType: LegacyCustomPropertyPlan["objectType"];
   headers: string[];
 }> = [
-  { objectType: "COMPANY", headers: ["業種", "営業エリア", "店舗数", "住所", "郵便番号"] },
+  {
+    objectType: "COMPANY",
+    headers: ["業種", "営業エリア", "店舗数", "住所", "郵便番号"],
+  },
   { objectType: "CONTACT", headers: ["役職", "フリガナ", "携帯", "メール"] },
   {
     objectType: "DEAL",
@@ -504,149 +543,172 @@ function analyzeLegacyExcelParsedWorkbooks(
               sheetName: `${workbook.sourceName} / ${rawSheet.sheetName}`,
             }
           : rawSheet;
-    const detectedType = detectLegacySheetType(rawSheet.sheetName);
-    const type =
-      hasAuthoritativeHpSheets &&
-      detectedType === "hp_delivery_projects" &&
-      !AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(rawSheet.sheetName))
-        ? "ignored"
-        : detectedType;
-    const selected = selectedSheets
-      ? selectedSheets.has(sheet.sheetName) || selectedSheets.has(rawSheet.sheetName)
-      : type !== "ignored";
-    const parsed = selected ? parseMatrixRows(sheet, type) : null;
-    const dataRows = parsed?.rows.length ?? 0;
-    sheetSummaries.push({
-      sheetName: sheet.sheetName,
-      type,
-      headerRowNumber: parsed?.headerRowNumber ?? null,
-      dataRows,
-      selected,
-    });
-    if (!selected || type === "ignored") continue;
+      const detectedType = detectLegacySheetType(rawSheet.sheetName);
+      const type =
+        hasAuthoritativeHpSheets &&
+        detectedType === "hp_delivery_projects" &&
+        !AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(rawSheet.sheetName))
+          ? "ignored"
+          : detectedType;
+      const selected = selectedSheets
+        ? selectedSheets.has(sheet.sheetName) ||
+          selectedSheets.has(rawSheet.sheetName)
+        : type !== "ignored";
+      const parsed = selected ? parseMatrixRows(sheet, type) : null;
+      const dataRows = parsed?.rows.length ?? 0;
+      sheetSummaries.push({
+        sheetName: sheet.sheetName,
+        type,
+        headerRowNumber: parsed?.headerRowNumber ?? null,
+        dataRows,
+        selected,
+      });
+      if (!selected || type === "ignored") continue;
 
-    if (type === "progress_deals") {
-      for (const parsedRow of parsed?.rows ?? []) {
-        const candidate = toProgressDealCandidate(
-          parsedRow,
-          workbook.sourceName,
-          workbook.workbookFingerprint,
-        );
-        if (!candidate.companyName) {
-          missingRequiredRows += 1;
-          skippedRows += 1;
-          continue;
-        }
-        progressCandidates.push(candidate);
-        companyKeys.add(candidate.normalized.normalizedCompanyName || candidate.companyName);
-        if (candidate.contactName) {
-          contactKeys.add(
-            `${candidate.normalized.normalizedCompanyName}:${candidate.normalized.normalizedContactName}`,
+      if (type === "progress_deals") {
+        for (const parsedRow of parsed?.rows ?? []) {
+          const candidate = toProgressDealCandidate(
+            parsedRow,
+            workbook.sourceName,
+            workbook.workbookFingerprint,
           );
-        }
-        if (candidate.productName) {
-          lineItemKeys.add(`${candidate.id}:${candidate.normalized.normalizedProductName}`);
-          if (!isKnownProduct(candidate.productName)) unknownProductNames.add(candidate.productName);
-        }
-        if (candidate.stage.label === "不明") unknownProgressValues.add(candidate.progress);
-        amountErrors += countAmountErrors(candidate.raw);
-        if (sampleRows.length < 12) {
-          sampleRows.push({
-            kind: "progress",
-            sheetName: candidate.sheetName,
-            rowNumber: candidate.rowNumber,
-            companyName: candidate.companyName,
-            dealName: candidate.dealName,
-            progress: candidate.progress,
-            productName: candidate.productName,
-          });
-        }
-      }
-      continue;
-    }
-
-    if (type === "hp_delivery_projects") {
-      for (const parsedRow of parsed?.rows ?? []) {
-        const candidate = toHpProjectCandidate(
-          parsedRow,
-          workbook.sourceName,
-          workbook.workbookFingerprint,
-        );
-        if (!candidate.companyName) {
-          missingRequiredRows += 1;
-          skippedRows += 1;
-          continue;
-        }
-        const supplementalNote = hpSupplementalNotes.get(
-          candidate.normalized.normalizedProjectName,
-        );
-        if (supplementalNote) {
-          candidate.memo = joinLegacyText(candidate.memo, supplementalNote);
-        }
-        hpProjectCandidates.push(candidate);
-        companyKeys.add(candidate.normalized.normalizedCompanyName || candidate.companyName);
-        if (candidate.contactName) {
-          contactKeys.add(
-            `${candidate.normalized.normalizedCompanyName}:${candidate.normalized.normalizedContactName}`,
+          if (!candidate.companyName) {
+            missingRequiredRows += 1;
+            skippedRows += 1;
+            continue;
+          }
+          progressCandidates.push(candidate);
+          companyKeys.add(
+            candidate.normalized.normalizedCompanyName || candidate.companyName,
           );
+          if (candidate.contactName) {
+            contactKeys.add(
+              `${candidate.normalized.normalizedCompanyName}:${candidate.normalized.normalizedContactName}`,
+            );
+          }
+          if (candidate.productName) {
+            lineItemKeys.add(
+              `${candidate.id}:${candidate.normalized.normalizedProductName}`,
+            );
+            if (!isKnownProduct(candidate.productName))
+              unknownProductNames.add(candidate.productName);
+          }
+          if (candidate.stage.label === "不明")
+            unknownProgressValues.add(candidate.progress);
+          amountErrors += countAmountErrors(candidate.raw);
+          if (sampleRows.length < 12) {
+            sampleRows.push({
+              kind: "progress",
+              sheetName: candidate.sheetName,
+              rowNumber: candidate.rowNumber,
+              companyName: candidate.companyName,
+              dealName: candidate.dealName,
+              progress: candidate.progress,
+              productName: candidate.productName,
+            });
+          }
         }
-        if (candidate.productName && !isKnownProduct(candidate.productName)) {
-          unknownProductNames.add(candidate.productName);
-        }
-        if (sampleRows.length < 12) {
-          sampleRows.push({
-            kind: "delivery_project",
-            sheetName: candidate.sheetName,
-            rowNumber: candidate.rowNumber,
-            projectName: candidate.projectName,
-            companyName: candidate.companyName,
-            progress: candidate.progress,
-          });
-        }
+        continue;
       }
-      continue;
-    }
 
-    if (type === "is_daily_metrics") {
-      const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
-        toDailyMetricCandidates(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
-      );
-      dailyMetricCandidates.push(...candidates);
-      dailyMetricRows += candidates.length || dataRows;
-    }
-    if (type === "monthly_kpi_targets") {
-      const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
-        toKpiTargetCandidates(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
-      );
-      kpiTargetCandidates.push(...candidates);
-      kpiTargetRows += candidates.length || dataRows;
-    }
-    if (type === "price_book") {
-      const candidates = (parsed?.rows ?? [])
-        .map((parsedRow) =>
-          toPriceBookCandidate(parsedRow, workbook.sourceName, workbook.workbookFingerprint),
-        )
-        .filter((candidate) => candidate.productName);
-      priceBookCandidates.push(...candidates);
-      priceBookRows += candidates.length || dataRows;
+      if (type === "hp_delivery_projects") {
+        for (const parsedRow of parsed?.rows ?? []) {
+          const candidate = toHpProjectCandidate(
+            parsedRow,
+            workbook.sourceName,
+            workbook.workbookFingerprint,
+          );
+          if (!candidate.companyName) {
+            missingRequiredRows += 1;
+            skippedRows += 1;
+            continue;
+          }
+          const supplementalNote = hpSupplementalNotes.get(
+            candidate.normalized.normalizedProjectName,
+          );
+          if (supplementalNote) {
+            candidate.memo = joinLegacyText(candidate.memo, supplementalNote);
+          }
+          hpProjectCandidates.push(candidate);
+          companyKeys.add(
+            candidate.normalized.normalizedCompanyName || candidate.companyName,
+          );
+          if (candidate.contactName) {
+            contactKeys.add(
+              `${candidate.normalized.normalizedCompanyName}:${candidate.normalized.normalizedContactName}`,
+            );
+          }
+          if (candidate.productName && !isKnownProduct(candidate.productName)) {
+            unknownProductNames.add(candidate.productName);
+          }
+          if (sampleRows.length < 12) {
+            sampleRows.push({
+              kind: "delivery_project",
+              sheetName: candidate.sheetName,
+              rowNumber: candidate.rowNumber,
+              projectName: candidate.projectName,
+              companyName: candidate.companyName,
+              progress: candidate.progress,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (type === "is_daily_metrics") {
+        const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
+          toDailyMetricCandidates(
+            parsedRow,
+            workbook.sourceName,
+            workbook.workbookFingerprint,
+          ),
+        );
+        dailyMetricCandidates.push(...candidates);
+        dailyMetricRows += candidates.length || dataRows;
+      }
+      if (type === "monthly_kpi_targets") {
+        const candidates = (parsed?.rows ?? []).flatMap((parsedRow) =>
+          toKpiTargetCandidates(
+            parsedRow,
+            workbook.sourceName,
+            workbook.workbookFingerprint,
+          ),
+        );
+        kpiTargetCandidates.push(...candidates);
+        kpiTargetRows += candidates.length || dataRows;
+      }
+      if (type === "price_book") {
+        const candidates = (parsed?.rows ?? [])
+          .map((parsedRow) =>
+            toPriceBookCandidate(
+              parsedRow,
+              workbook.sourceName,
+              workbook.workbookFingerprint,
+            ),
+          )
+          .filter((candidate) => candidate.productName);
+        priceBookCandidates.push(...candidates);
+        priceBookRows += candidates.length || dataRows;
+      }
     }
   }
-  }
 
-  const deduplicatedHpProjects = deduplicateHpProjectCandidates(hpProjectCandidates);
-  hpProjectCandidates.splice(0, hpProjectCandidates.length, ...deduplicatedHpProjects);
+  const deduplicatedHpProjects =
+    deduplicateHpProjectCandidates(hpProjectCandidates);
+  hpProjectCandidates.splice(
+    0,
+    hpProjectCandidates.length,
+    ...deduplicatedHpProjects,
+  );
   invalidDates = [...progressCandidates, ...hpProjectCandidates].reduce(
     (count, candidate) => count + countInvalidDates(candidate.raw),
     0,
   );
 
-  const crossFileMatches = matchLegacyProjects(
-    hpProjectCandidates,
-    [
-      ...progressCandidates,
-      ...(options.existingDealCandidates ?? []),
-    ],
-  );
+  const crossFileMatches = matchLegacyProjects(hpProjectCandidates, [
+    ...progressCandidates,
+    ...(options.existingDealCandidates ?? []),
+  ]);
   const customPropertyPlan = buildCustomPropertyPlan([
     ...progressCandidates.map((candidate) => candidate.raw),
     ...hpProjectCandidates.map((candidate) => candidate.raw),
@@ -659,7 +721,9 @@ function analyzeLegacyExcelParsedWorkbooks(
     );
   }
   if (hpProjectCandidates.length === 0 && progressCandidates.length > 0) {
-    warnings.push("進捗管理シートのみが検出されました。CS案件とのクロスファイル紐付けは未実行です。");
+    warnings.push(
+      "進捗管理シートのみが検出されました。CS案件とのクロスファイル紐付けは未実行です。",
+    );
   }
 
   return {
@@ -669,7 +733,12 @@ function analyzeLegacyExcelParsedWorkbooks(
     fileType,
     sheets: sheetSummaries,
     totals: {
-      readRows: progressCandidates.length + hpProjectCandidates.length + dailyMetricRows + kpiTargetRows + priceBookRows,
+      readRows:
+        progressCandidates.length +
+        hpProjectCandidates.length +
+        dailyMetricRows +
+        kpiTargetRows +
+        priceBookRows,
       progressDealCandidates: progressCandidates.length,
       hpDeliveryProjectCandidates: hpProjectCandidates.length,
       companyCandidates: companyKeys.size,
@@ -678,11 +747,21 @@ function analyzeLegacyExcelParsedWorkbooks(
       dailyMetricRows,
       kpiTargetRows,
       priceBookRows,
-      autoLinkedProjects: crossFileMatches.filter((match) => match.decision === "AUTO").length,
-      reviewLinkedProjects: crossFileMatches.filter((match) => match.decision === "REVIEW").length,
-      unresolvedProjects: crossFileMatches.filter((match) => match.decision === "UNRESOLVED").length,
-      unknownProgressValues: Array.from(unknownProgressValues).filter(Boolean).sort(),
-      unknownProductNames: Array.from(unknownProductNames).filter(Boolean).sort(),
+      autoLinkedProjects: crossFileMatches.filter(
+        (match) => match.decision === "AUTO",
+      ).length,
+      reviewLinkedProjects: crossFileMatches.filter(
+        (match) => match.decision === "REVIEW",
+      ).length,
+      unresolvedProjects: crossFileMatches.filter(
+        (match) => match.decision === "UNRESOLVED",
+      ).length,
+      unknownProgressValues: Array.from(unknownProgressValues)
+        .filter(Boolean)
+        .sort(),
+      unknownProductNames: Array.from(unknownProductNames)
+        .filter(Boolean)
+        .sort(),
       invalidDates,
       amountErrors,
       missingRequiredRows,
@@ -702,7 +781,8 @@ function analyzeLegacyExcelParsedWorkbooks(
 
 export function detectLegacySheetType(sheetName: string): LegacySheetType {
   if (isExcludedLegacyBusinessSheet(sheetName)) return "ignored";
-  if (/^2025年$/.test(sourceSheetTitle(sheetName))) return "hp_delivery_projects";
+  if (/^2025年$/.test(sourceSheetTitle(sheetName)))
+    return "hp_delivery_projects";
   if (PROGRESS_SHEET_PATTERN.test(sheetName)) return "progress_deals";
   if (HP_SHEET_PATTERN.test(sheetName)) {
     if (/制作定義/.test(sheetName)) return "production_definition";
@@ -726,11 +806,15 @@ function sourceSheetTitle(sheetName: string) {
 
 function collectHpSupplementalNotes(sheets: ParsedWorkbookSheet[]) {
   const notes = new Map<string, string>();
-  for (const sheet of sheets.filter((item) => item.sheetName === "FSからの共有")) {
+  for (const sheet of sheets.filter(
+    (item) => item.sheetName === "FSからの共有",
+  )) {
     const headerIndex = findHeaderRow(sheet.rows, ["案件", "備考"]);
     if (headerIndex === -1) continue;
     const headers = uniqueHeaders(
-      sheet.rows[headerIndex].map((header, index) => header || `列${index + 1}`),
+      sheet.rows[headerIndex].map(
+        (header, index) => header || `列${index + 1}`,
+      ),
     );
     for (const row of sheet.rows.slice(headerIndex + 1)) {
       const values = rowToObject(headers, row);
@@ -744,13 +828,17 @@ function collectHpSupplementalNotes(sheets: ParsedWorkbookSheet[]) {
   return notes;
 }
 
-function deduplicateHpProjectCandidates(candidates: HpDeliveryProjectCandidate[]) {
+function deduplicateHpProjectCandidates(
+  candidates: HpDeliveryProjectCandidate[],
+) {
   const result: HpDeliveryProjectCandidate[] = [];
   const firstByProject = new Map<string, number>();
 
   for (const candidate of candidates) {
     const projectKey = candidate.normalized.normalizedProjectName;
-    const existingIndex = projectKey ? firstByProject.get(projectKey) : undefined;
+    const existingIndex = projectKey
+      ? firstByProject.get(projectKey)
+      : undefined;
     if (existingIndex === undefined) {
       firstByProject.set(projectKey, result.length);
       result.push(candidate);
@@ -758,14 +846,18 @@ function deduplicateHpProjectCandidates(candidates: HpDeliveryProjectCandidate[]
     }
 
     const existing = result[existingIndex];
-    if (sourceSheetTitle(existing.sheetName) === sourceSheetTitle(candidate.sheetName)) {
+    if (
+      sourceSheetTitle(existing.sheetName) ===
+      sourceSheetTitle(candidate.sheetName)
+    ) {
       result.push(candidate);
       continue;
     }
 
-    const primary = hpSourcePriority(candidate) > hpSourcePriority(existing)
-      ? candidate
-      : existing;
+    const primary =
+      hpSourcePriority(candidate) > hpSourcePriority(existing)
+        ? candidate
+        : existing;
     const secondary = primary === candidate ? existing : candidate;
     result[existingIndex] = mergeHpProjectCandidate(primary, secondary);
   }
@@ -801,14 +893,18 @@ function mergeHpProjectCandidate(
     normalized: {
       ...primary.normalized,
       normalizedPhone:
-        primary.normalized.normalizedPhone || secondary.normalized.normalizedPhone,
+        primary.normalized.normalizedPhone ||
+        secondary.normalized.normalizedPhone,
       normalizedDomain:
-        primary.normalized.normalizedDomain || secondary.normalized.normalizedDomain,
+        primary.normalized.normalizedDomain ||
+        secondary.normalized.normalizedDomain,
       normalizedContactName:
-        primary.normalized.normalizedContactName || secondary.normalized.normalizedContactName,
+        primary.normalized.normalizedContactName ||
+        secondary.normalized.normalizedContactName,
       ownerName: primary.normalized.ownerName || secondary.normalized.ownerName,
       salesOwnerName:
-        primary.normalized.salesOwnerName || secondary.normalized.salesOwnerName,
+        primary.normalized.salesOwnerName ||
+        secondary.normalized.salesOwnerName,
     },
     contactName: primary.contactName || secondary.contactName,
     phone: primary.phone || secondary.phone,
@@ -834,10 +930,12 @@ function buildHpNarrativeMemo(values: Record<string, string>) {
     const value = cleanLegacyCellValue(rawValue);
     if (!value) continue;
     const normalizedColumn = normalizeHeader(columnName);
-    const isNarrative = /備考|メモ|内容|ヒアリングシート|その他|こだわり|ネクスト|修正/.test(
-      normalizedColumn,
-    );
-    const isDateNote = normalizedColumn.includes("日") && !parseLegacyDate(value);
+    const isNarrative =
+      /備考|メモ|内容|ヒアリングシート|その他|こだわり|ネクスト|修正/.test(
+        normalizedColumn,
+      );
+    const isDateNote =
+      normalizedColumn.includes("日") && !parseLegacyDate(value);
     if (!isNarrative && !isDateNote) continue;
     const label = columnName.replace(/\s+/g, "");
     notes.push(`【${label}】${value}`);
@@ -856,7 +954,10 @@ export function normalizeLegacyName(value: string) {
     .normalize("NFKC")
     .toLowerCase()
     .replace(/\(株\)|（株）|㈱/g, "")
-    .replace(/株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|社団法人|医療法人|学校法人/g, "")
+    .replace(
+      /株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|社団法人|医療法人|学校法人/g,
+      "",
+    )
     .replace(/[【】「」『』（）()[\]{}<>＜＞]/g, "")
     .replace(/[・･,，.。:：;；/／\\｜|_＿\-‐‑‒–—―ー~〜～'"`’‘“”\s]/g, "")
     .trim();
@@ -870,7 +971,9 @@ export function normalizeDomain(value: string) {
   const input = value.trim().normalize("NFKC").toLowerCase();
   if (!input) return "";
   try {
-    const url = new URL(/^https?:\/\//i.test(input) ? input : `https://${input}`);
+    const url = new URL(
+      /^https?:\/\//i.test(input) ? input : `https://${input}`,
+    );
     return url.hostname.replace(/^www\./, "");
   } catch {
     return input
@@ -888,10 +991,32 @@ export function normalizeProductName(value: string) {
 
 export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
   const value = progress.trim();
+  const spreadsheetStage = spreadsheetSalesStageByName(value);
+  if (spreadsheetStage) {
+    const status = dealStatusForSpreadsheetStage(
+      spreadsheetStage.name,
+      spreadsheetStage.stageType,
+    );
+    return {
+      label: value,
+      stageName: value,
+      status,
+      stageType: spreadsheetStage.stageType,
+      probability: spreadsheetStage.probability,
+      closeKind:
+        status === DealStatus.WON
+          ? "won"
+          : status === DealStatus.CANCELLED
+            ? "cancelled"
+            : status === DealStatus.LOST
+              ? "lost"
+              : null,
+    };
+  }
   if (/^AA課金/.test(value)) {
     return {
       label: value,
-      stageName: "課金済み",
+      stageName: value,
       status: DealStatus.WON,
       stageType: StageType.WON,
       probability: 100,
@@ -901,21 +1026,24 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
   if (/^A受注|^Aエントリー済み/.test(value)) {
     return {
       label: value,
-      stageName: "受注",
+      stageName: value,
       status: DealStatus.WON,
       stageType: StageType.WON,
       probability: 100,
       closeKind: "won",
     };
   }
-  if (/^B本人確認/.test(value)) {
-    return openStage(value, "本人確認", 80);
+  if (/^B本人確認|^B素材回収待ち|^B商談済み回答待ち/.test(value)) {
+    return openStage(value, value, 85);
   }
   if (/^[BC]商談済み回答待ち/.test(value)) {
-    return openStage(value, "回答待ち", 70);
+    return openStage(value, value, value.startsWith("B") ? 85 : 70);
   }
   if (/^D商談済み回答待ち/.test(value)) {
-    return openStage(value, "回答待ち低", 45);
+    return openStage(value, value, 55);
+  }
+  if (/^E2/.test(value)) {
+    return openStage(value, value, 40);
   }
   if (/^B素材回収待ち/.test(value)) {
     return openStage(value, "素材回収待ち", 70);
@@ -927,10 +1055,16 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     return openStage(value, "商談予定", 35);
   }
   if (/^E商談/.test(value)) {
-    return openStage(value, "商談予定", 35);
+    return openStage(value, value, 30);
   }
   if (/^F日程変更中/.test(value)) {
-    return openStage(value, "日程変更中", 25);
+    return openStage(value, value, 15);
+  }
+  if (/^長期追客リスト/.test(value)) {
+    return openStage(value, value, 20);
+  }
+  if (/^前確[（(].*NG[）)]|^前確[（(]営業失注[）)]|^無効商談/.test(value)) {
+    return lostStage(value, value);
   }
   if (/^長期追客リスト/.test(value)) {
     return openStage(value, "長期追客", 10);
@@ -942,15 +1076,15 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     return lostStage(value, value);
   }
   if (/^XCアポ失注/.test(value)) {
-    return lostStage(value, "アポ失注");
+    return lostStage(value, value);
   }
   if (/^XAプレゼン失注|^XBプレゼン失注/.test(value)) {
-    return lostStage(value, "プレゼン失注");
+    return lostStage(value, value);
   }
   if (/^XAA受注キャンセル/.test(value)) {
     return {
       label: value,
-      stageName: "受注キャンセル",
+      stageName: value,
       status: DealStatus.CANCELLED,
       stageType: StageType.LOST,
       probability: 0,
@@ -967,7 +1101,11 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
   };
 }
 
-function openStage(label: string, stageName: string, probability: number): LegacyStageMapping {
+function openStage(
+  label: string,
+  stageName: string,
+  probability: number,
+): LegacyStageMapping {
   return {
     label,
     stageName,
@@ -998,11 +1136,17 @@ export function scoreLegacyProjectMatch(
   const projectCompanyExact = normalizeComparable(project.companyName);
   const dealCompanyExact = normalizeComparable(deal.companyName);
 
-  if (project.normalized.normalizedPhone && project.normalized.normalizedPhone === deal.normalized.normalizedPhone) {
+  if (
+    project.normalized.normalizedPhone &&
+    project.normalized.normalizedPhone === deal.normalized.normalizedPhone
+  ) {
     score += 80;
     reasons.push("phone");
   }
-  if (project.normalized.normalizedDomain && project.normalized.normalizedDomain === deal.normalized.normalizedDomain) {
+  if (
+    project.normalized.normalizedDomain &&
+    project.normalized.normalizedDomain === deal.normalized.normalizedDomain
+  ) {
     score += 80;
     reasons.push("domain");
   }
@@ -1011,27 +1155,34 @@ export function scoreLegacyProjectMatch(
     reasons.push("company_exact");
   } else if (
     project.normalized.normalizedCompanyName &&
-    project.normalized.normalizedCompanyName === deal.normalized.normalizedCompanyName
+    project.normalized.normalizedCompanyName ===
+      deal.normalized.normalizedCompanyName
   ) {
     score += 50;
     reasons.push("normalized_company_name");
   }
   const normalizedProjectName =
-    project.normalized.normalizedProjectName || project.normalized.normalizedCompanyName;
-  if (normalizedProjectName && normalizedProjectName === deal.normalized.normalizedDealName) {
+    project.normalized.normalizedProjectName ||
+    project.normalized.normalizedCompanyName;
+  if (
+    normalizedProjectName &&
+    normalizedProjectName === deal.normalized.normalizedDealName
+  ) {
     score += 45;
     reasons.push("normalized_deal_name");
   }
   if (
     project.normalized.normalizedContactName &&
-    project.normalized.normalizedContactName === deal.normalized.normalizedContactName
+    project.normalized.normalizedContactName ===
+      deal.normalized.normalizedContactName
   ) {
     score += 30;
     reasons.push("contact_name");
   }
   if (
     project.normalized.normalizedProductName &&
-    project.normalized.normalizedProductName === deal.normalized.normalizedProductName
+    project.normalized.normalizedProductName ===
+      deal.normalized.normalizedProductName
   ) {
     score += 25;
     reasons.push("product_name");
@@ -1091,7 +1242,8 @@ export function matchLegacyProjects(
     if (top) {
       if (top.score >= 85) {
         decision = second && second.score >= top.score - 5 ? "REVIEW" : "AUTO";
-        if (decision === "REVIEW") warnings.push("高スコア候補が複数あるため自動確定しません。");
+        if (decision === "REVIEW")
+          warnings.push("高スコア候補が複数あるため自動確定しません。");
       } else if (top.score >= 60) {
         decision = "REVIEW";
       }
@@ -1142,10 +1294,14 @@ export async function getExistingLegacyDealCandidates(
   const companyIds = new Set<string>();
   const contactIds = new Set<string>();
   for (const association of associations) {
-    if (association.sourceObjectType === "COMPANY") companyIds.add(association.sourceObjectId);
-    if (association.targetObjectType === "COMPANY") companyIds.add(association.targetObjectId);
-    if (association.sourceObjectType === "CONTACT") contactIds.add(association.sourceObjectId);
-    if (association.targetObjectType === "CONTACT") contactIds.add(association.targetObjectId);
+    if (association.sourceObjectType === "COMPANY")
+      companyIds.add(association.sourceObjectId);
+    if (association.targetObjectType === "COMPANY")
+      companyIds.add(association.targetObjectId);
+    if (association.sourceObjectType === "CONTACT")
+      contactIds.add(association.sourceObjectId);
+    if (association.targetObjectType === "CONTACT")
+      contactIds.add(association.targetObjectId);
   }
   const [companies, contacts] = await Promise.all([
     prisma.company.findMany({
@@ -1155,22 +1311,28 @@ export async function getExistingLegacyDealCandidates(
       where: { organizationId, id: { in: Array.from(contactIds) } },
     }),
   ]);
-  const companyById = new Map(companies.map((company) => [company.id, company]));
+  const companyById = new Map(
+    companies.map((company) => [company.id, company]),
+  );
   const contactById = new Map(contacts.map((contact) => [contact.id, contact]));
 
   return deals.map((deal) => {
     const linked = associations.filter(
       (association) =>
-        (association.sourceObjectType === "DEAL" && association.sourceObjectId === deal.id) ||
-        (association.targetObjectType === "DEAL" && association.targetObjectId === deal.id),
+        (association.sourceObjectType === "DEAL" &&
+          association.sourceObjectId === deal.id) ||
+        (association.targetObjectType === "DEAL" &&
+          association.targetObjectId === deal.id),
     );
     const companyAssociation = linked.find(
       (association) =>
-        association.sourceObjectType === "COMPANY" || association.targetObjectType === "COMPANY",
+        association.sourceObjectType === "COMPANY" ||
+        association.targetObjectType === "COMPANY",
     );
     const contactAssociation = linked.find(
       (association) =>
-        association.sourceObjectType === "CONTACT" || association.targetObjectType === "CONTACT",
+        association.sourceObjectType === "CONTACT" ||
+        association.targetObjectType === "CONTACT",
     );
     const companyId =
       companyAssociation?.sourceObjectType === "COMPANY"
@@ -1186,8 +1348,11 @@ export async function getExistingLegacyDealCandidates(
           : null;
     const company = companyId ? companyById.get(companyId) : null;
     const contact = contactId ? contactById.get(contactId) : null;
-    const productName = deal.lineItems[0]?.product?.name ?? deal.lineItems[0]?.name ?? "";
-    const contactName = contact ? [contact.lastName, contact.firstName].filter(Boolean).join(" ") : "";
+    const productName =
+      deal.lineItems[0]?.product?.name ?? deal.lineItems[0]?.name ?? "";
+    const contactName = contact
+      ? [contact.lastName, contact.firstName].filter(Boolean).join(" ")
+      : "";
     const normalized = buildNormalizedKeys({
       companyName: company?.name ?? deal.name,
       dealName: deal.name,
@@ -1197,10 +1362,18 @@ export async function getExistingLegacyDealCandidates(
       domain: company?.domain ?? company?.websiteUrl ?? "",
       productName,
       businessUnitName: deal.businessUnit?.name ?? "",
-      ownerName: deal.participants.find((item) => item.role === "APPOINTMENT_SETTER")?.snapshotUserName ?? "",
-      salesOwnerName: deal.participants.find((item) => item.role === "CLOSER")?.snapshotUserName ?? "",
+      ownerName:
+        deal.participants.find((item) => item.role === "APPOINTMENT_SETTER")
+          ?.snapshotUserName ?? "",
+      salesOwnerName:
+        deal.participants.find((item) => item.role === "CLOSER")
+          ?.snapshotUserName ?? "",
     });
-    const rowFingerprint = hashParts(["existing", deal.id, deal.updatedAt.toISOString()]);
+    const rowFingerprint = hashParts([
+      "existing",
+      deal.id,
+      deal.updatedAt.toISOString(),
+    ]);
     return {
       id: `existing:${deal.id}`,
       sourceKey: `existing:${deal.id}`,
@@ -1234,9 +1407,18 @@ export async function getExistingLegacyDealCandidates(
         stageName: "",
         status: deal.status,
         stageType:
-          deal.status === "WON" ? StageType.WON : deal.status === "LOST" ? StageType.LOST : StageType.OPEN,
+          deal.status === "WON"
+            ? StageType.WON
+            : deal.status === "LOST"
+              ? StageType.LOST
+              : StageType.OPEN,
         probability: deal.probability,
-        closeKind: deal.status === "WON" ? "won" : deal.status === "LOST" ? "lost" : null,
+        closeKind:
+          deal.status === "WON"
+            ? "won"
+            : deal.status === "LOST"
+              ? "lost"
+              : null,
       },
       isOwnerName: "",
       fsOwnerName: "",
@@ -1263,7 +1445,10 @@ export async function applyLegacyExcelImport(input: {
   const errors: Array<{ row: string; message: string }> = [];
 
   if (applyTargets.masters) {
-    await upsertLegacyCustomProperties(input.organizationId, input.dryRun.customPropertyPlan);
+    await upsertLegacyCustomProperties(
+      input.organizationId,
+      input.dryRun.customPropertyPlan,
+    );
   }
 
   if (applyTargets.masters) {
@@ -1344,35 +1529,43 @@ export async function applyLegacyExcelImport(input: {
     }
   }
 
-  if (applyTargets.deliveryProjects) for (const candidate of input.dryRun.hpProjectCandidates) {
-    const match = resolveProjectMatchForApply(
-      candidate.id,
-      input.dryRun.crossFileMatches,
-      applyTargets,
-      input.manualMatches,
-    );
-    if (!match) {
-      skipped += 1;
-      continue;
-    }
-    const linkedProgress = match?.progressCandidateId
-      ? progressResults.get(match.progressCandidateId)
-      : undefined;
-    try {
-      const result = await prisma.$transaction(async (tx) =>
-        applyHpProjectCandidate(tx, input, candidate, match, linkedProgress, applyTargets),
+  if (applyTargets.deliveryProjects)
+    for (const candidate of input.dryRun.hpProjectCandidates) {
+      const match = resolveProjectMatchForApply(
+        candidate.id,
+        input.dryRun.crossFileMatches,
+        applyTargets,
+        input.manualMatches,
       );
-      created += result.created;
-      updated += result.updated;
-      skipped += result.skipped;
-      warnings.push(...result.warnings);
-    } catch (error) {
-      errors.push({
-        row: `${candidate.sheetName}:${candidate.rowNumber}`,
-        message: error instanceof Error ? error.message : "不明なエラー",
-      });
+      if (!match) {
+        skipped += 1;
+        continue;
+      }
+      const linkedProgress = match?.progressCandidateId
+        ? progressResults.get(match.progressCandidateId)
+        : undefined;
+      try {
+        const result = await prisma.$transaction(async (tx) =>
+          applyHpProjectCandidate(
+            tx,
+            input,
+            candidate,
+            match,
+            linkedProgress,
+            applyTargets,
+          ),
+        );
+        created += result.created;
+        updated += result.updated;
+        skipped += result.skipped;
+        warnings.push(...result.warnings);
+      } catch (error) {
+        errors.push({
+          row: `${candidate.sheetName}:${candidate.rowNumber}`,
+          message: error instanceof Error ? error.message : "不明なエラー",
+        });
+      }
     }
-  }
 
   const status = errors.length > 0 ? "FAILED" : "COMPLETED";
   if (input.updateImportJob !== false) {
@@ -1417,12 +1610,15 @@ function parseMatrixRows(sheet: ParsedWorkbookSheet, type: LegacySheetType) {
       rows: [],
     };
   }
-  const headers = uniqueHeaders(sheet.rows[headerIndex].map((header, index) => header || `列${index + 1}`));
+  const headers = uniqueHeaders(
+    sheet.rows[headerIndex].map((header, index) => header || `列${index + 1}`),
+  );
   const rows = sheet.rows
     .slice(headerIndex + 1)
     .map((row, offset) => ({
       sheetName: sheet.sheetName,
-      rowNumber: sheet.rowNumbers[headerIndex + 1 + offset] ?? headerIndex + 2 + offset,
+      rowNumber:
+        sheet.rowNumbers[headerIndex + 1 + offset] ?? headerIndex + 2 + offset,
       values: rowToObject(headers, row),
     }))
     .filter((row) =>
@@ -1438,7 +1634,8 @@ function headerHintsForType(type: LegacySheetType) {
   if (type === "progress_deals") return ["案件", "進捗"];
   if (type === "hp_delivery_projects") return ["案件", "進捗"];
   if (type === "price_book") return ["商材", "価格"];
-  if (type === "is_daily_metrics" || type === "monthly_kpi_targets") return ["項目"];
+  if (type === "is_daily_metrics" || type === "monthly_kpi_targets")
+    return ["項目"];
   return ["案件"];
 }
 
@@ -1453,7 +1650,10 @@ function findHeaderRow(rows: string[][], required: string[]) {
 
 function rowToObject(headers: string[], row: string[]) {
   return Object.fromEntries(
-    headers.map((header, index) => [header || `列${index + 1}`, row[index]?.trim() ?? ""]),
+    headers.map((header, index) => [
+      header || `列${index + 1}`,
+      row[index]?.trim() ?? "",
+    ]),
   );
 }
 
@@ -1473,12 +1673,34 @@ function toProgressDealCandidate(
   workbookFingerprint: string,
 ): ProgressDealCandidate {
   const values = row.values;
-  const companyName = getValue(values, ["会社名", "案件名", "店舗名", "顧客名"]);
-  const dealName = getValue(values, ["商談名", "案件名"]) || `${companyName} 導入案件`;
-  const contactName = getValue(values, ["担当者名", "先方担当者", "代表者", "担当者"]);
+  const companyName = getValue(values, [
+    "会社名",
+    "案件名",
+    "店舗名",
+    "顧客名",
+  ]);
+  const dealName =
+    getValue(values, ["商談名", "案件名"]) || `${companyName} 導入案件`;
+  const contactName = getValue(values, [
+    "担当者名",
+    "先方担当者",
+    "代表者",
+    "担当者",
+  ]);
   const phone = getValue(values, ["電話番号", "TEL", "店舗電話", "携帯電話"]);
-  const domain = getValue(values, ["ドメイン", "URL", "Webサイト", "サイトURL", "HP"]);
-  const rawProductName = getValue(values, ["商材", "獲得商材", "商品", "プロダクト"]);
+  const domain = getValue(values, [
+    "ドメイン",
+    "URL",
+    "Webサイト",
+    "サイトURL",
+    "HP",
+  ]);
+  const rawProductName = getValue(values, [
+    "商材",
+    "獲得商材",
+    "商品",
+    "プロダクト",
+  ]);
   const productName = isExcelBlankDate(rawProductName) ? "" : rawProductName;
   const progress =
     getValue(values, [
@@ -1489,7 +1711,8 @@ function toProgressDealCandidate(
       "ステータス",
     ]) || "未分類";
   const businessUnitName =
-    getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, productName);
+    getValue(values, ["事業部"]) ||
+    inferBusinessUnitName(row.sheetName, productName);
   const isOwnerName = getValue(values, ["IS担当者", "アポ担当", "IS"]);
   const fsOwnerName = getValue(values, ["FS担当者", "営業担当", "FS", "担当"]);
   const rowFingerprint = hashJson(values);
@@ -1522,12 +1745,20 @@ function toProgressDealCandidate(
     domain,
     productName,
     businessUnitName,
-    appointmentAcquiredAt: parseLegacyDate(getValue(values, ["アポ獲得日", "獲得日"])),
-    meetingDate: parseLegacyDate(getValue(values, ["商談日", "商談実施日", "実施日"])),
+    appointmentAcquiredAt: parseLegacyDate(
+      getValue(values, ["アポ獲得日", "獲得日"]),
+    ),
+    meetingDate: parseLegacyDate(
+      getValue(values, ["商談日", "商談実施日", "実施日"]),
+    ),
     wonDate: parseLegacyDate(getValue(values, ["受注日", "契約日"])),
-    expectedCloseDate: parseLegacyDate(getValue(values, ["受注予定日", "クローズ日", "基本提案日"])),
+    expectedCloseDate: parseLegacyDate(
+      getValue(values, ["受注予定日", "クローズ日", "基本提案日"]),
+    ),
     amount: parseMoney(getValue(values, ["売上", "金額", "受注金額", "価格"])),
-    grossProfitAmount: parseMoney(getValue(values, ["粗利", "見込粗利", "確定粗利"])),
+    grossProfitAmount: parseMoney(
+      getValue(values, ["粗利", "見込粗利", "確定粗利"]),
+    ),
     initialFee: parseMoney(getValue(values, ["初期費用", "初期"])),
     recurringFee: parseMoney(getValue(values, ["月額費用", "月額"])),
     progress,
@@ -1543,16 +1774,40 @@ function toHpProjectCandidate(
   workbookFingerprint: string,
 ): HpDeliveryProjectCandidate {
   const values = row.values;
-  const projectName = getValue(values, ["制作案件名", "案件名", "プロジェクト名", "制作名"]);
-  const companyName = getValue(values, ["会社名", "店舗名", "顧客名"]) || projectName;
-  const contactName = getValue(values, ["担当者名", "先方担当者", "代表者", "担当者"]);
+  const projectName = getValue(values, [
+    "制作案件名",
+    "案件名",
+    "プロジェクト名",
+    "制作名",
+  ]);
+  const companyName =
+    getValue(values, ["会社名", "店舗名", "顧客名"]) || projectName;
+  const contactName = getValue(values, [
+    "担当者名",
+    "先方担当者",
+    "代表者",
+    "担当者",
+  ]);
   const phone = getValue(values, ["電話番号", "TEL", "店舗電話", "携帯電話"]);
-  const domain = getValue(values, ["ドメイン", "URL", "Webサイト", "サイトURL", "HP"]);
-  const productName = getValue(values, ["商材", "商品", "制作物", "プロダクト"]) || "HP";
+  const domain = getValue(values, [
+    "ドメイン",
+    "URL",
+    "Webサイト",
+    "サイトURL",
+    "HP",
+  ]);
+  const productName =
+    getValue(values, ["商材", "商品", "制作物", "プロダクト"]) || "HP";
   const progress = getValue(values, ["制作進捗", "進捗", "ステータス"]);
   const businessUnitName =
-    getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, productName);
-  const csOwnerName = getValue(values, ["CS担当", "制作担当", "担当", "制作者"]);
+    getValue(values, ["事業部"]) ||
+    inferBusinessUnitName(row.sheetName, productName);
+  const csOwnerName = getValue(values, [
+    "CS担当",
+    "制作担当",
+    "担当",
+    "制作者",
+  ]);
   const salesOwnerName = getValue(values, ["FS担当者", "営業担当", "FS"]);
   const rowFingerprint = hashJson(values);
   const normalized = buildNormalizedKeys({
@@ -1596,8 +1851,12 @@ function toHpProjectCandidate(
         "FS共有日",
       ]),
     ),
-    expectedPublishDate: parseLegacyDate(getValue(values, ["公開予定日", "納品予定日", "公開予定"])),
-    actualPublishDate: parseLegacyDate(getValue(values, ["公開日", "納品日", "公開済日"])),
+    expectedPublishDate: parseLegacyDate(
+      getValue(values, ["公開予定日", "納品予定日", "公開予定"]),
+    ),
+    actualPublishDate: parseLegacyDate(
+      getValue(values, ["公開日", "納品日", "公開済日"]),
+    ),
     nextAction: getValue(values, [
       "ネクスト内容",
       "修正内容",
@@ -1626,7 +1885,8 @@ function toDailyMetricCandidates(
   const metricLabel = getValue(values, ["項目", "指標", "KPI", "メトリクス"]);
   if (!metricLabel) return [];
   const businessUnitName =
-    getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, metricLabel);
+    getValue(values, ["事業部"]) ||
+    inferBusinessUnitName(row.sheetName, metricLabel);
   const userName = getValue(values, ["担当者", "氏名", "ユーザー", "営業担当"]);
   return Object.entries(values).flatMap(([header, value]) => {
     const targetDate = parseLegacyDate(header);
@@ -1672,7 +1932,8 @@ function toKpiTargetCandidates(
   const metricLabel = getValue(values, ["項目", "指標", "KPI", "メトリクス"]);
   if (!metricLabel) return [];
   const businessUnitName =
-    getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, metricLabel);
+    getValue(values, ["事業部"]) ||
+    inferBusinessUnitName(row.sheetName, metricLabel);
   const userName = getValue(values, ["担当者", "氏名", "ユーザー", "営業担当"]);
   return Object.entries(values).flatMap(([header, value]) => {
     const period = parseLegacyMonth(header);
@@ -1716,12 +1977,18 @@ function toPriceBookCandidate(
   workbookFingerprint: string,
 ): LegacyPriceBookCandidate {
   const values = row.values;
-  const productName = getValue(values, ["商材", "商品", "プロダクト", "サービス"]);
+  const productName = getValue(values, [
+    "商材",
+    "商品",
+    "プロダクト",
+    "サービス",
+  ]);
   const priceName =
     getValue(values, ["価格名", "明細名", "プラン", "メニュー"]) ||
     `${productName || "商品"} 標準価格`;
   const businessUnitName =
-    getValue(values, ["事業部"]) || inferBusinessUnitName(row.sheetName, productName);
+    getValue(values, ["事業部"]) ||
+    inferBusinessUnitName(row.sheetName, productName);
   const rowFingerprint = hashJson(values);
   return {
     id: `price:${hashParts([sourceName, workbookFingerprint, row.sheetName, String(row.rowNumber), rowFingerprint])}`,
@@ -1782,7 +2049,9 @@ function buildNormalizedKeys(input: {
 function getValue(row: Record<string, string>, labels: string[]) {
   for (const [key, rawValue] of Object.entries(row)) {
     const normalizedKey = normalizeHeader(key);
-    if (!labels.some((label) => normalizedKey.includes(normalizeHeader(label)))) {
+    if (
+      !labels.some((label) => normalizedKey.includes(normalizeHeader(label)))
+    ) {
       continue;
     }
     const value = cleanLegacyCellValue(rawValue);
@@ -1792,8 +2061,14 @@ function getValue(row: Record<string, string>, labels: string[]) {
 }
 
 export function cleanLegacyCellValue(value: string | null | undefined) {
-  const normalized = String(value ?? "").trim().normalize("NFKC");
-  if (!normalized || /^(?:TRUE|FALSE)$/i.test(normalized) || isExcelBlankDate(normalized)) {
+  const normalized = String(value ?? "")
+    .trim()
+    .normalize("NFKC");
+  if (
+    !normalized ||
+    /^(?:TRUE|FALSE)$/i.test(normalized) ||
+    isExcelBlankDate(normalized)
+  ) {
     return "";
   }
   return normalized;
@@ -1854,7 +2129,12 @@ function parseLegacyMonth(value: string | null | undefined) {
 }
 
 function monthRange(year: number, month: number) {
-  if (!Number.isFinite(year) || !Number.isFinite(month) || month < 1 || month > 12) {
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    month < 1 ||
+    month > 12
+  ) {
     return null;
   }
   const periodStart = `${year}-${String(month).padStart(2, "0")}-01`;
@@ -1902,7 +2182,11 @@ function countInvalidDates(row: Record<string, string>) {
 function countAmountErrors(row: Record<string, string>) {
   return Object.entries(row).filter(([key, value]) => {
     const normalized = normalizeHeader(key);
-    if (!["金額", "価格", "費用", "粗利", "売上"].some((label) => normalized.includes(label))) {
+    if (
+      !["金額", "価格", "費用", "粗利", "売上"].some((label) =>
+        normalized.includes(label),
+      )
+    ) {
       return false;
     }
     return value.trim() !== "" && parseMoney(value) === null;
@@ -1910,14 +2194,20 @@ function countAmountErrors(row: Record<string, string>) {
 }
 
 function inferBusinessUnitName(sheetName: string, productName: string) {
-  if (/HD|HP|ホームページ/i.test(sheetName) || /HP|ホームページ/i.test(productName)) return "HD事業部";
+  if (
+    /HD|HP|ホームページ/i.test(sheetName) ||
+    /HP|ホームページ/i.test(productName)
+  )
+    return "HD事業部";
   if (/第一/.test(sheetName)) return "第一事業部";
   if (/LL/i.test(sheetName)) return "LL事業部";
   if (/H2/i.test(sheetName)) return "H2事業部";
   return "";
 }
 
-function detectLegacyFileType(sheets: LegacyExcelDryRunResult["sheets"]): LegacyExcelFileType {
+function detectLegacyFileType(
+  sheets: LegacyExcelDryRunResult["sheets"],
+): LegacyExcelFileType {
   const hasProgress = sheets.some((sheet) => sheet.type === "progress_deals");
   const hasHp = sheets.some((sheet) => sheet.type === "hp_delivery_projects");
   if (hasProgress && hasHp) return "MIXED";
@@ -1946,7 +2236,11 @@ function buildCustomPropertyPlan(rows: Array<Record<string, string>>) {
   const headers = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   for (const target of CUSTOM_PROPERTY_TARGETS) {
     for (const header of headers) {
-      if (!target.headers.some((candidate) => normalizeHeader(header).includes(normalizeHeader(candidate)))) {
+      if (
+        !target.headers.some((candidate) =>
+          normalizeHeader(header).includes(normalizeHeader(candidate)),
+        )
+      ) {
         continue;
       }
       const name = `legacy_${hashParts([target.objectType, header]).slice(0, 24)}`;
@@ -1962,10 +2256,16 @@ function buildCustomPropertyPlan(rows: Array<Record<string, string>>) {
   return Array.from(plans.values());
 }
 
-function inferCustomFieldType(header: string): LegacyCustomPropertyPlan["fieldType"] {
+function inferCustomFieldType(
+  header: string,
+): LegacyCustomPropertyPlan["fieldType"] {
   const normalized = normalizeHeader(header);
   if (normalized.includes("日")) return "DATE";
-  if (["金額", "価格", "費用", "粗利", "売上", "数"].some((label) => normalized.includes(label))) {
+  if (
+    ["金額", "価格", "費用", "粗利", "売上", "数"].some((label) =>
+      normalized.includes(label),
+    )
+  ) {
     return "NUMBER";
   }
   return "TEXT";
@@ -2030,10 +2330,24 @@ async function applyPriceBookCandidate(
   },
   candidate: LegacyPriceBookCandidate,
 ) {
-  const existing = await findLegacyLinkTarget(tx, input, candidate, "PRICE_BOOK_ENTRY");
+  const existing = await findLegacyLinkTarget(
+    tx,
+    input,
+    candidate,
+    "PRICE_BOOK_ENTRY",
+  );
   if (existing) return { created: 0, updated: 0, skipped: 1 };
-  const businessUnit = await ensureBusinessUnit(tx, input.organizationId, candidate.businessUnitName);
-  const product = await ensureProduct(tx, input.organizationId, candidate.productName, businessUnit.id);
+  const businessUnit = await ensureBusinessUnit(
+    tx,
+    input.organizationId,
+    candidate.businessUnitName,
+  );
+  const product = await ensureProduct(
+    tx,
+    input.organizationId,
+    candidate.productName,
+    businessUnit.id,
+  );
   if (!product) return { created: 0, updated: 0, skipped: 1 };
   const price = await tx.priceBookEntry.findFirst({
     where: {
@@ -2070,7 +2384,14 @@ async function applyPriceBookCandidate(
         },
       });
   await createLegacyLink(tx, input, candidate, "PRODUCT", product.id, {});
-  await createLegacyLink(tx, input, candidate, "PRICE_BOOK_ENTRY", entry.id, {});
+  await createLegacyLink(
+    tx,
+    input,
+    candidate,
+    "PRICE_BOOK_ENTRY",
+    entry.id,
+    {},
+  );
   return { created: price ? 0 : 1, updated: price ? 1 : 0, skipped: 0 };
 }
 
@@ -2084,9 +2405,21 @@ async function applyDailyMetricCandidate(
   },
   candidate: LegacyDailyMetricCandidate,
 ) {
-  const businessUnit = await ensureBusinessUnit(tx, input.organizationId, candidate.businessUnitName);
-  const metric = await ensureLegacyMetricDefinition(tx, input.organizationId, candidate.metricLabel);
-  const user = await findUserByName(tx, input.organizationId, candidate.userName);
+  const businessUnit = await ensureBusinessUnit(
+    tx,
+    input.organizationId,
+    candidate.businessUnitName,
+  );
+  const metric = await ensureLegacyMetricDefinition(
+    tx,
+    input.organizationId,
+    candidate.metricLabel,
+  );
+  const user = await findUserByName(
+    tx,
+    input.organizationId,
+    candidate.userName,
+  );
   const userId = user?.id ?? input.actorUserId;
   const dimensionHash = `legacy_${hashParts([
     input.dryRun.workbookFingerprint,
@@ -2143,7 +2476,14 @@ async function applyDailyMetricCandidate(
       } as Prisma.InputJsonValue,
     },
   });
-  await createLegacyLink(tx, input, candidate, "DAILY_METRIC_ENTRY", entry.id, {});
+  await createLegacyLink(
+    tx,
+    input,
+    candidate,
+    "DAILY_METRIC_ENTRY",
+    entry.id,
+    {},
+  );
   return { created: 1, updated: 0, skipped: 0 };
 }
 
@@ -2157,15 +2497,29 @@ async function applyKpiTargetCandidate(
   },
   candidate: LegacyKpiTargetCandidate,
 ) {
-  const businessUnit = await ensureBusinessUnit(tx, input.organizationId, candidate.businessUnitName);
-  const metric = await ensureLegacyMetricDefinition(tx, input.organizationId, candidate.metricLabel);
-  const user = await findUserByName(tx, input.organizationId, candidate.userName);
+  const businessUnit = await ensureBusinessUnit(
+    tx,
+    input.organizationId,
+    candidate.businessUnitName,
+  );
+  const metric = await ensureLegacyMetricDefinition(
+    tx,
+    input.organizationId,
+    candidate.metricLabel,
+  );
+  const user = await findUserByName(
+    tx,
+    input.organizationId,
+    candidate.userName,
+  );
   const scopeKey = [
     "legacy_excel",
     businessUnit.id,
     user?.id ?? "organization",
     normalizeLegacyName(candidate.metricLabel),
-  ].join(":").slice(0, 240);
+  ]
+    .join(":")
+    .slice(0, 240);
   const target = await tx.kpiTarget.upsert({
     where: {
       organizationId_metricDefinitionId_scopeKey_periodStart_periodEnd: {
@@ -2277,16 +2631,33 @@ async function applyProgressCandidate(
   candidate: ProgressDealCandidate,
   applyTargets: LegacyExcelApplyTargets,
 ): Promise<AppliedProgressResult> {
-  const existingDealLink = await findLegacyLinkTarget(tx, input, candidate, "DEAL");
+  const existingDealLink = await findLegacyLinkTarget(
+    tx,
+    input,
+    candidate,
+    "DEAL",
+  );
   if (existingDealLink) {
     const deal = await tx.deal.findFirst({
       where: { id: existingDealLink, organizationId: input.organizationId },
     });
     const companyId = deal
-      ? await resolveAssociatedId(tx, input.organizationId, "DEAL", deal.id, "COMPANY")
+      ? await resolveAssociatedId(
+          tx,
+          input.organizationId,
+          "DEAL",
+          deal.id,
+          "COMPANY",
+        )
       : null;
     const contactId = deal
-      ? await resolveAssociatedId(tx, input.organizationId, "DEAL", deal.id, "CONTACT")
+      ? await resolveAssociatedId(
+          tx,
+          input.organizationId,
+          "DEAL",
+          deal.id,
+          "CONTACT",
+        )
       : null;
     const repairedAssociations = deal
       ? await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
@@ -2321,8 +2692,17 @@ async function applyProgressCandidate(
       : null;
   let deal: Awaited<ReturnType<typeof tx.deal.upsert>> | null = null;
   if (applyTargets.deals && company) {
-    const stage = await ensurePipelineStage(tx, input.organizationId, businessUnit.id, candidate.stage);
-    const owner = await findUserByName(tx, input.organizationId, candidate.fsOwnerName);
+    const stage = await ensurePipelineStage(
+      tx,
+      input.organizationId,
+      businessUnit.id,
+      candidate.stage,
+    );
+    const owner = await findUserByName(
+      tx,
+      input.organizationId,
+      candidate.fsOwnerName,
+    );
     deal = await tx.deal.upsert({
       where: {
         organizationId_externalId: {
@@ -2345,10 +2725,17 @@ async function applyProgressCandidate(
         source: "legacy_excel",
         externalId: candidate.sourceKey.slice(0, 160),
         legacyProgress: candidate.progress.slice(0, 160),
-        wonAt: candidate.stage.closeKind === "won" ? dateTime(candidate.wonDate) ?? new Date() : null,
+        wonAt:
+          candidate.stage.closeKind === "won"
+            ? (dateTime(candidate.wonDate) ?? new Date())
+            : null,
         lostAt: candidate.stage.closeKind === "lost" ? new Date() : null,
-        cancelledAt: candidate.stage.closeKind === "cancelled" ? new Date() : null,
-        customFields: buildLegacyCustomFields(candidate.raw, "DEAL") as Prisma.InputJsonValue,
+        cancelledAt:
+          candidate.stage.closeKind === "cancelled" ? new Date() : null,
+        customFields: buildLegacyCustomFields(
+          candidate.raw,
+          "DEAL",
+        ) as Prisma.InputJsonValue,
       },
       update: {
         businessUnitId: businessUnit.id,
@@ -2357,7 +2744,11 @@ async function applyProgressCandidate(
         probability: candidate.stage.probability,
         status: candidate.stage.status,
         legacyProgress: candidate.progress.slice(0, 160),
-        customFields: mergeLegacyCustomFields({}, candidate.raw, "DEAL") as Prisma.InputJsonValue,
+        customFields: mergeLegacyCustomFields(
+          {},
+          candidate.raw,
+          "DEAL",
+        ) as Prisma.InputJsonValue,
       },
     });
     await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
@@ -2365,12 +2756,31 @@ async function applyProgressCandidate(
       contactId: contact?.id ?? null,
       dealId: deal.id,
     });
-    await ensureDealParticipant(tx, input.organizationId, deal.id, candidate.isOwnerName, "APPOINTMENT_SETTER", "IS");
-    await ensureDealParticipant(tx, input.organizationId, deal.id, candidate.fsOwnerName, "CLOSER", "FS");
+    await ensureDealParticipant(
+      tx,
+      input.organizationId,
+      deal.id,
+      candidate.isOwnerName,
+      "APPOINTMENT_SETTER",
+      "IS",
+    );
+    await ensureDealParticipant(
+      tx,
+      input.organizationId,
+      deal.id,
+      candidate.fsOwnerName,
+      "CLOSER",
+      "FS",
+    );
   }
   const product =
     applyTargets.dealLineItems && deal
-      ? await ensureProduct(tx, input.organizationId, candidate.productName, businessUnit.id)
+      ? await ensureProduct(
+          tx,
+          input.organizationId,
+          candidate.productName,
+          businessUnit.id,
+        )
       : null;
   const lineItem =
     applyTargets.dealLineItems && deal
@@ -2385,16 +2795,34 @@ async function applyProgressCandidate(
       : null;
   const activity =
     applyTargets.activities && deal
-      ? await createLegacyActivityIfNeeded(tx, input, candidate, "DEAL", deal.id, {
-          title: "Excel進捗管理シートから商談を取り込み",
-          body: candidate.progress,
-        })
+      ? await createLegacyActivityIfNeeded(
+          tx,
+          input,
+          candidate,
+          "DEAL",
+          deal.id,
+          {
+            title: "Excel進捗管理シートから商談を取り込み",
+            body: candidate.progress,
+          },
+        )
       : null;
-  if (company) await createLegacyLink(tx, input, candidate, "COMPANY", company.id, {});
-  if (contact) await createLegacyLink(tx, input, candidate, "CONTACT", contact.id, {});
+  if (company)
+    await createLegacyLink(tx, input, candidate, "COMPANY", company.id, {});
+  if (contact)
+    await createLegacyLink(tx, input, candidate, "CONTACT", contact.id, {});
   if (deal) await createLegacyLink(tx, input, candidate, "DEAL", deal.id, {});
-  if (lineItem) await createLegacyLink(tx, input, candidate, "DEAL_LINE_ITEM", lineItem.id, {});
-  if (activity) await createLegacyLink(tx, input, candidate, "ACTIVITY", activity.id, {});
+  if (lineItem)
+    await createLegacyLink(
+      tx,
+      input,
+      candidate,
+      "DEAL_LINE_ITEM",
+      lineItem.id,
+      {},
+    );
+  if (activity)
+    await createLegacyLink(tx, input, candidate, "ACTIVITY", activity.id, {});
 
   return {
     companyId: company?.id ?? null,
@@ -2422,9 +2850,19 @@ async function applyHpProjectCandidate(
   linkedProgress: AppliedProgressResult | undefined,
   applyTargets: LegacyExcelApplyTargets,
 ) {
-  const existingProjectLink = await findLegacyLinkTarget(tx, input, candidate, "DELIVERY_PROJECT");
-  if (existingProjectLink) return { created: 0, updated: 0, skipped: 1, warnings: [] };
-  const businessUnit = await ensureBusinessUnit(tx, input.organizationId, candidate.businessUnitName);
+  const existingProjectLink = await findLegacyLinkTarget(
+    tx,
+    input,
+    candidate,
+    "DELIVERY_PROJECT",
+  );
+  if (existingProjectLink)
+    return { created: 0, updated: 0, skipped: 1, warnings: [] };
+  const businessUnit = await ensureBusinessUnit(
+    tx,
+    input.organizationId,
+    candidate.businessUnitName,
+  );
   const persistedLinkedProgress =
     linkedProgress ?? (await findPersistedProgressResult(tx, input, match));
   const resolved = await resolveProjectTarget(
@@ -2434,7 +2872,11 @@ async function applyHpProjectCandidate(
     match,
     persistedLinkedProgress,
   );
-  const owner = await findUserByName(tx, input.organizationId, candidate.csOwnerName);
+  const owner = await findUserByName(
+    tx,
+    input.organizationId,
+    candidate.csOwnerName,
+  );
   const existingByDeal = resolved.dealId
     ? await tx.deliveryProject.findFirst({
         where: {
@@ -2445,19 +2887,35 @@ async function applyHpProjectCandidate(
       })
     : null;
   if (existingByDeal) {
-    await createLegacyLink(tx, input, candidate, "DELIVERY_PROJECT", existingByDeal.id, {
-      ...matchMetadata(match),
-      matchedCompanyId: resolved.companyId,
-      matchedDealId: resolved.dealId,
-      matchedContactId: resolved.contactId,
-    });
+    await createLegacyLink(
+      tx,
+      input,
+      candidate,
+      "DELIVERY_PROJECT",
+      existingByDeal.id,
+      {
+        ...matchMetadata(match),
+        matchedCompanyId: resolved.companyId,
+        matchedDealId: resolved.dealId,
+        matchedContactId: resolved.contactId,
+      },
+    );
     return { created: 0, updated: 0, skipped: 1, warnings: [] };
   }
-  const status = mapDeliveryStatus(candidate.progress);
+  const deliveryStage = await ensureDeliveryPipelineStage(
+    tx,
+    input.organizationId,
+    businessUnit.id,
+    businessUnit.name,
+    candidate.progress,
+  );
+  const status = deliveryProjectStatusForStageName(candidate.progress);
   const project = await tx.deliveryProject.create({
     data: {
       organizationId: input.organizationId,
       businessUnitId: businessUnit.id,
+      pipelineId: deliveryStage.pipeline.id,
+      stageId: deliveryStage.stage.id,
       companyId: resolved.companyId,
       primaryContactId: resolved.contactId,
       sourceDealId: resolved.dealId,
@@ -2469,28 +2927,47 @@ async function applyHpProjectCandidate(
       expectedStartDate: dateOnly(candidate.hearingDate),
       expectedPublishDate: dateOnly(candidate.expectedPublishDate),
       actualPublishDate: dateOnly(candidate.actualPublishDate),
-      completedAt: status === "PUBLISHED" || status === "COMPLETED" ? dateTime(candidate.actualPublishDate) ?? new Date() : null,
+      completedAt:
+        status === "COMPLETED"
+          ? (dateTime(candidate.actualPublishDate) ?? new Date())
+          : null,
       nextAction: candidate.nextAction.slice(0, 240) || null,
       nextActionDate: dateOnly(candidate.nextActionDate),
       scopeSnapshot: {
         source: "legacy_excel",
         sourceDealUnresolved: !resolved.dealId,
         match: matchMetadata(match),
-        legacyCustomFields: buildLegacyCustomFields(candidate.raw, "DELIVERY_PROJECT"),
+        legacyCustomFields: buildLegacyCustomFields(
+          candidate.raw,
+          "DELIVERY_PROJECT",
+        ),
         raw: candidate.raw,
       } as Prisma.InputJsonValue,
       lastActivityAt: new Date(),
     },
   });
   const activity = applyTargets.activities
-    ? await createLegacyActivityIfNeeded(tx, input, candidate, "DELIVERY_PROJECT", project.id, {
-        title: "Excel HP制作管理シートからCS案件を取り込み",
-        body: candidate.memo || candidate.progress,
-        deliveryProjectId: project.id,
-      })
+    ? await createLegacyActivityIfNeeded(
+        tx,
+        input,
+        candidate,
+        "DELIVERY_PROJECT",
+        project.id,
+        {
+          title: "Excel HP制作管理シートからCS案件を取り込み",
+          body: candidate.memo || candidate.progress,
+          deliveryProjectId: project.id,
+        },
+      )
     : null;
   if (candidate.nextAction || candidate.nextActionDate) {
-    await createProjectTaskIfNeeded(tx, input, candidate, project.id, owner?.id ?? input.actorUserId);
+    await createProjectTaskIfNeeded(
+      tx,
+      input,
+      candidate,
+      project.id,
+      owner?.id ?? input.actorUserId,
+    );
   }
   await createLegacyLink(tx, input, candidate, "DELIVERY_PROJECT", project.id, {
     ...matchMetadata(match),
@@ -2498,12 +2975,24 @@ async function applyHpProjectCandidate(
     matchedDealId: resolved.dealId,
     matchedContactId: resolved.contactId,
   });
-  if (activity) await createLegacyLink(tx, input, candidate, "ACTIVITY", activity.id, matchMetadata(match));
+  if (activity)
+    await createLegacyLink(
+      tx,
+      input,
+      candidate,
+      "ACTIVITY",
+      activity.id,
+      matchMetadata(match),
+    );
   return {
     created: 1,
     updated: 0,
     skipped: 0,
-    warnings: resolved.dealId ? [] : [`${candidate.sheetName}:${candidate.rowNumber} は元商談未紐付けで登録しました。`],
+    warnings: resolved.dealId
+      ? []
+      : [
+          `${candidate.sheetName}:${candidate.rowNumber} は元商談未紐付けで登録しました。`,
+        ],
   };
 }
 
@@ -2567,10 +3056,17 @@ function resolveProjectMatch(
     return null;
   }
   if (manual?.decision === "UNRESOLVED") {
-    return { decision: "UNRESOLVED", progressCandidateId: null, score: 0, reasons: [] };
+    return {
+      decision: "UNRESOLVED",
+      progressCandidateId: null,
+      score: 0,
+      reasons: [],
+    };
   }
   if (manual?.progressCandidateId) {
-    const candidate = match?.candidates.find((item) => item.progressCandidateId === manual.progressCandidateId);
+    const candidate = match?.candidates.find(
+      (item) => item.progressCandidateId === manual.progressCandidateId,
+    );
     return {
       decision: "MANUAL",
       progressCandidateId: manual.progressCandidateId,
@@ -2582,7 +3078,12 @@ function resolveProjectMatch(
     };
   }
   if (!match || match.decision !== "AUTO") {
-    return { decision: "UNRESOLVED", progressCandidateId: null, score: match?.score ?? 0, reasons: [] };
+    return {
+      decision: "UNRESOLVED",
+      progressCandidateId: null,
+      score: match?.score ?? 0,
+      reasons: [],
+    };
   }
   const top = match.candidates[0];
   return {
@@ -2609,17 +3110,26 @@ function resolveProjectMatchForApply(
     return null;
   }
   if (manual?.progressCandidateId) {
+    if (!applyTargets.reviewDeliveryProjects) return null;
     return resolveProjectMatch(hpCandidateId, matches, manualMatches);
   }
   if (manual?.decision === "UNRESOLVED") {
     return applyTargets.unresolvedDeliveryProjects
-      ? { decision: "UNRESOLVED", progressCandidateId: null, score: 0, reasons: [] }
+      ? {
+          decision: "UNRESOLVED",
+          progressCandidateId: null,
+          score: 0,
+          reasons: [],
+        }
       : null;
   }
-  if (match?.decision === "AUTO") {
+  if (match?.decision === "AUTO" && applyTargets.autoDeliveryProjects) {
     return resolveProjectMatch(hpCandidateId, matches);
   }
-  if (match?.decision === "UNRESOLVED" && applyTargets.unresolvedDeliveryProjects) {
+  if (
+    match?.decision === "UNRESOLVED" &&
+    applyTargets.unresolvedDeliveryProjects
+  ) {
     return {
       decision: "UNRESOLVED",
       progressCandidateId: null,
@@ -2656,9 +3166,29 @@ async function resolveProjectTarget(
   }
   if (match?.dealId || match?.companyId) {
     return {
-      companyId: match.companyId ?? (match.dealId ? await resolveAssociatedId(tx, input.organizationId, "DEAL", match.dealId, "COMPANY") : null),
+      companyId:
+        match.companyId ??
+        (match.dealId
+          ? await resolveAssociatedId(
+              tx,
+              input.organizationId,
+              "DEAL",
+              match.dealId,
+              "COMPANY",
+            )
+          : null),
       dealId: match.dealId ?? null,
-      contactId: match.contactId ?? (match.dealId ? await resolveAssociatedId(tx, input.organizationId, "DEAL", match.dealId, "CONTACT") : null),
+      contactId:
+        match.contactId ??
+        (match.dealId
+          ? await resolveAssociatedId(
+              tx,
+              input.organizationId,
+              "DEAL",
+              match.dealId,
+              "CONTACT",
+            )
+          : null),
     };
   }
   const company = await findOrCreateCompany(tx, input, {
@@ -2673,21 +3203,48 @@ async function resolveProjectTarget(
     rowFingerprint: candidate.rowFingerprint,
   });
   const contact = candidate.contactName
-    ? await findOrCreateContact(tx, input, {
-        companyName: candidate.companyName,
-        contactName: candidate.contactName,
-        phone: candidate.phone,
-        normalized: candidate.normalized,
-        raw: candidate.raw,
-      }, company.id)
+    ? await findOrCreateContact(
+        tx,
+        input,
+        {
+          companyName: candidate.companyName,
+          contactName: candidate.contactName,
+          phone: candidate.phone,
+          normalized: candidate.normalized,
+          raw: candidate.raw,
+        },
+        company.id,
+      )
     : null;
-  return { companyId: company.id, dealId: null, contactId: contact?.id ?? null };
+  return {
+    companyId: company.id,
+    dealId: null,
+    contactId: contact?.id ?? null,
+  };
 }
 
-async function ensureBusinessUnit(tx: Tx, organizationId: string, name: string) {
-  const businessUnitName = name || "レガシー移行";
+export async function ensureBusinessUnit(
+  tx: Tx,
+  organizationId: string,
+  name: string,
+) {
+  const requestedName = name || "レガシー移行";
+  const isFirstDivision = /第一事業部|第1事業部/.test(requestedName);
+  const isHdDivision = /HD事業部/i.test(requestedName);
+  const businessUnitName = isFirstDivision
+    ? "第1事業部"
+    : isHdDivision
+      ? "HD事業部"
+      : requestedName;
   const existing = await tx.businessUnit.findFirst({
-    where: { organizationId, OR: [{ name: businessUnitName }, { slug: slugify(businessUnitName) }] },
+    where: {
+      organizationId,
+      OR: [
+        { name: businessUnitName },
+        { slug: slugify(businessUnitName) },
+        ...(isFirstDivision ? [{ name: "第一事業部" }, { slug: "first" }] : []),
+      ],
+    },
   });
   if (existing) return existing;
   return tx.businessUnit.create({
@@ -2700,23 +3257,54 @@ async function ensureBusinessUnit(tx: Tx, organizationId: string, name: string) 
   });
 }
 
-async function ensurePipelineStage(
+export async function ensurePipelineStage(
   tx: Tx,
   organizationId: string,
   businessUnitId: string,
   stageMapping: LegacyStageMapping,
 ) {
-  const businessUnit = await tx.businessUnit.findFirst({ where: { id: businessUnitId, organizationId } });
+  const businessUnit = await tx.businessUnit.findFirst({
+    where: { id: businessUnitId, organizationId },
+  });
   const pipelineName = `${businessUnit?.name ?? "レガシー"} 営業パイプライン`;
-  const pipeline = await tx.pipeline.upsert({
-    where: { organizationId_name: { organizationId, name: pipelineName } },
-    create: { organizationId, businessUnitId, name: pipelineName, isDefault: false },
-    update: { businessUnitId },
-  });
+  const pipeline =
+    (await tx.pipeline.findFirst({
+      where: { organizationId, businessUnitId },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+    })) ??
+    (await tx.pipeline.create({
+      data: {
+        organizationId,
+        businessUnitId,
+        name: pipelineName,
+        isDefault: true,
+      },
+    }));
   const existingStage = await tx.pipelineStage.findFirst({
-    where: { organizationId, pipelineId: pipeline.id, name: stageMapping.stageName },
+    where: {
+      organizationId,
+      pipelineId: pipeline.id,
+      name: stageMapping.stageName,
+    },
   });
-  if (existingStage) return { ...existingStage, pipelineId: pipeline.id };
+  const definition = businessUnit
+    ? salesStagesForBusinessUnit(businessUnit).find(
+        (stage) => stage.name === stageMapping.stageName,
+      )
+    : null;
+  if (existingStage) {
+    if (!definition) return { ...existingStage, pipelineId: pipeline.id };
+    const updated = await tx.pipelineStage.update({
+      where: { id: existingStage.id },
+      data: {
+        probability: definition.probability,
+        stageType: definition.stageType,
+        requiredFields: [...definition.requiredFields],
+        staleDays: definition.staleDays,
+      },
+    });
+    return { ...updated, pipelineId: pipeline.id };
+  }
   const lastStage = await tx.pipelineStage.findFirst({
     where: { organizationId, pipelineId: pipeline.id },
     orderBy: { sortOrder: "desc" },
@@ -2729,8 +3317,85 @@ async function ensurePipelineStage(
       sortOrder: (lastStage?.sortOrder ?? 0) + 10,
       probability: stageMapping.probability,
       stageType: stageMapping.stageType,
+      requiredFields: definition ? [...definition.requiredFields] : [],
+      staleDays: definition?.staleDays ?? null,
     },
   });
+}
+
+export async function ensureDeliveryPipelineStage(
+  tx: Tx,
+  organizationId: string,
+  businessUnitId: string,
+  businessUnitName: string,
+  progress: string,
+) {
+  const stageName = canonicalSpreadsheetDeliveryStageName(progress);
+  let pipeline = await tx.deliveryPipeline.findFirst({
+    where: {
+      organizationId,
+      isActive: true,
+      OR: [{ businessUnitId }, { businessUnitId: null }],
+    },
+    include: { stages: { orderBy: { sortOrder: "asc" } } },
+    orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
+  });
+
+  if (!pipeline) {
+    pipeline = await tx.deliveryPipeline.create({
+      data: {
+        organizationId,
+        businessUnitId,
+        name: `${businessUnitName}制作パイプライン`,
+        isDefault: true,
+        isActive: true,
+        stages: {
+          create: spreadsheetDeliveryStages.map((stage, index) => ({
+            organizationId,
+            businessUnitId,
+            name: stage.name,
+            sortOrder: index + 1,
+            color: stage.color,
+            stageType: stage.stageType,
+            staleDays: stage.staleDays,
+            requiredFields: [...stage.requiredFields],
+            taskTemplates: [...stage.taskTemplates],
+            isCompleted: stage.isCompleted ?? false,
+            isPaused: stage.isPaused ?? false,
+          })),
+        },
+      },
+      include: { stages: { orderBy: { sortOrder: "asc" } } },
+    });
+  }
+
+  const existing = pipeline.stages.find((stage) => stage.name === stageName);
+  if (existing) return { pipeline, stage: existing };
+
+  const definition = spreadsheetDeliveryStages.find(
+    (stage) => stage.name === stageName,
+  );
+  const lastSortOrder = pipeline.stages.reduce(
+    (maximum, stage) => Math.max(maximum, stage.sortOrder),
+    0,
+  );
+  const stage = await tx.deliveryPipelineStage.create({
+    data: {
+      organizationId,
+      businessUnitId,
+      pipelineId: pipeline.id,
+      name: stageName,
+      sortOrder: lastSortOrder + 10,
+      color: definition?.color ?? "#64748b",
+      stageType: definition?.stageType ?? "NORMAL",
+      staleDays: definition?.staleDays ?? null,
+      requiredFields: definition ? [...definition.requiredFields] : [],
+      taskTemplates: definition ? [...definition.taskTemplates] : [],
+      isCompleted: definition?.isCompleted ?? false,
+      isPaused: definition?.isPaused ?? false,
+    },
+  });
+  return { pipeline, stage };
 }
 
 async function findOrCreateCompany(
@@ -2751,11 +3416,17 @@ async function findOrCreateCompany(
   const domain = normalizeDomain(candidate.domain);
   const phone = normalizePhone(candidate.phone);
   if (domain) {
-    const byDomain = await tx.company.findFirst({ where: { organizationId: input.organizationId, domain, deletedAt: null } });
+    const byDomain = await tx.company.findFirst({
+      where: { organizationId: input.organizationId, domain, deletedAt: null },
+    });
     if (byDomain) return byDomain;
   }
   const byName = await tx.company.findFirst({
-    where: { organizationId: input.organizationId, name: candidate.companyName, deletedAt: null },
+    where: {
+      organizationId: input.organizationId,
+      name: candidate.companyName,
+      deletedAt: null,
+    },
   });
   if (byName) return byName;
   if (phone) {
@@ -2825,8 +3496,9 @@ async function findOrCreateContact(
     });
     const matched = contacts.find(
       (contact) =>
-        normalizeLegacyName([contact.lastName, contact.firstName].filter(Boolean).join(" ")) ===
-        candidate.normalized.normalizedContactName,
+        normalizeLegacyName(
+          [contact.lastName, contact.firstName].filter(Boolean).join(" "),
+        ) === candidate.normalized.normalizedContactName,
     );
     if (matched) {
       await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
@@ -2953,16 +3625,19 @@ export function buildLegacyPrimaryAssociationData(
   return data;
 }
 
-async function ensureProduct(
+export async function ensureProduct(
   tx: Tx,
   organizationId: string,
   productName: string,
   businessUnitId: string,
 ) {
   if (!productName) return null;
-  const normalizedName = normalizeProductName(productName) || slugHash(productName);
+  const normalizedName =
+    normalizeProductName(productName) || slugHash(productName);
   const product = await tx.product.upsert({
-    where: { organizationId_normalizedName: { organizationId, normalizedName } },
+    where: {
+      organizationId_normalizedName: { organizationId, normalizedName },
+    },
     create: {
       organizationId,
       name: productName.slice(0, 160),
@@ -3004,11 +3679,23 @@ async function createDealLineItemIfNeeded(
   productId: string | null,
   businessUnitId: string,
 ) {
-  const existing = await findLegacyLinkTarget(tx, input, candidate, "DEAL_LINE_ITEM");
+  const existing = await findLegacyLinkTarget(
+    tx,
+    input,
+    candidate,
+    "DEAL_LINE_ITEM",
+  );
   if (existing) {
-    return tx.dealLineItem.findFirst({ where: { id: existing, organizationId: input.organizationId } });
+    return tx.dealLineItem.findFirst({
+      where: { id: existing, organizationId: input.organizationId },
+    });
   }
-  if (!candidate.productName && !candidate.amount && !candidate.grossProfitAmount) return null;
+  if (
+    !candidate.productName &&
+    !candidate.amount &&
+    !candidate.grossProfitAmount
+  )
+    return null;
   return tx.dealLineItem.create({
     data: {
       organizationId: input.organizationId,
@@ -3033,7 +3720,10 @@ async function createDealLineItemIfNeeded(
               ? "CANCELLED"
               : "PROPOSED",
       source: "legacy_excel",
-      customFields: buildLegacyCustomFields(candidate.raw, "DEAL_LINE_ITEM") as Prisma.InputJsonValue,
+      customFields: buildLegacyCustomFields(
+        candidate.raw,
+        "DEAL_LINE_ITEM",
+      ) as Prisma.InputJsonValue,
       metadata: { sourceKey: candidate.sourceKey },
     },
   });
@@ -3071,7 +3761,11 @@ async function ensureDealParticipant(
   });
 }
 
-async function findUserByName(tx: Tx, organizationId: string, name: string) {
+export async function findUserByName(
+  tx: Tx,
+  organizationId: string,
+  name: string,
+) {
   if (!name) return null;
   const normalized = normalizeLegacyName(name);
   const members = await tx.organizationMember.findMany({
@@ -3080,8 +3774,9 @@ async function findUserByName(tx: Tx, organizationId: string, name: string) {
     take: 2000,
   });
   return (
-    members.find((member) => normalizeLegacyName(member.user.name) === normalized)?.user ??
-    null
+    members.find(
+      (member) => normalizeLegacyName(member.user.name) === normalized,
+    )?.user ?? null
   );
 }
 
@@ -3098,7 +3793,12 @@ async function createLegacyActivityIfNeeded(
   targetId: string,
   activity: { title: string; body?: string; deliveryProjectId?: string },
 ) {
-  const existing = await findLegacyLinkTarget(tx, input, candidate, `ACTIVITY_${targetType}`);
+  const existing = await findLegacyLinkTarget(
+    tx,
+    input,
+    candidate,
+    `ACTIVITY_${targetType}`,
+  );
   if (existing) return null;
   return tx.activity.create({
     data: {
@@ -3126,9 +3826,16 @@ async function createProjectTaskIfNeeded(
   projectId: string,
   ownerUserId: string,
 ) {
-  const autoTaskKey = `legacy-excel:${candidate.sourceKey}:next-action`.slice(0, 240);
+  const autoTaskKey = `legacy-excel:${candidate.sourceKey}:next-action`.slice(
+    0,
+    240,
+  );
   const existing = await tx.task.findFirst({
-    where: { organizationId: input.organizationId, deliveryProjectId: projectId, autoTaskKey },
+    where: {
+      organizationId: input.organizationId,
+      deliveryProjectId: projectId,
+      autoTaskKey,
+    },
   });
   if (existing) return;
   await tx.task.create({
@@ -3138,7 +3845,9 @@ async function createProjectTaskIfNeeded(
       createdByUserId: input.actorUserId,
       deliveryProjectId: projectId,
       autoTaskKey,
-      title: (candidate.nextAction || `${candidate.projectName} 次回対応`).slice(0, 200),
+      title: (
+        candidate.nextAction || `${candidate.projectName} 次回対応`
+      ).slice(0, 200),
       description: candidate.memo || null,
       dueDate: dateTime(candidate.nextActionDate),
       status: TaskStatus.TODO,
@@ -3162,15 +3871,16 @@ async function createLegacyLink(
 ) {
   await tx.legacySourceLink.upsert({
     where: {
-      organizationId_provider_workbookFingerprint_sheetName_rowNumber_rowFingerprint_targetObjectType: {
-        organizationId: input.organizationId,
-        provider: input.dryRun.provider,
-        workbookFingerprint: input.dryRun.workbookFingerprint,
-        sheetName: candidate.sheetName,
-        rowNumber: candidate.rowNumber,
-        rowFingerprint: candidate.rowFingerprint,
-        targetObjectType,
-      },
+      organizationId_provider_workbookFingerprint_sheetName_rowNumber_rowFingerprint_targetObjectType:
+        {
+          organizationId: input.organizationId,
+          provider: input.dryRun.provider,
+          workbookFingerprint: input.dryRun.workbookFingerprint,
+          sheetName: candidate.sheetName,
+          rowNumber: candidate.rowNumber,
+          rowFingerprint: candidate.rowFingerprint,
+          targetObjectType,
+        },
     },
     create: {
       organizationId: input.organizationId,
@@ -3217,15 +3927,16 @@ async function findLegacyLinkTarget(
 ) {
   const link = await tx.legacySourceLink.findUnique({
     where: {
-      organizationId_provider_workbookFingerprint_sheetName_rowNumber_rowFingerprint_targetObjectType: {
-        organizationId: input.organizationId,
-        provider: input.dryRun.provider,
-        workbookFingerprint: input.dryRun.workbookFingerprint,
-        sheetName: candidate.sheetName,
-        rowNumber: candidate.rowNumber,
-        rowFingerprint: candidate.rowFingerprint,
-        targetObjectType,
-      },
+      organizationId_provider_workbookFingerprint_sheetName_rowNumber_rowFingerprint_targetObjectType:
+        {
+          organizationId: input.organizationId,
+          provider: input.dryRun.provider,
+          workbookFingerprint: input.dryRun.workbookFingerprint,
+          sheetName: candidate.sheetName,
+          rowNumber: candidate.rowNumber,
+          rowFingerprint: candidate.rowFingerprint,
+          targetObjectType,
+        },
     },
   });
   return link?.targetObjectId ?? null;
@@ -3267,10 +3978,18 @@ function buildLegacyCustomFields(
   objectType: LegacyCustomPropertyPlan["objectType"],
 ) {
   const output: Record<string, string> = {};
-  const targets = CUSTOM_PROPERTY_TARGETS.filter((target) => target.objectType === objectType);
+  const targets = CUSTOM_PROPERTY_TARGETS.filter(
+    (target) => target.objectType === objectType,
+  );
   for (const [header, value] of Object.entries(row)) {
     if (!value) continue;
-    if (!targets.some((target) => target.headers.some((candidate) => normalizeHeader(header).includes(normalizeHeader(candidate))))) {
+    if (
+      !targets.some((target) =>
+        target.headers.some((candidate) =>
+          normalizeHeader(header).includes(normalizeHeader(candidate)),
+        ),
+      )
+    ) {
       continue;
     }
     output[`legacy_${hashParts([objectType, header]).slice(0, 24)}`] = value;
@@ -3286,15 +4005,9 @@ function mergeLegacyCustomFields(
   return { ...existing, ...buildLegacyCustomFields(row, objectType) };
 }
 
-function mapDeliveryStatus(progress: string): DeliveryProjectStatus {
-  if (/公開|納品|完了/.test(progress)) return DeliveryProjectStatus.PUBLISHED;
-  if (/停止|保留/.test(progress)) return DeliveryProjectStatus.PAUSED;
-  if (/キャンセル|解約/.test(progress)) return DeliveryProjectStatus.CANCELLED;
-  if (/制作|進行|確認|素材/.test(progress)) return DeliveryProjectStatus.IN_PROGRESS;
-  return DeliveryProjectStatus.NOT_STARTED;
-}
-
-function matchMetadata(match: ResolvedProjectMatch | null): Record<string, unknown> {
+function matchMetadata(
+  match: ResolvedProjectMatch | null,
+): Record<string, unknown> {
   return {
     matchedCompanyId: match?.companyId ?? null,
     matchedDealId: match?.dealId ?? null,
@@ -3353,6 +4066,19 @@ function slugify(value: string) {
   return (ascii || `legacy-${slugHash(normalized || value)}`).slice(0, 80);
 }
 
-export function getLegacyExcelConfirmText() {
-  return CONFIRM_TEXT;
+export type LegacyExcelImportJobOrganizationCheck =
+  | "ALLOWED"
+  | "FORBIDDEN"
+  | "NOT_FOUND";
+
+export function checkLegacyExcelImportJobOrganization(
+  job: { organizationId: string } | null | undefined,
+  organizationId: string,
+): LegacyExcelImportJobOrganizationCheck {
+  if (!job) return "NOT_FOUND";
+  return job.organizationId === organizationId ? "ALLOWED" : "FORBIDDEN";
+}
+
+export function getLegacyExcelConfirmText(organizationName?: string) {
+  return organizationName ? `${organizationName}に反映する` : CONFIRM_TEXT;
 }

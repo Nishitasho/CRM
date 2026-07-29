@@ -61,6 +61,11 @@ type ImportHistoryItem = {
   associationRepairCompleted: boolean;
 };
 
+type TargetOrganization = {
+  id: string;
+  name: string;
+};
+
 type ManualMatch = {
   progressCandidateId?: string;
   decision?: "MANUAL" | "UNRESOLVED" | "IGNORE";
@@ -72,6 +77,8 @@ type ApplyTargets = {
   deals: boolean;
   dealLineItems: boolean;
   deliveryProjects: boolean;
+  autoDeliveryProjects: boolean;
+  reviewDeliveryProjects: boolean;
   unresolvedDeliveryProjects: boolean;
   activities: boolean;
   dailyMetrics: boolean;
@@ -103,7 +110,6 @@ type AssociationRepairResponse = {
   message?: string;
 };
 
-const confirmText = "本当に反映する";
 const unresolvedConfirmText =
   "元商談未紐付けのCS案件を作成することを理解しました";
 const defaultApplyTargets: ApplyTargets = {
@@ -112,6 +118,8 @@ const defaultApplyTargets: ApplyTargets = {
   deals: true,
   dealLineItems: true,
   deliveryProjects: true,
+  autoDeliveryProjects: true,
+  reviewDeliveryProjects: false,
   unresolvedDeliveryProjects: false,
   activities: true,
   dailyMetrics: false,
@@ -131,6 +139,11 @@ function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function maskOrganizationId(id: string) {
+  if (id.length <= 12) return `${id.slice(0, 4)}...`;
+  return `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
 function buildApplyPreview(
   result: DryRunResult,
   applyTargets: ApplyTargets,
@@ -148,7 +161,7 @@ function buildApplyPreview(
       const manual = manualMatches[match.hpCandidateId];
       if (manual?.decision === "IGNORE") continue;
       if (manual?.progressCandidateId) {
-        reviewDeliveryProjects += 1;
+        if (applyTargets.reviewDeliveryProjects) reviewDeliveryProjects += 1;
         continue;
       }
       if (manual?.decision === "UNRESOLVED") {
@@ -160,7 +173,7 @@ function buildApplyPreview(
       if (match.decision === "IGNORE") {
         continue;
       }
-      if (match.decision === "AUTO") {
+      if (match.decision === "AUTO" && applyTargets.autoDeliveryProjects) {
         autoDeliveryProjects += 1;
       } else if (
         match.decision === "UNRESOLVED" &&
@@ -187,8 +200,9 @@ function buildApplyPreview(
       ? numberValue(result.totals.dealLineItemCandidates)
       : 0,
     activities: applyTargets.activities
-      ? (applyTargets.deals ? numberValue(result.totals.progressDealCandidates) : 0) +
-        deliveryProjectActivities
+      ? (applyTargets.deals
+          ? numberValue(result.totals.progressDealCandidates)
+          : 0) + deliveryProjectActivities
       : 0,
     autoDeliveryProjects,
     reviewDeliveryProjects,
@@ -210,15 +224,19 @@ function buildApplyPreview(
 
 export function LegacyExcelImporter({
   histories,
+  targetOrganization,
 }: {
   histories: ImportHistoryItem[];
+  targetOrganization: TargetOrganization;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [resumeJobId, setResumeJobId] = useState<string | null>(null);
   const [repairJobId, setRepairJobId] = useState<string | null>(null);
   const [result, setResult] = useState<DryRunResult | null>(null);
-  const [manualMatches, setManualMatches] = useState<Record<string, ManualMatch>>({});
+  const [manualMatches, setManualMatches] = useState<
+    Record<string, ManualMatch>
+  >({});
   const [applyTargets, setApplyTargets] =
     useState<ApplyTargets>(defaultApplyTargets);
   const [confirmed, setConfirmed] = useState(false);
@@ -229,6 +247,7 @@ export function LegacyExcelImporter({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [mode, setMode] = useState<"raw" | "reviewed">("raw");
+  const confirmText = `${targetOrganization.name}に反映する`;
 
   const canApply = Boolean(
     result &&
@@ -241,19 +260,33 @@ export function LegacyExcelImporter({
   const applyPreview = result
     ? buildApplyPreview(result, applyTargets, manualMatches)
     : null;
+  const applyTotal = applyPreview
+    ? applyPreview.companies +
+      applyPreview.contacts +
+      applyPreview.deals +
+      applyPreview.dealLineItems +
+      applyPreview.activities +
+      applyPreview.autoDeliveryProjects +
+      applyPreview.reviewDeliveryProjects +
+      applyPreview.unresolvedDeliveryProjects +
+      applyPreview.dailyMetrics +
+      applyPreview.kpiTargets
+    : 0;
   const reviewCount = useMemo(
-    () => result?.crossFileMatches.filter((match) => match.decision === "REVIEW").length ?? 0,
+    () =>
+      result?.crossFileMatches.filter((match) => match.decision === "REVIEW")
+        .length ?? 0,
     [result],
   );
 
   async function dryRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
-    const input = formElement.elements.namedItem("files") as HTMLInputElement | null;
+    const input = formElement.elements.namedItem(
+      "files",
+    ) as HTMLInputElement | null;
     const files =
-      selectedFiles.length > 0
-        ? selectedFiles
-        : Array.from(input?.files ?? []);
+      selectedFiles.length > 0 ? selectedFiles : Array.from(input?.files ?? []);
     if (files.length === 0) {
       setError("Excelファイルをドロップまたは選択してください。");
       return;
@@ -374,7 +407,9 @@ export function LegacyExcelImporter({
       }
       body = { importJobId: initialBody.importJobId, resume: true };
     }
-    throw new Error("本登録の分割回数が上限に達しました。移行履歴から再開してください。");
+    throw new Error(
+      "本登録の分割回数が上限に達しました。移行履歴から再開してください。",
+    );
   }
 
   async function repairAssociations(importJobId: string) {
@@ -426,7 +461,21 @@ export function LegacyExcelImporter({
         next.dealLineItems = false;
       }
       if (!next.deals) next.dealLineItems = false;
-      if (!next.deliveryProjects) next.unresolvedDeliveryProjects = false;
+      if (key === "deliveryProjects" && !next.deliveryProjects) {
+        next.autoDeliveryProjects = false;
+        next.reviewDeliveryProjects = false;
+        next.unresolvedDeliveryProjects = false;
+      }
+      if (
+        key === "autoDeliveryProjects" ||
+        key === "reviewDeliveryProjects" ||
+        key === "unresolvedDeliveryProjects"
+      ) {
+        next.deliveryProjects =
+          next.autoDeliveryProjects ||
+          next.reviewDeliveryProjects ||
+          next.unresolvedDeliveryProjects;
+      }
       return next;
     });
   }
@@ -441,7 +490,10 @@ export function LegacyExcelImporter({
       } else if (value === "__ignore") {
         next[hpCandidateId] = { decision: "IGNORE" };
       } else {
-        next[hpCandidateId] = { decision: "MANUAL", progressCandidateId: value };
+        next[hpCandidateId] = {
+          decision: "MANUAL",
+          progressCandidateId: value,
+        };
       }
       return next;
     });
@@ -463,9 +515,7 @@ export function LegacyExcelImporter({
     ];
     const csv = rows
       .map((row) =>
-        row
-          .map((value) => `"${String(value).replace(/"/g, '""')}"`)
-          .join(","),
+        row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","),
       )
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -503,7 +553,9 @@ export function LegacyExcelImporter({
           <label
             className={[
               "rounded-lg border p-4 text-sm",
-              mode === "reviewed" ? "border-orange-300 bg-orange-50" : "border-line",
+              mode === "reviewed"
+                ? "border-orange-300 bg-orange-50"
+                : "border-line",
             ].join(" ")}
           >
             <span className="flex items-center gap-2 font-bold">
@@ -516,7 +568,8 @@ export function LegacyExcelImporter({
               Review済みExcel Dry Run
             </span>
             <span className="mt-1 block text-xs text-slate-500">
-              salesnest_import_review.xlsx / ready.xlsx のapplyとselectedDealKeyを優先します。
+              salesnest_import_review.xlsx / ready.xlsx
+              のapplyとselectedDealKeyを優先します。
             </span>
           </label>
         </div>
@@ -557,7 +610,9 @@ export function LegacyExcelImporter({
               name="files"
               accept=".xlsx"
               multiple
-              onChange={(event) => selectFiles(Array.from(event.currentTarget.files ?? []))}
+              onChange={(event) =>
+                selectFiles(Array.from(event.currentTarget.files ?? []))
+              }
             />
             {selectedFiles.length > 0 ? (
               <div className="mt-4 space-y-2">
@@ -618,14 +673,16 @@ export function LegacyExcelImporter({
               </button>
             </div>
             <div className="mt-5 grid gap-3 md:grid-cols-4">
-              {Object.entries(result.totals).slice(0, 16).map(([key, value]) => (
-                <div key={key} className="rounded-lg border border-line p-3">
-                  <p className="text-xs text-slate-500">{key}</p>
-                  <p className="mt-2 text-lg font-semibold">
-                    {Array.isArray(value) ? value.length : String(value)}
-                  </p>
-                </div>
-              ))}
+              {Object.entries(result.totals)
+                .slice(0, 16)
+                .map(([key, value]) => (
+                  <div key={key} className="rounded-lg border border-line p-3">
+                    <p className="text-xs text-slate-500">{key}</p>
+                    <p className="mt-2 text-lg font-semibold">
+                      {Array.isArray(value) ? value.length : String(value)}
+                    </p>
+                  </div>
+                ))}
             </div>
           </section>
 
@@ -646,7 +703,9 @@ export function LegacyExcelImporter({
                     <tr key={sheet.sheetName} className="border-t border-line">
                       <td className="py-2 font-semibold">{sheet.sheetName}</td>
                       <td className="py-2 text-slate-500">{sheet.type}</td>
-                      <td className="py-2">{sheet.selected ? "取り込み対象" : "対象外"}</td>
+                      <td className="py-2">
+                        {sheet.selected ? "取り込み対象" : "対象外"}
+                      </td>
                       <td className="py-2 text-right">{sheet.dataRows}</td>
                     </tr>
                   ))}
@@ -660,7 +719,8 @@ export function LegacyExcelImporter({
               <div>
                 <h2 className="font-bold">クロスファイル紐付け</h2>
                 <p className="mt-1 text-xs text-slate-500">
-                  REVIEW {reviewCount}件。必要に応じてApply前に手動選択してください。
+                  REVIEW {reviewCount}
+                  件。必要に応じてApply前に手動選択してください。
                 </p>
               </div>
             </div>
@@ -681,16 +741,25 @@ export function LegacyExcelImporter({
                 </thead>
                 <tbody>
                   {result.crossFileMatches.map((match) => (
-                    <tr key={match.hpCandidateId} className="border-t border-line align-top">
+                    <tr
+                      key={match.hpCandidateId}
+                      className="border-t border-line align-top"
+                    >
                       <td className="py-3 text-xs text-slate-500">
                         {match.sheetName}:{match.rowNumber}
                       </td>
-                      <td className="py-3 font-semibold">{match.projectName}</td>
+                      <td className="py-3 font-semibold">
+                        {match.projectName}
+                      </td>
                       <td className="py-3">{match.ownerName || "-"}</td>
                       <td className="py-3">{match.progress || "-"}</td>
-                      <td className="py-3">{match.estimatedCompanyName || "-"}</td>
+                      <td className="py-3">
+                        {match.estimatedCompanyName || "-"}
+                      </td>
                       <td className="py-3">{match.estimatedDealName || "-"}</td>
-                      <td className="py-3 text-right font-semibold">{match.score}</td>
+                      <td className="py-3 text-right font-semibold">
+                        {match.score}
+                      </td>
                       <td className="py-3">
                         <span className={decisionClass(match.decision)}>
                           {match.decision}
@@ -705,14 +774,20 @@ export function LegacyExcelImporter({
                         <select
                           className="text-field min-w-[220px]"
                           value={
-                            manualMatches[match.hpCandidateId]?.decision === "IGNORE"
+                            manualMatches[match.hpCandidateId]?.decision ===
+                            "IGNORE"
                               ? "__ignore"
-                              : manualMatches[match.hpCandidateId]?.decision === "UNRESOLVED"
-                              ? "__unresolved"
-                              : manualMatches[match.hpCandidateId]?.progressCandidateId ?? ""
+                              : manualMatches[match.hpCandidateId]?.decision ===
+                                  "UNRESOLVED"
+                                ? "__unresolved"
+                                : (manualMatches[match.hpCandidateId]
+                                    ?.progressCandidateId ?? "")
                           }
                           onChange={(event) =>
-                            updateManualMatch(match.hpCandidateId, event.target.value)
+                            updateManualMatch(
+                              match.hpCandidateId,
+                              event.target.value,
+                            )
                           }
                         >
                           <option value="">自動判定を使う</option>
@@ -725,13 +800,15 @@ export function LegacyExcelImporter({
                               key={candidate.progressCandidateId}
                               value={candidate.progressCandidateId}
                             >
-                              {candidate.score}点 / {candidate.companyName} / {candidate.dealName}
+                              {candidate.score}点 / {candidate.companyName} /{" "}
+                              {candidate.dealName}
                             </option>
                           ))}
                         </select>
                         {match.candidates[0] ? (
                           <p className="mt-1 text-xs text-slate-500">
-                            根拠: {match.candidates[0].reasons.join(", ") || "-"}
+                            根拠:{" "}
+                            {match.candidates[0].reasons.join(", ") || "-"}
                           </p>
                         ) : null}
                       </td>
@@ -747,13 +824,19 @@ export function LegacyExcelImporter({
             <div className="mt-4 grid gap-3 md:grid-cols-4">
               <ApplyTargetCheckbox
                 label="マスタ"
-                description={countText(result, ["priceBookRows", "customPropertyPlan"])}
+                description={countText(result, [
+                  "priceBookRows",
+                  "customPropertyPlan",
+                ])}
                 checked={applyTargets.masters}
                 onChange={(checked) => updateApplyTarget("masters", checked)}
               />
               <ApplyTargetCheckbox
                 label="会社・担当者"
-                description={countText(result, ["companyCandidates", "contactCandidates"])}
+                description={countText(result, [
+                  "companyCandidates",
+                  "contactCandidates",
+                ])}
                 checked={applyTargets.companiesContacts}
                 onChange={(checked) =>
                   updateApplyTarget("companiesContacts", checked)
@@ -771,21 +854,30 @@ export function LegacyExcelImporter({
                 description={countText(result, ["dealLineItemCandidates"])}
                 checked={applyTargets.dealLineItems}
                 disabled={!applyTargets.deals}
-                onChange={(checked) => updateApplyTarget("dealLineItems", checked)}
+                onChange={(checked) =>
+                  updateApplyTarget("dealLineItems", checked)
+                }
               />
               <ApplyTargetCheckbox
-                label="CS案件（AUTO・手動REVIEW）"
-                description={`AUTO ${applyPreview?.autoDeliveryProjects ?? 0}件 / 手動REVIEW ${applyPreview?.reviewDeliveryProjects ?? 0}件`}
-                checked={applyTargets.deliveryProjects}
+                label="AUTO CS案件"
+                description={`自動紐付け ${applyPreview?.autoDeliveryProjects ?? 0}件`}
+                checked={applyTargets.autoDeliveryProjects}
                 onChange={(checked) =>
-                  updateApplyTarget("deliveryProjects", checked)
+                  updateApplyTarget("autoDeliveryProjects", checked)
+                }
+              />
+              <ApplyTargetCheckbox
+                label="REVIEW CS案件"
+                description={`手動選択済み ${applyPreview?.reviewDeliveryProjects ?? 0}件 / REVIEW候補 ${applyPreview?.reviewTotal ?? 0}件`}
+                checked={applyTargets.reviewDeliveryProjects}
+                onChange={(checked) =>
+                  updateApplyTarget("reviewDeliveryProjects", checked)
                 }
               />
               <ApplyTargetCheckbox
                 label="未紐付けCS案件"
                 description={`UNRESOLVED ${applyPreview?.unresolvedDeliveryProjects ?? 0}件 / 候補 ${applyPreview?.unresolvedTotal ?? 0}件`}
                 checked={applyTargets.unresolvedDeliveryProjects}
-                disabled={!applyTargets.deliveryProjects}
                 onChange={(checked) =>
                   updateApplyTarget("unresolvedDeliveryProjects", checked)
                 }
@@ -800,7 +892,9 @@ export function LegacyExcelImporter({
                 label="DailyMetricEntry"
                 description={countText(result, ["dailyMetricRows"])}
                 checked={applyTargets.dailyMetrics}
-                onChange={(checked) => updateApplyTarget("dailyMetrics", checked)}
+                onChange={(checked) =>
+                  updateApplyTarget("dailyMetrics", checked)
+                }
               />
               <ApplyTargetCheckbox
                 label="KpiTarget"
@@ -810,22 +904,67 @@ export function LegacyExcelImporter({
               />
             </div>
             <p className="mt-3 text-xs font-semibold text-amber-700">
-              CS案件はAUTO紐付けのみ初期ONです。REVIEWは手動選択済みのみ、UNRESOLVEDは追加確認がある場合だけApplyします。DailyMetricEntry / KpiTargetはExcel集計値の二重計上を避けるため初期OFFです。
+              初期ONはAUTO
+              CS案件のみです。REVIEWは手動選択済みかつチェックONの場合のみ、UNRESOLVEDは追加確認がある場合だけApplyします。DailyMetricEntry
+              / KpiTargetはExcel集計値の二重計上を避けるため初期OFFです。
             </p>
             {applyPreview ? (
               <div className="mt-5 rounded-xl border border-line bg-slate-50 p-4">
-                <h3 className="text-sm font-bold">Apply前の最終件数</h3>
+                <h3 className="text-sm font-bold">Apply前の最終確認</h3>
+                <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
+                  <ApplyPreviewCount
+                    label="反映先組織"
+                    value={targetOrganization.name}
+                  />
+                  <ApplyPreviewCount
+                    label="反映先組織ID"
+                    value={maskOrganizationId(targetOrganization.id)}
+                  />
+                  <ApplyPreviewCount
+                    label="反映対象ファイル"
+                    value={result.sourceName}
+                  />
+                  <ApplyPreviewCount label="Apply対象件数" value={applyTotal} />
+                </div>
+                <h3 className="mt-5 text-sm font-bold">Apply前の最終件数</h3>
                 <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
-                  <ApplyPreviewCount label="会社" value={applyPreview.companies} />
-                  <ApplyPreviewCount label="担当者" value={applyPreview.contacts} />
+                  <ApplyPreviewCount
+                    label="会社"
+                    value={applyPreview.companies}
+                  />
+                  <ApplyPreviewCount
+                    label="担当者"
+                    value={applyPreview.contacts}
+                  />
                   <ApplyPreviewCount label="商談" value={applyPreview.deals} />
-                  <ApplyPreviewCount label="商品明細" value={applyPreview.dealLineItems} />
-                  <ApplyPreviewCount label="Activity" value={applyPreview.activities} />
-                  <ApplyPreviewCount label="AUTO CS案件" value={applyPreview.autoDeliveryProjects} />
-                  <ApplyPreviewCount label="REVIEW CS案件" value={applyPreview.reviewDeliveryProjects} />
-                  <ApplyPreviewCount label="UNRESOLVED CS案件" value={applyPreview.unresolvedDeliveryProjects} />
-                  <ApplyPreviewCount label="DailyMetricEntry" value={applyPreview.dailyMetrics} />
-                  <ApplyPreviewCount label="KpiTarget" value={applyPreview.kpiTargets} />
+                  <ApplyPreviewCount
+                    label="商品明細"
+                    value={applyPreview.dealLineItems}
+                  />
+                  <ApplyPreviewCount
+                    label="Activity"
+                    value={applyPreview.activities}
+                  />
+                  <ApplyPreviewCount
+                    label="AUTO CS案件"
+                    value={applyPreview.autoDeliveryProjects}
+                  />
+                  <ApplyPreviewCount
+                    label="REVIEW CS案件"
+                    value={applyPreview.reviewDeliveryProjects}
+                  />
+                  <ApplyPreviewCount
+                    label="UNRESOLVED CS案件"
+                    value={applyPreview.unresolvedDeliveryProjects}
+                  />
+                  <ApplyPreviewCount
+                    label="DailyMetricEntry"
+                    value={applyPreview.dailyMetrics}
+                  />
+                  <ApplyPreviewCount
+                    label="KpiTarget"
+                    value={applyPreview.kpiTargets}
+                  />
                 </div>
               </div>
             ) : null}
@@ -862,6 +1001,9 @@ export function LegacyExcelImporter({
                   onChange={(event) => setConfirmInput(event.target.value)}
                   placeholder={confirmText}
                 />
+                <span className="mt-1 block text-xs text-slate-500">
+                  「{confirmText}」と入力するとApplyできます。
+                </span>
               </label>
               <button
                 type="button"
@@ -873,7 +1015,8 @@ export function LegacyExcelImporter({
               </button>
             </div>
             <p className="mt-3 text-xs text-slate-500">
-              ImportJob ID: {result.importJobId}。同じExcelの再ApplyではLegacySourceLinkと正規化キーで重複作成を防ぎます。
+              ImportJob ID: {result.importJobId}
+              。同じExcelの再ApplyではLegacySourceLinkと正規化キーで重複作成を防ぎます。
             </p>
           </section>
         </>
@@ -899,14 +1042,17 @@ export function LegacyExcelImporter({
               {histories.map((item) => (
                 <tr key={item.id} className="border-t border-line">
                   <td className="py-2 text-slate-500">{item.createdAt}</td>
-                  <td className="py-2 font-semibold">{item.sourceName || "-"}</td>
+                  <td className="py-2 font-semibold">
+                    {item.sourceName || "-"}
+                  </td>
                   <td className="py-2">{item.status}</td>
                   <td className="py-2 text-right">{item.totalRows}</td>
                   <td className="py-2 text-right">{item.successCount}</td>
                   <td className="py-2 text-right">{item.skippedCount}</td>
                   <td className="py-2 text-right">{item.errorCount}</td>
                   <td className="py-2 text-right">
-                    {item.status === "PROCESSING" || item.status === "FAILED" ? (
+                    {item.status === "PROCESSING" ||
+                    item.status === "FAILED" ? (
                       <button
                         type="button"
                         className="secondary-button"
@@ -933,7 +1079,10 @@ export function LegacyExcelImporter({
               ))}
               {histories.length === 0 ? (
                 <tr>
-                  <td className="py-6 text-center text-sm text-slate-500" colSpan={8}>
+                  <td
+                    className="py-6 text-center text-sm text-slate-500"
+                    colSpan={8}
+                  >
                     まだ移行履歴はありません。
                   </td>
                 </tr>
@@ -1024,12 +1173,14 @@ function ApplyPreviewCount({
   value,
 }: {
   label: string;
-  value: number;
+  value: number | string;
 }) {
   return (
     <div className="rounded-lg bg-white px-3 py-2">
       <p className="text-xs text-slate-500">{label}</p>
-      <p className="mt-1 font-bold text-slate-900">{value.toLocaleString()}件</p>
+      <p className="mt-1 break-words font-bold text-slate-900">
+        {typeof value === "number" ? `${value.toLocaleString()}件` : value}
+      </p>
     </div>
   );
 }

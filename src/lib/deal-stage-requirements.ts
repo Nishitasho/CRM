@@ -38,7 +38,7 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
   {
     key: "billing_date",
     label: "課金日",
-    description: "課金開始日または請求開始日",
+    description: "課金日または請求開始日",
     input: {
       propertyName: "customFields.billingDate",
       fieldType: "DATE",
@@ -101,6 +101,11 @@ export const DEAL_STAGE_REQUIREMENT_OPTIONS = [
     key: "closer",
     label: "CLOSER",
     description: "受注担当者が紐づいている",
+    input: {
+      propertyName: "participants.closerUserId",
+      fieldType: "USER_SELECT",
+      optionsKey: "users",
+    },
   },
   {
     key: "decision_maker",

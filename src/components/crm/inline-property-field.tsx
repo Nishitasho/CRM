@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyboardEvent, ReactNode, useState } from "react";
+import { KeyboardEvent, ReactNode, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export type RecordPropertyDescriptor = {
@@ -27,6 +27,7 @@ export type RecordPropertyDescriptor = {
   isCustom: boolean;
   isEditable: boolean;
   isRequired?: boolean;
+  renderDirect?: boolean;
 };
 
 function stringValue(value: unknown) {
@@ -68,6 +69,12 @@ export function InlinePropertyField({
       ? property.formattedValue
       : property.options?.find((option) => option.value === stringValue(value))?.label ??
         (typeof value === "boolean" ? (value ? "はい" : "いいえ") : stringValue(value));
+
+  useEffect(() => {
+    if (editing || pending) return;
+    setValue(property.value);
+    setDraft(property.value);
+  }, [editing, pending, property.value]);
 
   async function save(nextValue = draft) {
     setPending(true);
@@ -177,7 +184,9 @@ export function InlinePropertyField({
     <div>
       <dt className="text-xs font-semibold text-slate-400">{property.label}</dt>
       <dd className="mt-1 break-words text-sm font-medium text-ink">
-        {editing ? (
+        {property.renderDirect ? (
+          <div>{property.formattedValue}</div>
+        ) : editing ? (
           <div className="space-y-2">
             {editor()}
             {!["SELECT", "OWNER", "CHECKBOX"].includes(property.fieldType) ? (

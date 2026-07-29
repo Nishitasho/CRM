@@ -9,6 +9,7 @@ type IconName =
   | "forms"
   | "settings"
   | "bell"
+  | "logout"
   | "plus"
   | "search"
   | "arrow";
@@ -68,6 +69,13 @@ const paths: Record<IconName, React.ReactNode> = {
     <>
       <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
       <path d="M10 21h4" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M10 17l5-5-5-5" />
+      <path d="M15 12H3" />
+      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,

@@ -11,7 +11,12 @@ export async function getCrmFormOptions(
       orderBy: { createdAt: "asc" },
     }),
     prisma.pipeline.findMany({
-      where: { organizationId, ...(businessUnitId ? { businessUnitId } : {}) },
+      where: {
+        organizationId,
+        ...(businessUnitId
+          ? { OR: [{ businessUnitId }, { businessUnitId: null }] }
+          : {}),
+      },
       select: {
         id: true,
         name: true,

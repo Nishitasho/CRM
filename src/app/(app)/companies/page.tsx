@@ -52,7 +52,14 @@ export default async function CompaniesPage({
         description="取引先企業の基本情報と関連データを管理します。"
       />
       <ObjectNav active="companies" />
-      <SavedViewBar objectType="COMPANY" q={q} />
+      <details className="mb-4 rounded-lg border border-line bg-white px-4 py-3">
+        <summary className="cursor-pointer text-sm font-bold text-slate-600">
+          保存ビュー
+        </summary>
+        <div className="mt-3">
+          <SavedViewBar objectType="COMPANY" q={q} />
+        </div>
+      </details>
       <ListToolbar
         q={q}
         newHref="/companies/new"

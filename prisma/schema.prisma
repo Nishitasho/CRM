@@ -75,8 +75,11 @@ enum PriceBookStatus {
 }
 
 enum DealLineItemStatus {
+  PLANNED      @map("planned")
+  CONSIDERING  @map("considering")
   PROPOSED     @map("proposed")
   WON          @map("won")
+  BILLED       @map("billed")
   LOST         @map("lost")
   CANCELLED    @map("cancelled")
   NOT_SELECTED @map("not_selected")
@@ -2020,11 +2023,12 @@ model DealLineItem {
   expectedRevenueAmount     Decimal?           @map("expected_revenue_amount") @db.Decimal(18, 2)
   expectedGrossProfitAmount Decimal?           @map("expected_gross_profit_amount") @db.Decimal(18, 2)
   collectedAmount           Decimal?           @map("collected_amount") @db.Decimal(18, 2)
+  meetingAt                 DateTime?          @map("meeting_at") @db.Date
   contractedAt              DateTime?          @map("contracted_at") @db.Date
   collectedAt               DateTime?          @map("collected_at") @db.Date
   billingStartedAt          DateTime?          @map("billing_started_at") @db.Date
   cancelledAt               DateTime?          @map("cancelled_at") @db.Date
-  status                    DealLineItemStatus @default(PROPOSED)
+  status                    DealLineItemStatus @default(PLANNED)
   lossReasonId              String?            @map("loss_reason_id") @db.Uuid
   lossReasonNote            String?            @map("loss_reason_note")
   lostAt                    DateTime?          @map("lost_at") @db.Timestamptz(3)

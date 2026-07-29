@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext, switchActiveOrganization } from "@/lib/auth";
-import { createDefaultPipeline } from "@/lib/organization";
+import { ensureCoreCrmDefaults } from "@/lib/core-crm";
 import { prisma } from "@/lib/prisma";
 import { makeOrganizationSlug } from "@/lib/security";
 import { organizationSchema } from "@/lib/validation";
@@ -39,7 +39,10 @@ export async function POST(request: Request) {
           role: "SUPER_ADMIN",
         },
       });
-      await createDefaultPipeline(tx, created.id);
+      await ensureCoreCrmDefaults(tx, {
+        organizationId: created.id,
+        userId: context.user.id,
+      });
       await tx.auditLog.create({
         data: {
           organizationId: created.id,

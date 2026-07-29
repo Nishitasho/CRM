@@ -19,7 +19,16 @@ export async function POST(request: Request, { params }: Params) {
     const range = monthRange();
     const metrics = await prisma.metricDefinition.findMany({
       where: { organizationId: context.organization.id, isActive: true },
-      include: { targets: { select: { targetValue: true } } },
+      include: {
+        targets: {
+          select: {
+            businessUnitId: true,
+            userId: true,
+            workFunction: true,
+            targetValue: true,
+          },
+        },
+      },
     });
     const metric = metrics.find((item) => item.id === id);
     if (!metric)

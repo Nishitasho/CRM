@@ -27,6 +27,8 @@ const associationRepairTargets = {
   deals: true,
   dealLineItems: false,
   deliveryProjects: false,
+  autoDeliveryProjects: false,
+  reviewDeliveryProjects: false,
   unresolvedDeliveryProjects: false,
   activities: false,
   dailyMetrics: false,

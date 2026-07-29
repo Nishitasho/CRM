@@ -2625,14 +2625,15 @@ function reviewedCrossFileMatches(
     const suggestedDealKey = row.suggestedDealKey || "";
     const candidateId = selectedDealKey || suggestedDealKey;
     const candidate = candidateId ? dealById.get(candidateId) : undefined;
-    const decision = !apply
-      ? "IGNORE"
-      : selectedDealKey
-        ? "REVIEW"
-        : normalizeDecision(row.matchDecision);
-    if (!apply) {
+    const normalizedDecision = normalizeDecision(row.matchDecision);
+    const hasManualSelection = Boolean(
+      selectedDealKey &&
+        (normalizedDecision !== "AUTO" || selectedDealKey !== suggestedDealKey),
+    );
+    const decision = hasManualSelection ? "REVIEW" : normalizedDecision;
+    if (!apply || decision === "IGNORE") {
       manualMatches[project.id] = { decision: "IGNORE" };
-    } else if (selectedDealKey) {
+    } else if (hasManualSelection) {
       manualMatches[project.id] = {
         decision: "MANUAL",
         progressCandidateId: selectedDealKey,
@@ -2668,18 +2669,21 @@ function reviewedCsProjectMatches(rows: SheetRow[], deals: ProgressDealCandidate
   const matches = rows.map((row, index): LegacyCrossFileMatch => {
     const hpCandidateId = row.hpSourceKey || `hp:${index}`;
     const apply = parseApply(row.apply);
-    const selectedDealKey = row.selectedDealKey || row.suggestedDealKey || "";
-    const deal = selectedDealKey ? dealById.get(selectedDealKey) : undefined;
-    const decision = !apply
-      ? "IGNORE"
-      : row.selectedDealKey
-        ? "REVIEW"
-        : normalizeDecision(row.matchDecision);
-    if (!apply) manualMatches[hpCandidateId] = { decision: "IGNORE" };
-    else if (row.selectedDealKey) {
+    const selectedDealKey = row.selectedDealKey || "";
+    const suggestedDealKey = row.suggestedDealKey || "";
+    const candidateId = selectedDealKey || suggestedDealKey;
+    const deal = candidateId ? dealById.get(candidateId) : undefined;
+    const normalizedDecision = normalizeDecision(row.matchDecision);
+    const hasManualSelection = Boolean(
+      selectedDealKey &&
+        (normalizedDecision !== "AUTO" || selectedDealKey !== suggestedDealKey),
+    );
+    const decision = hasManualSelection ? "REVIEW" : normalizedDecision;
+    if (!apply || decision === "IGNORE") manualMatches[hpCandidateId] = { decision: "IGNORE" };
+    else if (hasManualSelection) {
       manualMatches[hpCandidateId] = {
         decision: "MANUAL",
-        progressCandidateId: row.selectedDealKey,
+        progressCandidateId: selectedDealKey,
       };
     } else if (decision === "UNRESOLVED") {
       manualMatches[hpCandidateId] = { decision: "UNRESOLVED" };
@@ -2756,9 +2760,10 @@ function sheetRowsByName(sheets: ParsedWorkbookSheet[]) {
   for (const sheet of sheets) {
     const [headers, ...rows] = sheet.rows;
     if (!headers) continue;
+    const sheetName = canonicalReviewedSheetName(sheet.sheetName);
     const normalizedHeaders = headers.map((header, index) => header || `列${index + 1}`);
     byName.set(
-      sheet.sheetName,
+      sheetName,
       rows
         .map((row) =>
           Object.fromEntries(
@@ -2769,6 +2774,10 @@ function sheetRowsByName(sheets: ParsedWorkbookSheet[]) {
     );
   }
   return byName;
+}
+
+function canonicalReviewedSheetName(sheetName: string) {
+  return sheetName.replace(/^\d{2}_/, "");
 }
 
 function readSummary(rows: SheetRow[]) {

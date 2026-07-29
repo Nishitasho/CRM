@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { DeliveryPipelineBoard } from "@/components/delivery/delivery-pipeline-board";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { deliveryStageLabel } from "@/lib/delivery";
 import { prisma } from "@/lib/prisma";
 
 type Props = {
@@ -65,7 +66,7 @@ export default async function DeliveryProjectBoardPage({ searchParams }: Props) 
   const companyById = new Map(companies.map((company) => [company.id, company.name]));
   const stages = pipeline.stages.map((stage) => ({
     id: stage.id,
-    name: stage.name,
+    name: deliveryStageLabel(stage.name),
     color: stage.color,
     staleDays: stage.staleDays,
     projects: projects
@@ -79,6 +80,7 @@ export default async function DeliveryProjectBoardPage({ searchParams }: Props) 
           : "未設定",
         expectedPublishDate: project.expectedPublishDate?.toISOString() ?? null,
         nextAction: project.nextAction,
+        nextActionDate: project.nextActionDate?.toISOString() ?? null,
         healthStatus: project.healthStatus,
         blocker: project.blocker,
         stageId: project.stageId,
@@ -91,16 +93,11 @@ export default async function DeliveryProjectBoardPage({ searchParams }: Props) 
       <PageHeading
         eyebrow="CS pipeline"
         title="CSパイプライン"
-        description={`${pipeline.name}のCS案件をドラッグ＆ドロップで進めます。ステージ移動時は必須項目を検証します。`}
+        description={`${pipeline.name}の制作進捗をドラッグ＆ドロップで更新します。カードで次回アクションと納品予定を確認できます。`}
         action={
-          <div className="flex flex-wrap gap-2">
-            <Link href="/delivery-projects" className="secondary-button">
-              リスト表示
-            </Link>
-            <Link href="/settings/products" className="secondary-button">
-              CS対象設定
-            </Link>
-          </div>
+          <Link href="/delivery-projects" className="secondary-button">
+            リスト表示
+          </Link>
         }
       />
       <form className="mb-5 flex flex-wrap gap-2">

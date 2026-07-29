@@ -49,7 +49,13 @@ export default async function LegacyExcelImportPage() {
         title="Excel移行"
         description="進捗管理シートとHP制作管理シートを解析し、会社・コンタクト・商談・商品明細・CS案件を紐付けて取り込みます。"
       />
-      <LegacyExcelImporter histories={histories} />
+      <LegacyExcelImporter
+        histories={histories}
+        targetOrganization={{
+          id: context.organization.id,
+          name: context.organization.name,
+        }}
+      />
     </div>
   );
 }

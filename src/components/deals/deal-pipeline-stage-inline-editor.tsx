@@ -2,7 +2,12 @@
 
 import { FormEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { isBillingStageName } from "@/lib/deal-line-item-state";
 import { MissingStageRequirementsDialog } from "./missing-stage-requirements-dialog";
+import {
+  DealWonLineItemDialog,
+  type WonLineItemOutcome,
+} from "./deal-won-line-item-dialog";
 
 type Stage = {
   id: string;
@@ -39,7 +44,9 @@ export function DealPipelineStageInlineEditor({
   currentStageId,
   pipelines,
   lossReasons,
+  lineItems = [],
   forecastCategories = [],
+  users = [],
 }: {
   dealId: string;
   canEdit: boolean;
@@ -47,7 +54,15 @@ export function DealPipelineStageInlineEditor({
   currentStageId: string;
   pipelines: Pipeline[];
   lossReasons: LossReason[];
+  lineItems?: Array<{
+    id: string;
+    name: string;
+    productName: string | null;
+    status: string;
+    billingStartedAt: string | null;
+  }>;
   forecastCategories?: Option[];
+  users?: Option[];
 }) {
   const router = useRouter();
   const [pipelineId, setPipelineId] = useState(currentPipelineId);
@@ -56,7 +71,11 @@ export function DealPipelineStageInlineEditor({
   const [savedStageId, setSavedStageId] = useState(currentStageId);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  const [lostDialogStageId, setLostDialogStageId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [lostDialogStageId, setLostDialogStageId] = useState<string | null>(
+    null,
+  );
+  const [wonDialogStageId, setWonDialogStageId] = useState<string | null>(null);
   const [pendingRequirements, setPendingRequirements] =
     useState<PendingRequirementSave | null>(null);
 
@@ -64,11 +83,18 @@ export function DealPipelineStageInlineEditor({
     () => pipelines.find((item) => item.id === pipelineId) ?? pipelines[0],
     [pipelineId, pipelines],
   );
-  const selectedStage = selectedPipeline?.stages.find((item) => item.id === stageId);
+  const selectedStage = selectedPipeline?.stages.find(
+    (item) => item.id === stageId,
+  );
   const savedPipeline = pipelines.find((item) => item.id === savedPipelineId);
-  const savedStage = savedPipeline?.stages.find((item) => item.id === savedStageId);
+  const savedStage = savedPipeline?.stages.find(
+    (item) => item.id === savedStageId,
+  );
   const lostStage = lostDialogStageId
     ? selectedPipeline?.stages.find((item) => item.id === lostDialogStageId)
+    : null;
+  const wonStage = wonDialogStageId
+    ? selectedPipeline?.stages.find((item) => item.id === wonDialogStageId)
     : null;
 
   if (!canEdit) {
@@ -80,11 +106,16 @@ export function DealPipelineStageInlineEditor({
     );
   }
 
-  async function save(nextPipelineId: string, nextStageId: string, extra?: Record<string, unknown>) {
+  async function save(
+    nextPipelineId: string,
+    nextStageId: string,
+    extra?: Record<string, unknown>,
+  ) {
     const previousPipelineId = savedPipelineId;
     const previousStageId = savedStageId;
     setPending(true);
     setError("");
+    setMessage("");
     const response = await fetch(`/api/deals/${dealId}/stage`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -115,7 +146,9 @@ export function DealPipelineStageInlineEditor({
       }
       setPipelineId(previousPipelineId);
       setStageId(previousStageId);
-      setError(result.message ?? "パイプライン/ステージを変更できませんでした。");
+      setError(
+        result.message ?? "パイプライン/ステージを変更できませんでした。",
+      );
       return;
     }
     setSavedPipelineId(nextPipelineId);
@@ -123,8 +156,75 @@ export function DealPipelineStageInlineEditor({
     setPipelineId(nextPipelineId);
     setStageId(nextStageId);
     setLostDialogStageId(null);
+    setWonDialogStageId(null);
     setPendingRequirements(null);
+    const createdCount = Array.isArray(result.deliveryProjectResult?.created)
+      ? result.deliveryProjectResult.created.length
+      : 0;
+    const skippedCount = Array.isArray(result.deliveryProjectResult?.skipped)
+      ? result.deliveryProjectResult.skipped.length
+      : 0;
+    setMessage(
+      createdCount
+        ? `ステージを更新し、CS案件を${createdCount}件自動作成しました。`
+        : skippedCount
+          ? "ステージを更新しました。CS案件は作成済みです。"
+          : "ステージを更新しました。",
+    );
     router.refresh();
+  }
+
+  async function preflight(
+    nextPipelineId: string,
+    nextStageId: string,
+    extra?: Record<string, unknown>,
+  ) {
+    setPending(true);
+    setError("");
+    setMessage("");
+    const response = await fetch(`/api/deals/${dealId}/stage/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipelineId: nextPipelineId,
+        stageId: nextStageId,
+        ...extra,
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    setPending(false);
+    if (!response.ok) {
+      setPipelineId(savedPipelineId);
+      setStageId(savedStageId);
+      setError(result.message ?? "ステージ変更前の確認に失敗しました。");
+      return;
+    }
+    if (
+      result.canTransition === false &&
+      Array.isArray(result.missingRequirementKeys) &&
+      result.missingRequirementKeys.length
+    ) {
+      setPendingRequirements({
+        pipelineId: nextPipelineId,
+        stageId: nextStageId,
+        extra,
+        missingRequirementKeys: result.missingRequirementKeys.map(String),
+        missingLabels: Array.isArray(result.missingFields)
+          ? result.missingFields.map((field: unknown) =>
+              typeof field === "string"
+                ? field
+                : field &&
+                    typeof field === "object" &&
+                    "label" in field &&
+                    typeof field.label === "string"
+                  ? field.label
+                  : String(field),
+            )
+          : [],
+      });
+      return;
+    }
+    await save(nextPipelineId, nextStageId, extra);
   }
 
   function onPipelineChange(nextPipelineId: string) {
@@ -132,27 +232,47 @@ export function DealPipelineStageInlineEditor({
     const nextStageId =
       nextPipeline?.id === savedPipelineId
         ? savedStageId
-        : nextPipeline?.stages[0]?.id ?? "";
+        : (nextPipeline?.stages[0]?.id ?? "");
     setPipelineId(nextPipelineId);
     setStageId(nextStageId);
     setError("");
   }
 
   function onStageChange(nextStageId: string) {
-    const nextStage = selectedPipeline?.stages.find((item) => item.id === nextStageId);
+    const nextStage = selectedPipeline?.stages.find(
+      (item) => item.id === nextStageId,
+    );
     setStageId(nextStageId);
     if (!nextStage || !selectedPipeline) return;
     if (nextStage.stageType === "LOST") {
       setLostDialogStageId(nextStageId);
       return;
     }
-    void save(selectedPipeline.id, nextStage.id);
+    if (nextStage.stageType === "WON" && !isBillingStageName(nextStage.name)) {
+      setWonDialogStageId(nextStageId);
+      return;
+    }
+    void preflight(selectedPipeline.id, nextStage.id);
   }
 
   function cancelLostDialog() {
     setLostDialogStageId(null);
     setPipelineId(savedPipelineId);
     setStageId(savedStageId);
+  }
+
+  function cancelWonDialog() {
+    setWonDialogStageId(null);
+    setPipelineId(savedPipelineId);
+    setStageId(savedStageId);
+  }
+
+  async function confirmWonLineItems(outcomes: WonLineItemOutcome[]) {
+    if (!selectedPipeline || !wonDialogStageId) return;
+    setWonDialogStageId(null);
+    await preflight(selectedPipeline.id, wonDialogStageId, {
+      lineItemOutcomes: outcomes,
+    });
   }
 
   function cancelRequirementDialog() {
@@ -214,8 +334,16 @@ export function DealPipelineStageInlineEditor({
             </option>
           ))}
         </select>
+        {selectedStage?.stageType === "WON" ? (
+          <span className="mt-2 block text-xs font-semibold text-brand-700">
+            ExcelのA（受注）に相当します。HP制作の商品があればCS案件を自動作成します。
+          </span>
+        ) : null}
       </label>
       {pending ? <p className="text-xs text-slate-500">保存中...</p> : null}
+      {message ? (
+        <p className="text-xs font-bold text-emerald-700">{message}</p>
+      ) : null}
       {error ? <p className="text-xs font-bold text-red-600">{error}</p> : null}
 
       {lostStage ? (
@@ -230,7 +358,11 @@ export function DealPipelineStageInlineEditor({
             </p>
             <label className="mt-4 block">
               <span className="field-label">失注理由</span>
-              <select className="text-field w-full" name="primaryLossReasonId" required>
+              <select
+                className="text-field w-full"
+                name="primaryLossReasonId"
+                required
+              >
                 <option value="">選択してください</option>
                 {lossReasons.map((reason) => (
                   <option key={reason.id} value={reason.id}>
@@ -242,11 +374,20 @@ export function DealPipelineStageInlineEditor({
             </label>
             <label className="mt-4 block">
               <span className="field-label">補足</span>
-              <textarea className="text-field min-h-24 w-full" name="lossReasonNote" />
+              <textarea
+                className="text-field min-h-24 w-full"
+                name="lossReasonNote"
+              />
             </label>
-            {error ? <p className="mt-3 text-sm font-bold text-red-600">{error}</p> : null}
+            {error ? (
+              <p className="mt-3 text-sm font-bold text-red-600">{error}</p>
+            ) : null}
             <div className="mt-5 flex justify-end gap-2">
-              <button className="secondary-button" type="button" onClick={cancelLostDialog}>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={cancelLostDialog}
+              >
                 キャンセル
               </button>
               <button className="primary-button" disabled={pending}>
@@ -256,20 +397,28 @@ export function DealPipelineStageInlineEditor({
           </form>
         </div>
       ) : null}
+      {wonStage ? (
+        <DealWonLineItemDialog
+          stageName={wonStage.name}
+          lineItems={lineItems}
+          pending={pending}
+          onCancel={cancelWonDialog}
+          onConfirm={confirmWonLineItems}
+        />
+      ) : null}
       {pendingRequirements ? (
         <MissingStageRequirementsDialog
           dealId={dealId}
           title="不足項目を入力"
           missingRequirementKeys={pendingRequirements.missingRequirementKeys}
           missingLabels={pendingRequirements.missingLabels}
-          inputOptions={{ forecastCategories }}
+          inputOptions={{ forecastCategories, users }}
           onCancel={cancelRequirementDialog}
-          onSaved={() =>
-            save(
-              pendingRequirements.pipelineId,
-              pendingRequirements.stageId,
-              pendingRequirements.extra,
-            )
+          onSaved={(propertyValues) =>
+            save(pendingRequirements.pipelineId, pendingRequirements.stageId, {
+              ...pendingRequirements.extra,
+              propertyValues,
+            })
           }
         />
       ) : null}

@@ -11,6 +11,7 @@ import { z } from "zod";
 import { BadRequestError } from "./api";
 import {
   ensureInternalAppointmentFormConfig,
+  coreAppointmentFormSchema,
   getPublishedInternalAppointmentFormConfig,
   validateAppointmentPayloadAgainstSchema,
 } from "./appointment-form-config";
@@ -18,7 +19,10 @@ import { AuthContext } from "./auth";
 import { assertBusinessUnitAccess } from "./business-units";
 import { createRecordActivity } from "./crm";
 import { syncBookingToGoogle } from "./google-calendar";
-import { canAdministrateInternalAppointments } from "./internal-appointments";
+import {
+  canAdministrateInternalAppointments,
+  isInternalAppointmentUserEligible,
+} from "./internal-appointments";
 import { AuthorizationError } from "./permissions";
 import { prisma } from "./prisma";
 import { assignUser } from "./routing";
@@ -105,6 +109,8 @@ async function pipelineForAppointment(
     orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }],
   });
   const stage =
+    pipeline?.stages.find((item) => item.name === "E商談") ??
+    pipeline?.stages.find((item) => /^E2/.test(item.name)) ??
     pipeline?.stages.find((item) => item.name.includes("商談予定")) ??
     pipeline?.stages.find((item) => item.name.includes("アポ")) ??
     pipeline?.stages[0];
@@ -173,31 +179,6 @@ async function resolveFsUser(
   return assignment.selectedUserId;
 }
 
-async function hasActiveBusinessUnitMembership(input: {
-  organizationId: string;
-  businessUnitId: string;
-  userId: string;
-  workFunction: "IS" | "FS";
-}) {
-  const membership = await prisma.businessUnitMembership.findFirst({
-    where: {
-      organizationId: input.organizationId,
-      businessUnitId: input.businessUnitId,
-      userId: input.userId,
-      workFunction: input.workFunction,
-      status: "ACTIVE",
-      businessUnit: { status: "ACTIVE" },
-      user: {
-        memberships: {
-          some: { organizationId: input.organizationId, status: "ACTIVE" },
-        },
-      },
-    },
-    select: { id: true },
-  });
-  return Boolean(membership);
-}
-
 async function assertIndustryAvailable(input: {
   organizationId: string;
   industryId: string;
@@ -208,19 +189,21 @@ async function assertIndustryAvailable(input: {
       id: input.industryId,
       isActive: true,
     },
-    select: { id: true },
+    select: { id: true, name: true },
   });
   if (!industry) {
     throw new BadRequestError(
       "選択した業種が見つかりません。業種マスタを確認してください。",
     );
   }
+  return industry;
 }
 
 async function findOrCreateCompany(
   tx: Prisma.TransactionClient,
   organizationId: string,
   ownerUserId: string | null,
+  industryName: string,
   input: AppointmentInput,
 ) {
   if (input.companyId) {
@@ -254,7 +237,7 @@ async function findOrCreateCompany(
     name: input.companyName,
     domain,
     phone,
-    industry: input.industryId,
+    industry: industryName,
     address: input.address ?? (address || null),
     city: input.city,
     prefecture: input.prefectureName,
@@ -364,7 +347,7 @@ export async function createInternalAppointment(
     userId: context.user.id,
   });
   const validatedPayload = validateAppointmentPayloadAgainstSchema(
-    publishedForm.schema,
+    coreAppointmentFormSchema(publishedForm.schema),
     raw,
   );
   const input = appointmentCreateSchema.parse({
@@ -374,18 +357,21 @@ export async function createInternalAppointment(
   if (!(await assertBusinessUnitAccess(context, input.businessUnitId))) {
     throw new BadRequestError("事業部が見つかりません。");
   }
-  await assertIndustryAvailable({
+  const industry = await assertIndustryAvailable({
     organizationId: context.organization.id,
     industryId: input.industryId,
   });
   const canAdminister = canAdministrateInternalAppointments(context);
   const appointmentSetterUserId =
     input.appointmentSetterUserId ?? context.user.id;
+  if (!input.assignedFsUserId) {
+    throw new BadRequestError("FS担当者を選択してください。");
+  }
   if (!canAdminister && appointmentSetterUserId !== context.user.id) {
     throw new AuthorizationError("他のIS担当者としてアポ登録する権限がありません。");
   }
   if (
-    !(await hasActiveBusinessUnitMembership({
+    !(await isInternalAppointmentUserEligible({
       organizationId: context.organization.id,
       businessUnitId: input.businessUnitId,
       userId: appointmentSetterUserId,
@@ -396,7 +382,7 @@ export async function createInternalAppointment(
   }
   if (
     input.assignedFsUserId &&
-    !(await hasActiveBusinessUnitMembership({
+    !(await isInternalAppointmentUserEligible({
       organizationId: context.organization.id,
       businessUnitId: input.businessUnitId,
       userId: input.assignedFsUserId,
@@ -446,6 +432,7 @@ export async function createInternalAppointment(
         tx,
         context.organization.id,
         assignedFsUserId ?? appointmentSetterUserId,
+        industry.name,
         input,
       );
       const contact = await findOrCreateContact(
@@ -788,6 +775,18 @@ export async function createInternalAppointment(
       idempotencyKey: input.idempotencyKey,
     },
   });
+  const booking = submission.meetingBookingId
+    ? await prisma.meetingBooking.findFirst({
+        where: {
+          id: submission.meetingBookingId,
+          organizationId: context.organization.id,
+        },
+        select: {
+          syncStatus: true,
+          googleEventHtmlLink: true,
+        },
+      })
+    : null;
   return {
     duplicated: false,
     formSubmissionId: submission.id,
@@ -795,5 +794,7 @@ export async function createInternalAppointment(
     contactId: submission.contactId,
     dealId: submission.dealId,
     meetingBookingId: submission.meetingBookingId,
+    calendarSyncStatus: booking?.syncStatus ?? null,
+    googleEventHtmlLink: booking?.googleEventHtmlLink ?? null,
   };
 }

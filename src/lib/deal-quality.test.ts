@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildDealQualityIssues, highestDealQualitySeverity } from "./deal-quality";
+import {
+  analyzeDealQuality,
+  buildDealQualityIssues,
+  highestDealQualitySeverity,
+} from "./deal-quality";
 
 describe("deal quality checks", () => {
   it("flags open deals that need sales follow-up", () => {
@@ -59,5 +63,35 @@ describe("deal quality checks", () => {
     expect(lostIssues.map((issue) => issue.type)).toContain(
       "MISSING_LOSS_REASON",
     );
+  });
+
+  it("returns priority score, level, and primary alert from shared analysis", () => {
+    const analysis = analyzeDealQuality(
+      {
+        status: "OPEN",
+        stageType: "OPEN",
+        amount: 1200000,
+        nextAction: "提案資料を送る",
+        nextActionDate: "2026-06-25",
+        expectedCloseDate: "2026-06-27",
+        lastActivityAt: "2026-06-15",
+        lineItemCount: 1,
+        closerCount: 1,
+        forecastCategoryId: "forecast-id",
+      },
+      "2026-06-25",
+    );
+
+    expect(analysis.alerts.map((alert) => alert.type)).toEqual(
+      expect.arrayContaining([
+        "NEXT_ACTION_TODAY",
+        "EXPECTED_CLOSE_SOON",
+        "OLD_LAST_ACTIVITY",
+        "HIGH_AMOUNT",
+      ]),
+    );
+    expect(analysis.primaryAlert?.type).toBe("NEXT_ACTION_TODAY");
+    expect(analysis.priorityLevel).toBe("CRITICAL");
+    expect(analysis.priorityScore).toBeGreaterThanOrEqual(100);
   });
 });

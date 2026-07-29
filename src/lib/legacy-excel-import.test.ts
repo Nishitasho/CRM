@@ -1,11 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   analyzeLegacyExcelWorkbook,
   analyzeLegacyExcelWorkbooks,
   buildLegacyPrimaryAssociationData,
   cleanLegacyCellValue,
+  checkLegacyExcelImportJobOrganization,
+  ensureBusinessUnit,
+  ensurePipelineStage,
+  ensureProduct,
   excelSerialToDateString,
+  findUserByName,
   getLegacyExcelApplyPlan,
+  getLegacyExcelConfirmText,
   mapLegacyProgressStatus,
   normalizeDomain,
   normalizeLegacyName,
@@ -13,6 +19,7 @@ import {
   parseLegacyDate,
   parseMoney,
 } from "./legacy-excel-import";
+import { parseLegacyExcelApplyRequest } from "./legacy-excel-apply-request";
 import {
   analyzeLegacyReviewedExcelWorkbook,
   generateLegacyExcelReviewArtifacts,
@@ -55,19 +62,61 @@ describe("legacy Excel import", () => {
     expect(cleanLegacyCellValue("FALSE")).toBe("");
     expect(cleanLegacyCellValue("true")).toBe("");
     expect(cleanLegacyCellValue("1899-12-30")).toBe("");
-    expect(cleanLegacyCellValue("https://example.com")).toBe("https://example.com");
+    expect(cleanLegacyCellValue("https://example.com")).toBe(
+      "https://example.com",
+    );
   });
 
   it("generates deal and delivery project candidates from target sheets", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
         "【HD】案件管理シート": [
-          ["案件名", "進捗", "商材", "担当者名", "電話番号", "Webサイト", "受注日", "粗利", "FS担当者"],
-          ["株式会社テスト", "A受注", "HP", "山田 太郎", "03-1234-5678", "https://example.com/shop", "2026/06/10", "100,000", "佐藤"],
+          [
+            "案件名",
+            "進捗",
+            "商材",
+            "担当者名",
+            "電話番号",
+            "Webサイト",
+            "受注日",
+            "粗利",
+            "FS担当者",
+          ],
+          [
+            "株式会社テスト",
+            "A受注",
+            "HP",
+            "山田 太郎",
+            "03-1234-5678",
+            "https://example.com/shop",
+            "2026/06/10",
+            "100,000",
+            "佐藤",
+          ],
         ],
         "【新】HP管理シート": [
-          ["案件名", "進捗", "商材", "担当者名", "電話番号", "Webサイト", "ヒアリング日", "公開予定日", "CS担当"],
-          ["テスト HP制作", "制作中", "HP", "山田 太郎", "0312345678", "example.com", "2026/06/11", "2026/07/01", "鈴木"],
+          [
+            "案件名",
+            "進捗",
+            "商材",
+            "担当者名",
+            "電話番号",
+            "Webサイト",
+            "ヒアリング日",
+            "公開予定日",
+            "CS担当",
+          ],
+          [
+            "テスト HP制作",
+            "制作中",
+            "HP",
+            "山田 太郎",
+            "0312345678",
+            "example.com",
+            "2026/06/11",
+            "2026/07/01",
+            "鈴木",
+          ],
         ],
       }),
       "legacy.xlsx",
@@ -84,7 +133,14 @@ describe("legacy Excel import", () => {
       makeWorkbook({
         "【HD】案件管理シート": [
           ["案件名", "進捗", "商材", "電話番号", "Webサイト", "受注日"],
-          ["株式会社テスト", "A受注", "HP", "03-1234-5678", "https://example.com", "2026/06/10"],
+          [
+            "株式会社テスト",
+            "A受注",
+            "HP",
+            "03-1234-5678",
+            "https://example.com",
+            "2026/06/10",
+          ],
         ],
         "※ここ触る※全案件": [
           ["案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日"],
@@ -106,7 +162,14 @@ describe("legacy Excel import", () => {
         buffer: makeWorkbook({
           "【HD】案件管理シート": [
             ["案件名", "進捗", "商材", "電話番号", "Webサイト", "受注日"],
-            ["株式会社テスト", "A受注", "HP", "03-1234-5678", "https://example.com", "2026/06/10"],
+            [
+              "株式会社テスト",
+              "A受注",
+              "HP",
+              "03-1234-5678",
+              "https://example.com",
+              "2026/06/10",
+            ],
           ],
         }),
       },
@@ -115,7 +178,14 @@ describe("legacy Excel import", () => {
         buffer: makeWorkbook({
           "※ここ触る※全案件": [
             ["案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日"],
-            ["テスト", "制作中", "HP", "0312345678", "example.com", "2026/06/11"],
+            [
+              "テスト",
+              "制作中",
+              "HP",
+              "0312345678",
+              "example.com",
+              "2026/06/11",
+            ],
           ],
         }),
       },
@@ -154,7 +224,7 @@ describe("legacy Excel import", () => {
             ["案件名", "進捗", "完成HP"],
             ["株式会社対象", "制作中", "https://target.example.com"],
           ],
-          "初稿提出済み": [
+          初稿提出済み: [
             ["案件名", "進捗", "完成HP"],
             ["株式会社対象", "初稿提出済み", "https://target.example.com"],
           ],
@@ -173,23 +243,44 @@ describe("legacy Excel import", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
         "【新】HP管理シート": [
-          ["案件名", "進捗", "初稿予定日", "ネクスト内容・修正内容", "ドメイン案件", "完成HP"],
+          [
+            "案件名",
+            "進捗",
+            "初稿予定日",
+            "ネクスト内容・修正内容",
+            "ドメイン案件",
+            "完成HP",
+          ],
           ["店舗A", "制作中", "早ければ早いだけ", "写真待ち", "FALSE", ""],
         ],
         "※ここ触る※全案件": [
           ["案件名", "進捗", "初稿予定日", "備考", "完成HP"],
-          ["店舗A", "制作中", "2026/07/20", "旧表の補足", "https://shop-a.example.com"],
+          [
+            "店舗A",
+            "制作中",
+            "2026/07/20",
+            "旧表の補足",
+            "https://shop-a.example.com",
+          ],
         ],
         "2025年": [
           ["案件名", "進捗", "初稿予定日", "備考", "完成HP"],
-          ["店舗B", "納品", "2025/12/20", "過去案件", "https://shop-b.example.com"],
+          [
+            "店舗B",
+            "納品",
+            "2025/12/20",
+            "過去案件",
+            "https://shop-b.example.com",
+          ],
         ],
       }),
       "HP制作 管理シート.xlsx",
     );
 
     expect(result.hpProjectCandidates).toHaveLength(2);
-    const shopA = result.hpProjectCandidates.find((row) => row.projectName === "店舗A");
+    const shopA = result.hpProjectCandidates.find(
+      (row) => row.projectName === "店舗A",
+    );
     expect(shopA?.memo).toContain("早ければ早いだけ");
     expect(shopA?.memo).toContain("写真待ち");
     expect(shopA?.memo).not.toContain("旧表の補足");
@@ -261,7 +352,9 @@ describe("legacy Excel import", () => {
   it("normalizes names, phones, domains, dates and money", () => {
     expect(normalizeLegacyName(" 株式会社 テスト（東京） ")).toBe("テスト東京");
     expect(normalizePhone("03-1234-5678")).toBe("0312345678");
-    expect(normalizeDomain("https://www.Example.com/path?q=1")).toBe("example.com");
+    expect(normalizeDomain("https://www.Example.com/path?q=1")).toBe(
+      "example.com",
+    );
     expect(excelSerialToDateString(45658)).toBe("2025-01-01");
     expect(parseLegacyDate("2026年6月5日")).toBe("2026-06-05");
     expect(parseLegacyDate("1899-12-30")).toBeNull();
@@ -269,24 +362,30 @@ describe("legacy Excel import", () => {
   });
 
   it("maps legacy progress values to deal stages", () => {
-    expect(mapLegacyProgressStatus("AA課金").stageName).toBe("課金済み");
-    expect(mapLegacyProgressStatus("A受注").status).toBe("WON");
-    expect(mapLegacyProgressStatus("B素材回収待ち")).toMatchObject({
-      stageName: "素材回収待ち",
-      status: "OPEN",
+    expect(mapLegacyProgressStatus("AA課金").stageName).toBe("AA課金");
+    expect(mapLegacyProgressStatus("A受注")).toMatchObject({
+      stageName: "A受注",
+      status: "WON",
     });
-    expect(mapLegacyProgressStatus("E2前確通過商談")).toMatchObject({
-      stageName: "前確通過商談",
-      status: "OPEN",
-    });
+    expect(mapLegacyProgressStatus("Aエントリー済み").stageName).toBe(
+      "Aエントリー済み",
+    );
+    expect(mapLegacyProgressStatus("E2前確通過商談").stageName).toBe(
+      "E2前確通過商談",
+    );
+    expect(mapLegacyProgressStatus("B素材回収待ち").stageName).toBe(
+      "B素材回収待ち",
+    );
     expect(mapLegacyProgressStatus("長期追客リスト")).toMatchObject({
-      stageName: "長期追客",
+      stageName: "長期追客リスト",
       status: "OPEN",
     });
-    expect(mapLegacyProgressStatus("無効商談").status).toBe("LOST");
+    expect(mapLegacyProgressStatus("無効商談").status).toBe("INVALID");
     expect(mapLegacyProgressStatus("前確(条件NG)").status).toBe("LOST");
     expect(mapLegacyProgressStatus("XCアポ失注").status).toBe("LOST");
-    expect(mapLegacyProgressStatus("XAA受注キャンセル").status).toBe("CANCELLED");
+    expect(mapLegacyProgressStatus("XAA受注キャンセル").status).toBe(
+      "CANCELLED",
+    );
     expect(mapLegacyProgressStatus("独自進捗").label).toBe("不明");
   });
 
@@ -297,11 +396,11 @@ describe("legacy Excel import", () => {
           ["項目", "2026/06/01", "2026/06/02"],
           ["架電数", "10", "12"],
         ],
-        "月間進捗管理シート": [
+        月間進捗管理シート: [
           ["項目", "2026/06"],
           ["アポ設定数", "100"],
         ],
-        "単価表": [
+        単価表: [
           ["商材", "価格名", "初期費用", "月額費用", "粗利"],
           ["HP", "HP 標準価格", "50000", "10000", "30000"],
         ],
@@ -359,8 +458,19 @@ describe("legacy Excel import", () => {
     const reviewedPlan = getLegacyExcelApplyPlan(dryRun, undefined, {
       "hp-review": { progressCandidateId: "deal-review" },
     });
-    expect(reviewedPlan.reviewDeliveryProjects).toBe(1);
+    expect(reviewedPlan.reviewDeliveryProjects).toBe(0);
     expect(reviewedPlan.unresolvedDeliveryProjects).toBe(0);
+
+    const reviewEnabledPlan = getLegacyExcelApplyPlan(
+      dryRun,
+      { reviewDeliveryProjects: true },
+      {
+        "hp-review": { progressCandidateId: "deal-review" },
+      },
+    );
+    expect(reviewEnabledPlan.autoDeliveryProjects).toBe(1);
+    expect(reviewEnabledPlan.reviewDeliveryProjects).toBe(1);
+    expect(reviewEnabledPlan.unresolvedDeliveryProjects).toBe(0);
 
     const unresolvedPlan = getLegacyExcelApplyPlan(dryRun, {
       unresolvedDeliveryProjects: true,
@@ -368,17 +478,205 @@ describe("legacy Excel import", () => {
     expect(unresolvedPlan.unresolvedDeliveryProjects).toBe(1);
   });
 
+  it("requires organization-specific confirmation text", () => {
+    expect(getLegacyExcelConfirmText("株式会社Crestix")).toBe(
+      "株式会社Crestixに反映する",
+    );
+    expect(getLegacyExcelConfirmText()).toBe("本当に反映する");
+  });
+
+  it("ignores tampered organizationId in apply request bodies", () => {
+    const parsed = parseLegacyExcelApplyRequest({
+      importJobId: "11111111-1111-4111-8111-111111111111",
+      confirmed: true,
+      confirmText: "株式会社Crestixに反映する",
+      organizationId: "org-other",
+      applyTargets: {
+        companiesContacts: true,
+        deals: true,
+      },
+    });
+
+    expect(Object.prototype.hasOwnProperty.call(parsed, "organizationId")).toBe(
+      false,
+    );
+  });
+
+  it("forbids applying another organization's ImportJob", () => {
+    expect(
+      checkLegacyExcelImportJobOrganization(
+        { organizationId: "org-other" },
+        "org-crestix",
+      ),
+    ).toBe("FORBIDDEN");
+    expect(
+      checkLegacyExcelImportJobOrganization(
+        { organizationId: "org-crestix" },
+        "org-crestix",
+      ),
+    ).toBe("ALLOWED");
+    expect(checkLegacyExcelImportJobOrganization(null, "org-crestix")).toBe(
+      "NOT_FOUND",
+    );
+  });
+
+  it("scopes legacy Excel business units to the importing organization", async () => {
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const create = vi
+      .fn()
+      .mockResolvedValue({ id: "bu-crestix", name: "HD事業部" });
+    const tx = {
+      businessUnit: { findFirst, create },
+    } as never;
+
+    await ensureBusinessUnit(tx, "org-crestix", "HD事業部");
+
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        organizationId: "org-crestix",
+        OR: [{ name: "HD事業部" }, { slug: expect.any(String) }],
+      },
+    });
+    expect(create.mock.calls[0][0].data.organizationId).toBe("org-crestix");
+  });
+
+  it("scopes legacy Excel user owner matching to the importing organization", async () => {
+    const findMany = vi
+      .fn()
+      .mockResolvedValue([{ user: { id: "user-crestix", name: "山田 太郎" } }]);
+    const tx = {
+      organizationMember: { findMany },
+    } as never;
+
+    const user = await findUserByName(tx, "org-crestix", "山田 太郎");
+
+    expect(findMany).toHaveBeenCalledWith({
+      where: { organizationId: "org-crestix", status: "ACTIVE" },
+      include: { user: true },
+      take: 2000,
+    });
+    expect(user?.id).toBe("user-crestix");
+  });
+
+  it("scopes legacy Excel products to the importing organization", async () => {
+    const productUpsert = vi
+      .fn()
+      .mockResolvedValue({ id: "product-crestix", name: "HP制作" });
+    const businessUnitProductUpsert = vi.fn().mockResolvedValue({});
+    const tx = {
+      product: { upsert: productUpsert },
+      businessUnitProduct: { upsert: businessUnitProductUpsert },
+    } as never;
+
+    await ensureProduct(tx, "org-crestix", "HP制作", "bu-crestix");
+
+    expect(
+      productUpsert.mock.calls[0][0].where.organizationId_normalizedName
+        .organizationId,
+    ).toBe("org-crestix");
+    expect(productUpsert.mock.calls[0][0].create.organizationId).toBe(
+      "org-crestix",
+    );
+    expect(
+      businessUnitProductUpsert.mock.calls[0][0].where
+        .organizationId_businessUnitId_productId.organizationId,
+    ).toBe("org-crestix");
+    expect(
+      businessUnitProductUpsert.mock.calls[0][0].create.organizationId,
+    ).toBe("org-crestix");
+  });
+
+  it("scopes legacy Excel pipeline and stage matching to the importing organization", async () => {
+    const businessUnitFindFirst = vi
+      .fn()
+      .mockResolvedValue({ id: "bu-crestix", name: "HD事業部", slug: "hd" });
+    const pipelineFindFirst = vi.fn().mockResolvedValue(null);
+    const pipelineCreate = vi
+      .fn()
+      .mockResolvedValue({ id: "pipeline-crestix" });
+    const pipelineStageFindFirst = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ sortOrder: 20 });
+    const pipelineStageCreate = vi
+      .fn()
+      .mockResolvedValue({ id: "stage-crestix" });
+    const tx = {
+      businessUnit: { findFirst: businessUnitFindFirst },
+      pipeline: { findFirst: pipelineFindFirst, create: pipelineCreate },
+      pipelineStage: {
+        findFirst: pipelineStageFindFirst,
+        create: pipelineStageCreate,
+      },
+    } as never;
+
+    await ensurePipelineStage(
+      tx,
+      "org-crestix",
+      "bu-crestix",
+      mapLegacyProgressStatus("E商談"),
+    );
+
+    expect(businessUnitFindFirst).toHaveBeenCalledWith({
+      where: { id: "bu-crestix", organizationId: "org-crestix" },
+    });
+    expect(pipelineFindFirst.mock.calls[0][0].where.organizationId).toBe(
+      "org-crestix",
+    );
+    expect(pipelineCreate.mock.calls[0][0].data.organizationId).toBe(
+      "org-crestix",
+    );
+    expect(pipelineStageFindFirst.mock.calls[0][0].where.organizationId).toBe(
+      "org-crestix",
+    );
+    expect(pipelineStageCreate.mock.calls[0][0].data.organizationId).toBe(
+      "org-crestix",
+    );
+  });
+
   it("generates review workbooks with editable cross-file match defaults", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
         "【HD】案件管理シート": [
-          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "受注日"],
-          ["株式会社AUTO", "AUTO 導入案件", "A受注", "HP", "03-1111-1111", "auto.example.com", "2026/06/10"],
+          [
+            "会社名",
+            "案件名",
+            "進捗",
+            "商材",
+            "電話番号",
+            "Webサイト",
+            "受注日",
+          ],
+          [
+            "株式会社AUTO",
+            "AUTO 導入案件",
+            "A受注",
+            "HP",
+            "03-1111-1111",
+            "auto.example.com",
+            "2026/06/10",
+          ],
           ["株式会社REVIEW", "別案件", "E商談", "", "", "", ""],
         ],
         "※ここ触る※全案件": [
-          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日"],
-          ["AUTO", "AUTO 制作案件", "制作中", "HP", "0311111111", "auto.example.com", "2026/06/11"],
+          [
+            "会社名",
+            "案件名",
+            "進捗",
+            "商材",
+            "電話番号",
+            "Webサイト",
+            "ヒアリング日",
+          ],
+          [
+            "AUTO",
+            "AUTO 制作案件",
+            "制作中",
+            "HP",
+            "0311111111",
+            "auto.example.com",
+            "2026/06/11",
+          ],
           ["REVIEW", "制作案件", "制作中", "", "", "", ""],
           ["未照合", "未照合 制作案件", "制作中", "HP", "", "", ""],
         ],
@@ -395,8 +693,12 @@ describe("legacy Excel import", () => {
     const header = crossFileSheet?.rows[0] ?? [];
     const decisionIndex = header.indexOf("matchDecision");
     const applyIndex = header.indexOf("apply");
-    const decisions = crossFileSheet?.rows.slice(1).map((row) => row[decisionIndex]);
-    const applyValues = crossFileSheet?.rows.slice(1).map((row) => row[applyIndex]);
+    const decisions = crossFileSheet?.rows
+      .slice(1)
+      .map((row) => row[decisionIndex]);
+    const applyValues = crossFileSheet?.rows
+      .slice(1)
+      .map((row) => row[applyIndex]);
 
     expect(decisions).toContain("AUTO");
     expect(decisions).toContain("REVIEW");
@@ -420,15 +722,81 @@ describe("legacy Excel import", () => {
             "受注日",
             "FS担当者",
           ],
-          ["株式会社複数", "複数 導入案件", "A受注", "HP", "03-2222-2222", "multi.example.com", "2026/06/10", "佐藤"],
-          ["複数株式会社", "複数 導入案件", "A受注", "MEO", "03-2222-2222", "multi.example.com", "2026/06/10", "佐藤"],
-          ["株式会社AUTO", "AUTO 導入案件", "A受注", "HP", "03-1111-1111", "auto.example.com", "2026/06/10", "佐藤"],
-          ["株式会社失注", "失注 導入案件", "XCアポ失注", "HP", "03-9999-9999", "lost.example.com", "", "佐藤"],
+          [
+            "株式会社複数",
+            "複数 導入案件",
+            "A受注",
+            "HP",
+            "03-2222-2222",
+            "multi.example.com",
+            "2026/06/10",
+            "佐藤",
+          ],
+          [
+            "複数株式会社",
+            "複数 導入案件",
+            "A受注",
+            "MEO",
+            "03-2222-2222",
+            "multi.example.com",
+            "2026/06/10",
+            "佐藤",
+          ],
+          [
+            "株式会社AUTO",
+            "AUTO 導入案件",
+            "A受注",
+            "HP",
+            "03-1111-1111",
+            "auto.example.com",
+            "2026/06/10",
+            "佐藤",
+          ],
+          [
+            "株式会社失注",
+            "失注 導入案件",
+            "XCアポ失注",
+            "HP",
+            "03-9999-9999",
+            "lost.example.com",
+            "",
+            "佐藤",
+          ],
         ],
         "HP制作 管理シート": [
-          ["会社名", "案件名", "進捗", "商材", "電話番号", "Webサイト", "ヒアリング日", "公開予定日", "CS担当"],
-          ["株式会社AUTO", "AUTO 制作案件", "制作中", "HP", "0311111111", "auto.example.com", "2026/06/11", "2026/07/01", "鈴木"],
-          ["株式会社失注", "失注 制作案件", "制作中", "HP", "0399999999", "lost.example.com", "2026/06/11", "2026/07/01", "鈴木"],
+          [
+            "会社名",
+            "案件名",
+            "進捗",
+            "商材",
+            "電話番号",
+            "Webサイト",
+            "ヒアリング日",
+            "公開予定日",
+            "CS担当",
+          ],
+          [
+            "株式会社AUTO",
+            "AUTO 制作案件",
+            "制作中",
+            "HP",
+            "0311111111",
+            "auto.example.com",
+            "2026/06/11",
+            "2026/07/01",
+            "鈴木",
+          ],
+          [
+            "株式会社失注",
+            "失注 制作案件",
+            "制作中",
+            "HP",
+            "0399999999",
+            "lost.example.com",
+            "2026/06/11",
+            "2026/07/01",
+            "鈴木",
+          ],
           ["", "Bestie", "初稿提出済み", "HP", "", "", "", "", "鈴木"],
           ["", "HP制作案件", "", "HP", "", "", "", "", ""],
         ],
@@ -445,7 +813,9 @@ describe("legacy Excel import", () => {
     expect(sheetNames).not.toContain("DailyMetricEntry");
     expect(sheetNames).not.toContain("KpiTarget");
 
-    const lineItemSheet = sheets.find((sheet) => sheet.sheetName === "商品明細");
+    const lineItemSheet = sheets.find(
+      (sheet) => sheet.sheetName === "商品明細",
+    );
     const lineItemHeader = lineItemSheet?.rows[0] ?? [];
     const dealGroupIndex = lineItemHeader.indexOf("dealGroupId");
     const productIndex = lineItemHeader.indexOf("productName");
@@ -453,16 +823,19 @@ describe("legacy Excel import", () => {
     const dealHeader = dealSheet?.rows[0] ?? [];
     const dealCompanyIndex = dealHeader.indexOf("finalCompanyName");
     const masterDealGroupIndex = dealHeader.indexOf("dealGroupId");
-    const originalProgressIndex = dealHeader.indexOf(
-      "商談の進捗（現在の進捗を書く）",
-    );
+    const originalProgressIndex =
+      dealHeader.indexOf("商談の進捗（現在の進捗を書く）");
     expect(originalProgressIndex).toBeGreaterThan(-1);
-    expect(dealSheet?.rows.slice(1).some((row) => row[originalProgressIndex] === "A受注")).toBe(
-      true,
-    );
+    expect(
+      dealSheet?.rows
+        .slice(1)
+        .some((row) => row[originalProgressIndex] === "A受注"),
+    ).toBe(true);
     const multiDealGroupId = dealSheet?.rows
       .slice(1)
-      .find((row) => row[dealCompanyIndex]?.includes("複数"))?.[masterDealGroupIndex];
+      .find((row) => row[dealCompanyIndex]?.includes("複数"))?.[
+      masterDealGroupIndex
+    ];
     const multiRows =
       lineItemSheet?.rows
         .slice(1)
@@ -478,7 +851,9 @@ describe("legacy Excel import", () => {
     const csBuIndex = csHeader.indexOf("csBusinessUnit");
     const csStatusIndex = csHeader.indexOf("sourceDealDecision");
     const csImportIndex = csHeader.indexOf("decision");
-    expect(csSheet?.rows.slice(1).every((row) => row[csBuIndex] === "HD事業部")).toBe(true);
+    expect(
+      csSheet?.rows.slice(1).every((row) => row[csBuIndex] === "HD事業部"),
+    ).toBe(true);
     const lostCsRow = csSheet?.rows
       .slice(1)
       .find((row) => row.join("|").includes("失注 制作案件"));
@@ -517,13 +892,17 @@ describe("legacy Excel import", () => {
       (candidate) => candidate.companyName === "株式会社複数",
     );
     expect(groupedCandidates).toHaveLength(2);
-    expect(groupedCandidates.every((candidate) => candidate.progress === "A受注")).toBe(true);
+    expect(
+      groupedCandidates.every((candidate) => candidate.progress === "A受注"),
+    ).toBe(true);
 
     const readyCompanySheet = sheets.find(
       (sheet) => sheet.sheetName === "IMPORT_READY_COMPANIES",
     );
     expect(
-      readyCompanySheet?.rows.some((row) => row.join("|").includes("company:複数")),
+      readyCompanySheet?.rows.some((row) =>
+        row.join("|").includes("company:複数"),
+      ),
     ).toBe(true);
   });
 
@@ -557,6 +936,7 @@ describe("legacy Excel import", () => {
             "productName",
             "businessUnitName",
             "progress",
+            "organizationId",
           ],
           [
             "TRUE",
@@ -573,6 +953,7 @@ describe("legacy Excel import", () => {
             "HP",
             "HD事業部",
             "A受注",
+            "org-other",
           ],
         ],
       },
@@ -593,6 +974,7 @@ describe("legacy Excel import", () => {
             "businessUnitName",
             "progress",
             "matchDecision",
+            "organizationId",
           ],
           [
             "FALSE",
@@ -608,6 +990,7 @@ describe("legacy Excel import", () => {
             "HD事業部",
             "制作中",
             "REVIEW",
+            "org-other",
           ],
           [
             "TRUE",
@@ -623,6 +1006,7 @@ describe("legacy Excel import", () => {
             "HD事業部",
             "制作中",
             "REVIEW",
+            "org-other",
           ],
         ],
       },
@@ -684,9 +1068,27 @@ describe("legacy Excel import", () => {
       },
     ]);
 
-    const reviewed = analyzeLegacyReviewedExcelWorkbook(workbook, "review.xlsx");
+    const reviewed = analyzeLegacyReviewedExcelWorkbook(
+      workbook,
+      "review.xlsx",
+    );
     expect(reviewed.dryRun.workbookFingerprint).toBe("original-fingerprint");
-    expect(reviewed.dryRun.crossFileMatches[0].decision).toBe("IGNORE");
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        reviewed.dryRun.progressCandidates[0],
+        "organizationId",
+      ),
+    ).toBe(false);
+    expect(reviewed.dryRun.progressCandidates[0].raw.organizationId).toBe(
+      "org-other",
+    );
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        reviewed.dryRun.hpProjectCandidates[0],
+        "organizationId",
+      ),
+    ).toBe(false);
+    expect(reviewed.dryRun.crossFileMatches[0].decision).toBe("REVIEW");
     expect(reviewed.manualMatches["hp-ignore"]?.decision).toBe("IGNORE");
     expect(reviewed.manualMatches["hp-selected"]?.progressCandidateId).toBe(
       "deal-review",
@@ -698,10 +1100,147 @@ describe("legacy Excel import", () => {
       reviewed.manualMatches,
     );
     expect(plan.autoDeliveryProjects).toBe(0);
-    expect(plan.reviewDeliveryProjects).toBe(1);
+    expect(plan.reviewDeliveryProjects).toBe(0);
     expect(plan.unresolvedDeliveryProjects).toBe(0);
     expect(plan.dailyMetrics).toBe(0);
     expect(plan.kpiTargets).toBe(0);
+
+    const reviewEnabledPlan = getLegacyExcelApplyPlan(
+      reviewed.dryRun,
+      { reviewDeliveryProjects: true },
+      reviewed.manualMatches,
+    );
+    expect(reviewEnabledPlan.autoDeliveryProjects).toBe(0);
+    expect(reviewEnabledPlan.reviewDeliveryProjects).toBe(1);
+    expect(reviewEnabledPlan.unresolvedDeliveryProjects).toBe(0);
+  });
+
+  it("reads numbered migration review sheet names for CRM dry run", () => {
+    const workbook = writeSimpleXlsxWorkbook([
+      {
+        name: "00_summary",
+        rows: [
+          ["key", "value"],
+          ["format", "salesnest_legacy_excel_review"],
+          ["version", "1"],
+          ["sourceName", "salesnest_migration_review.xlsx"],
+          ["workbookFingerprint", "numbered-review"],
+        ],
+      },
+      {
+        name: "03_deals",
+        rows: [
+          [
+            "apply",
+            "dealKey",
+            "sourceKey",
+            "originalSheetName",
+            "originalRowNumber",
+            "rowFingerprint",
+            "companyName",
+            "dealName",
+            "productName",
+            "businessUnitName",
+            "progress",
+          ],
+          [
+            "TRUE",
+            "deal-numbered",
+            "progress:numbered",
+            "進捗管理",
+            "2",
+            "deal-numbered-row",
+            "株式会社番号",
+            "番号 導入案件",
+            "HP制作",
+            "HD事業部",
+            "A受注",
+          ],
+        ],
+      },
+      {
+        name: "05_cs_projects",
+        rows: [
+          [
+            "apply",
+            "hpSourceKey",
+            "sourceKey",
+            "originalSheetName",
+            "originalRowNumber",
+            "rowFingerprint",
+            "projectName",
+            "companyName",
+            "productName",
+            "businessUnitName",
+            "progress",
+            "matchDecision",
+          ],
+          [
+            "TRUE",
+            "hp-numbered",
+            "hp:numbered",
+            "HP制作",
+            "2",
+            "hp-numbered-row",
+            "番号 制作案件",
+            "株式会社番号",
+            "HP制作",
+            "HD事業部",
+            "制作中",
+            "AUTO",
+          ],
+        ],
+      },
+      {
+        name: "06_cross_file_matches",
+        rows: [
+          [
+            "hpSourceKey",
+            "hpSheetName",
+            "hpRowNumber",
+            "hpProjectName",
+            "suggestedCompanyKey",
+            "suggestedCompanyName",
+            "suggestedDealKey",
+            "suggestedDealName",
+            "matchScore",
+            "matchDecision",
+            "matchReasons",
+            "selectedCompanyKey",
+            "selectedDealKey",
+            "apply",
+            "note",
+          ],
+          [
+            "hp-numbered",
+            "HP制作",
+            "2",
+            "番号 制作案件",
+            "company:番号",
+            "株式会社番号",
+            "deal-numbered",
+            "番号 導入案件",
+            "95",
+            "AUTO",
+            "normalized_company_name",
+            "company:番号",
+            "deal-numbered",
+            "TRUE",
+            "",
+          ],
+        ],
+      },
+    ]);
+
+    const reviewed = analyzeLegacyReviewedExcelWorkbook(
+      workbook,
+      "salesnest_migration_review.xlsx",
+    );
+
+    expect(reviewed.dryRun.progressCandidates).toHaveLength(1);
+    expect(reviewed.dryRun.hpProjectCandidates).toHaveLength(1);
+    expect(reviewed.dryRun.crossFileMatches[0].decision).toBe("AUTO");
+    expect(reviewed.manualMatches["hp-numbered"]).toBeUndefined();
   });
 });
 

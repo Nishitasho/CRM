@@ -12,18 +12,6 @@ const items = [
     activePrefixes: ["/dashboard"],
   },
   {
-    href: "/reports",
-    label: "レポート",
-    icon: "reports",
-    activePrefixes: ["/reports"],
-  },
-  {
-    href: "/daily-metrics",
-    label: "行動",
-    icon: "tasks",
-    activePrefixes: ["/daily-metrics"],
-  },
-  {
     href: "/companies",
     label: "会社",
     icon: "contacts",
@@ -36,10 +24,16 @@ const items = [
     activePrefixes: ["/deals"],
   },
   {
-    href: "/settings",
-    label: "設定",
-    icon: "settings",
-    activePrefixes: ["/settings"],
+    href: "/delivery-projects",
+    label: "CS案件",
+    icon: "tasks",
+    activePrefixes: ["/delivery-projects"],
+  },
+  {
+    href: "/tasks",
+    label: "タスク",
+    icon: "tasks",
+    activePrefixes: ["/tasks"],
   },
 ] as const;
 
@@ -57,10 +51,15 @@ export function MobileNav({
 }) {
   const pathname = usePathname();
   const visibleItems = canCreateInternalAppointment
-    ? [...items.slice(0, 3), appointmentItem, ...items.slice(3, 5)]
+    ? [items[0], appointmentItem, ...items.slice(1, 5)]
     : items;
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-6 border-t border-line bg-white px-1 pb-[env(safe-area-inset-bottom)] lg:hidden">
+    <nav
+      className="fixed inset-x-0 bottom-0 z-30 grid border-t border-line bg-white px-1 pb-[env(safe-area-inset-bottom)] lg:hidden"
+      style={{
+        gridTemplateColumns: `repeat(${visibleItems.length}, minmax(0, 1fr))`,
+      }}
+    >
       {visibleItems.map((item) => (
         <Link
           key={item.href}

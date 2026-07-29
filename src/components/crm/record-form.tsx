@@ -23,6 +23,8 @@ export function RecordForm({
   initial,
   members,
   pipelines = [],
+  products = [],
+  businessUnits = [],
   customProperties = [],
   recordId,
 }: {
@@ -30,6 +32,8 @@ export function RecordForm({
   initial?: Initial;
   members: Option[];
   pipelines?: Pipeline[];
+  products?: Option[];
+  businessUnits?: Option[];
   customProperties?: CustomProperty[];
   recordId?: string;
 }) {
@@ -243,6 +247,48 @@ export function RecordForm({
               type="number"
               defaultValue={value("amount")}
             />
+            {!recordId ? (
+              <>
+                <label>
+                  <span className="field-label">事業部</span>
+                  <select
+                    className="text-field"
+                    name="businessUnitId"
+                    defaultValue={String(
+                      value("businessUnitId") || businessUnits[0]?.id || "",
+                    )}
+                    required={businessUnits.length > 0}
+                  >
+                    {!businessUnits.length ? (
+                      <option value="">事業部未設定</option>
+                    ) : null}
+                    {businessUnits.map((unit) => (
+                      <option key={unit.id} value={unit.id}>
+                        {unit.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="field-label">商品</span>
+                  <select
+                    className="text-field"
+                    name="primaryProductId"
+                    defaultValue={String(value("primaryProductId"))}
+                    required={products.length > 0}
+                  >
+                    <option value="">
+                      {products.length ? "選択してください" : "商品未設定"}
+                    </option>
+                    {products.map((product) => (
+                      <option key={product.id} value={product.id}>
+                        {product.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
             <label>
               <span className="field-label">パイプライン</span>
               <select

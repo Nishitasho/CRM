@@ -11,13 +11,14 @@ type Option = { value: string; label: string };
 
 type RequirementInputOptions = {
   forecastCategories?: Option[];
+  users?: Option[];
 };
 
 type RequirementOption = (typeof DEAL_STAGE_REQUIREMENT_OPTIONS)[number];
 type EditableRequirementOption = RequirementOption & {
   input: {
     propertyName: string;
-    fieldType: "DATE" | "TEXT" | "SELECT";
+    fieldType: "DATE" | "TEXT" | "SELECT" | "USER_SELECT";
     optionsKey?: string;
   };
 };
@@ -39,12 +40,15 @@ function todayJst() {
 
 function initialValue(fieldType: string, options: Option[]) {
   if (fieldType === "DATE") return todayJst();
-  if (fieldType === "SELECT") return options[0]?.value ?? "";
+  if (fieldType === "SELECT" || fieldType === "USER_SELECT") {
+    return options[0]?.value ?? "";
+  }
   return "";
 }
 
 function optionsFor(key: string | undefined, inputOptions?: RequirementInputOptions) {
   if (key === "forecastCategories") return inputOptions?.forecastCategories ?? [];
+  if (key === "users") return inputOptions?.users ?? [];
   if (key === "decisionMakerStatuses") return decisionMakerStatuses;
   return [];
 }
@@ -80,8 +84,9 @@ export function MissingStageRequirementsDialog({
   missingLabels: string[];
   inputOptions?: RequirementInputOptions;
   onCancel: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: (propertyValues: Record<string, string>) => Promise<void>;
 }) {
+  void dealId;
   const editableRequirements = useMemo(
     () =>
       missingRequirementKeys
@@ -116,26 +121,16 @@ export function MissingStageRequirementsDialog({
     setPending(true);
     setError("");
     try {
+      const propertyValues: Record<string, string> = {};
       for (const { key, option } of editableRequirements) {
         const input = option.input;
         const value = drafts[key]?.trim() ?? "";
         if (!value) {
           throw new Error(`${option.label}を入力してください。`);
         }
-        const response = await fetch(`/api/records/DEAL/${dealId}/properties`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            propertyName: input.propertyName,
-            value,
-          }),
-        });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(result.message ?? `${option.label}を保存できませんでした。`);
-        }
+        propertyValues[input.propertyName] = value;
       }
-      await onSaved();
+      await onSaved(propertyValues);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "不足項目を保存できませんでした。");
     } finally {
@@ -161,7 +156,7 @@ export function MissingStageRequirementsDialog({
             return (
               <label key={key} className="block">
                 <span className="field-label">{option.label}</span>
-                {input.fieldType === "SELECT" ? (
+                {input.fieldType === "SELECT" || input.fieldType === "USER_SELECT" ? (
                   <select
                     className="text-field w-full"
                     value={drafts[key] ?? ""}

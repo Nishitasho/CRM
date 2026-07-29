@@ -2,23 +2,13 @@ import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
+import {
+  kpiTargetScopeKey,
+  validateKpiTargetScope,
+} from "@/lib/kpi-targets";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { kpiTargetSchema } from "@/lib/validation";
-
-function scopeKey(input: {
-  businessUnitId?: string | null;
-  userId?: string | null;
-  teamId?: string | null;
-  workFunction?: string | null;
-}) {
-  return [
-    input.businessUnitId ? `bu:${input.businessUnitId}` : "bu:all",
-    input.userId ? `user:${input.userId}` : "user:all",
-    input.teamId ? `team:${input.teamId}` : "team:all",
-    input.workFunction ? `work:${input.workFunction}` : "work:all",
-  ].join("|");
-}
 
 export async function GET() {
   try {
@@ -50,13 +40,21 @@ export async function POST(request: Request) {
     });
     if (!metric)
       return NextResponse.json({ message: "KPI定義が見つかりません。" }, { status: 404 });
+    const scopeError = await validateKpiTargetScope(prisma, {
+      organizationId: context.organization.id,
+      metric,
+      ...input,
+    });
+    if (scopeError) {
+      return NextResponse.json({ message: scopeError }, { status: 400 });
+    }
     const metadata = getRequestMetadata(request);
     const item = await prisma.kpiTarget.upsert({
       where: {
         organizationId_metricDefinitionId_scopeKey_periodStart_periodEnd: {
           organizationId: context.organization.id,
           metricDefinitionId: input.metricDefinitionId,
-          scopeKey: scopeKey(input),
+          scopeKey: kpiTargetScopeKey(input),
           periodStart: input.periodStart,
           periodEnd: input.periodEnd,
         },
@@ -76,7 +74,7 @@ export async function POST(request: Request) {
         userId: input.userId ?? null,
         teamId: input.teamId ?? null,
         workFunction: input.workFunction ?? null,
-        scopeKey: scopeKey(input),
+        scopeKey: kpiTargetScopeKey(input),
         periodType: input.periodType,
         periodStart: input.periodStart,
         periodEnd: input.periodEnd,

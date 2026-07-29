@@ -40,6 +40,8 @@ const knownProgress = new Set([
   "B商談済み回答待ち",
   "C商談済み回答待ち",
   "D商談済み回答待ち",
+  "E2商談",
+  "E2前確通過商談",
   "E商談",
   "E商談②",
   "F日程変更中",
@@ -48,6 +50,12 @@ const knownProgress = new Set([
   "XAプレゼン失注(決裁者)",
   "XBプレゼン失注(非決裁者)",
   "XCアポ失注",
+  "前確(営業失注)",
+  "前確(条件NG)",
+  "前確(付き合いNG)",
+  "前確(物理NG)",
+  "長期追客リスト",
+  "無効商談",
 ]);
 
 const knownProducts = new Set([

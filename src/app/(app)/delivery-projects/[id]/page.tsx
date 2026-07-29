@@ -5,6 +5,7 @@ import { DeliveryProjectActions } from "@/components/delivery/delivery-project-a
 import { RecordTaskCard } from "@/components/tasks/deal-task-card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
+import { deliveryStageLabel } from "@/lib/delivery";
 import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
@@ -42,9 +43,19 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return "-";
-  return new Intl.DateTimeFormat("ja-JP").format(new Date(value));
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "-"
+    : new Intl.DateTimeFormat("ja-JP").format(date);
 }
 
 function formatDateTime(value: Date | string | null | undefined) {
@@ -213,8 +224,31 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
   ]);
 
   const scope = asRecord(project.scopeSnapshot);
+  const rawScope = asRecord(scope.raw);
+  const operationalScope = {
+    ...scope,
+    hearingDate: firstText(
+      scope.hearingDate,
+      rawScope["ヒアリング実施日"],
+      rawScope["ヒアリング日"],
+    ),
+    firstDraftDueDate: firstText(
+      scope.firstDraftDueDate,
+      rawScope["初稿予定日"],
+    ),
+    firstDraftSubmittedAt: firstText(
+      scope.firstDraftSubmittedAt,
+      rawScope["初稿提出日"],
+    ),
+    completedWebsiteUrl: firstText(
+      scope.completedWebsiteUrl,
+      rawScope["完成HP"],
+    ),
+  };
   const userById = new Map(users.map((user) => [user.id, user]));
-  const stageNameById = new Map(allDeliveryStages.map((item) => [item.id, item.name]));
+  const stageNameById = new Map(
+    allDeliveryStages.map((item) => [item.id, deliveryStageLabel(item.name)]),
+  );
   const canEditDelivery =
     hasPermission(context.membership.role, Permission.MANAGE_DELIVERY) ||
     hasPermission(context.membership.role, Permission.CRM_WRITE);
@@ -227,9 +261,9 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
       <PageHeading
         eyebrow="CS case"
         title={`${company?.name ?? "会社未設定"} / ${project.name}`}
-        description={`${company?.name ?? "会社未設定"} / ${stage?.name ?? "ステージ未設定"} / ${
+        description={`${deliveryStageLabel(stage?.name)} / ${
           statusLabels[project.status] ?? project.status
-        }`}
+        } / 元商談と制作状況を一画面で管理`}
         action={
           <div className="flex flex-wrap gap-2">
             <Link href="/delivery-projects" className="secondary-button">
@@ -245,8 +279,7 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
       />
 
       <section className="mb-6 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <HeaderMetric label="現在ステージ" value={stage?.name ?? "-"} />
-        <HeaderMetric label="ヘルス" value={healthLabels[project.healthStatus]} />
+        <HeaderMetric label="現在ステージ" value={deliveryStageLabel(stage?.name)} />
         <HeaderMetric
           label="CS担当"
           value={
@@ -255,8 +288,12 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
               : "未設定"
           }
         />
-        <HeaderMetric label="公開予定日" value={formatDate(project.expectedPublishDate)} />
-        <HeaderMetric label="引き継ぎ" value={handoffLabels[project.handoffStatus]} />
+        <HeaderMetric
+          label="次回アクション日"
+          value={formatDate(project.nextActionDate)}
+        />
+        <HeaderMetric label="納品予定日" value={formatDate(project.expectedPublishDate)} />
+        <HeaderMetric label="ヘルス" value={healthLabels[project.healthStatus]} />
       </section>
 
       {project.scopeSyncStatus !== "SYNCED" ? (
@@ -270,8 +307,8 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
         </p>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="space-y-6">
+      <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="min-w-0 space-y-6">
           <section className="card p-5">
             <h2 className="font-bold">概要</h2>
             <dl className="mt-4 grid gap-4 text-sm md:grid-cols-2">
@@ -294,7 +331,38 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
               <Info label="粗利" value={formatMoney(scope.grossProfitAmount)} />
               <Info label="契約日" value={String(scope.contractedAt ?? "-")} />
               <Info label="課金開始予定日" value={String(scope.billingStartedAt ?? "-")} />
+              <Info
+                label="ヒアリング実施日"
+                value={formatDate(firstText(operationalScope.hearingDate) || null)}
+              />
+              <Info
+                label="初稿予定日"
+                value={formatDate(firstText(operationalScope.firstDraftDueDate) || null)}
+              />
+              <Info
+                label="初稿提出日"
+                value={formatDate(firstText(operationalScope.firstDraftSubmittedAt) || null)}
+              />
+              <Info label="納品予定日" value={formatDate(project.expectedPublishDate)} />
               <Info label="次回アクション" value={project.nextAction ?? "-"} wide />
+              <Info
+                label="完成HP"
+                value={
+                  firstText(operationalScope.completedWebsiteUrl) ? (
+                    <a
+                      href={firstText(operationalScope.completedWebsiteUrl)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-brand-700 hover:underline"
+                    >
+                      サイトを開く
+                    </a>
+                  ) : (
+                    "-"
+                  )
+                }
+                wide
+              />
               <Info label="対応阻害要因" value={project.blocker ?? "-"} wide />
             </dl>
           </section>
@@ -426,12 +494,13 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
           </section>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <DeliveryProjectActions
             project={{
               id: project.id,
               name: project.name,
               companyName: company?.name ?? null,
+              stageId: project.stageId,
               ownerUserId: project.ownerUserId,
               healthStatus: project.healthStatus,
               expectedPublishDate: dateInput(project.expectedPublishDate),
@@ -440,15 +509,16 @@ export default async function DeliveryProjectDetailPage({ params }: Props) {
               nextActionDate: dateInput(project.nextActionDate),
               blocker: project.blocker,
               handoffStatus: project.handoffStatus,
-              scopeSnapshot: asRecord(project.scopeSnapshot),
+              scopeSnapshot: operationalScope,
               companyMissing: !company,
             }}
             users={users}
             stages={(pipeline?.stages ?? []).map((item) => ({
               id: item.id,
-              name: item.name,
+              name: deliveryStageLabel(item.name),
             }))}
             products={products}
+            canEdit={canEditDelivery}
             dealPipelines={dealPipelines.map((item) => ({
               id: item.id,
               name: item.name,

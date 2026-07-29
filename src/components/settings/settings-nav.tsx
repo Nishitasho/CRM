@@ -10,7 +10,7 @@ const items = [
   ["/settings/daily-metric-fields", "日次入力項目設定"],
   ["/settings/appointment-form", "IS連携フォーム設定"],
   ["/settings/appointment-capture-links", "外部IS連携リンク"],
-  ["/settings/targets", "KPI目標"],
+  ["/settings/targets", "目標設定"],
   ["/settings/custom-properties", "カスタム項目"],
   ["/settings/email-templates", "メールテンプレート"],
 ] as const;

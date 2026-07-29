@@ -34,7 +34,14 @@ export default async function ProtectedLayout({
 
   return (
     <div className="min-h-screen">
-      <Sidebar canCreateInternalAppointment={canCreateAppointment} />
+      <Sidebar
+        canCreateInternalAppointment={canCreateAppointment}
+        canManage={[
+          "SUPER_ADMIN",
+          "ADMIN",
+          "MANAGER",
+        ].includes(context.membership.role)}
+      />
       <AppHeader
         user={context.user}
         activeOrganizationId={context.organization.id}

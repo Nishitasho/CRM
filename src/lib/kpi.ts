@@ -15,7 +15,12 @@ import {
 import { prisma } from "./prisma";
 
 type MetricWithTarget = MetricDefinition & {
-  targets: Array<{ targetValue: Prisma.Decimal }>;
+  targets: Array<{
+    businessUnitId: string | null;
+    userId: string | null;
+    workFunction: string | null;
+    targetValue: Prisma.Decimal;
+  }>;
 };
 
 export type MetricFilter = {
@@ -181,32 +186,49 @@ function commonWhere(
   };
 }
 
-async function targetForMetric(metric: MetricWithTarget, filter: MetricFilter) {
-  if (metric.targets.length) {
-    return metric.targets.reduce(
-      (sum, target) => sum + numberValue(target.targetValue),
-      0,
-    );
-  }
-  const targets = await prisma.kpiTarget.findMany({
-    where: {
-      organizationId: metric.organizationId,
-      metricDefinitionId: metric.id,
-      periodStart: { lte: filter.periodEnd },
-      periodEnd: { gte: filter.periodStart },
-      ...(filter.businessUnitId
-        ? { OR: [{ businessUnitId: filter.businessUnitId }, { businessUnitId: null }] }
-        : {}),
-      ...(filter.userId ? { OR: [{ userId: filter.userId }, { userId: null }] } : {}),
-      ...(filter.workFunction
-        ? { OR: [{ workFunction: filter.workFunction }, { workFunction: null }] }
-        : {}),
-    },
-    select: { targetValue: true },
-  });
-  return targets.length
-    ? targets.reduce((sum, target) => sum + numberValue(target.targetValue), 0)
+export function selectKpiTargetValue(
+  targets: Array<{
+    businessUnitId: string | null;
+    userId: string | null;
+    workFunction: string | null;
+    targetValue: Prisma.Decimal | number;
+  }>,
+  filter: Pick<
+    MetricFilter,
+    "businessUnitId" | "userId" | "workFunction"
+  >,
+) {
+  let selected = [...targets];
+  const preferScope = (
+    exactValue: string | null | undefined,
+    getValue: (target: (typeof selected)[number]) => string | null,
+  ) => {
+    if (exactValue) {
+      const exact = selected.filter(
+        (target) => getValue(target) === exactValue,
+      );
+      if (exact.length) {
+        selected = exact;
+        return;
+      }
+    }
+    const aggregate = selected.filter((target) => getValue(target) === null);
+    if (aggregate.length) selected = aggregate;
+  };
+
+  preferScope(filter.businessUnitId, (target) => target.businessUnitId);
+  preferScope(filter.workFunction, (target) => target.workFunction);
+  preferScope(filter.userId, (target) => target.userId);
+  return selected.length
+    ? selected.reduce(
+        (sum, target) => sum + numberValue(target.targetValue),
+        0,
+      )
     : null;
+}
+
+async function targetForMetric(metric: MetricWithTarget, filter: MetricFilter) {
+  return selectKpiTargetValue(metric.targets, filter);
 }
 
 export async function calculateMetric(input: {
@@ -506,7 +528,12 @@ export async function getKpiDashboardData(
           periodStart: { lte: fullFilter.periodEnd },
           periodEnd: { gte: fullFilter.periodStart },
         },
-        select: { targetValue: true },
+        select: {
+          businessUnitId: true,
+          userId: true,
+          workFunction: true,
+          targetValue: true,
+        },
       },
     },
     orderBy: [{ isPrimary: "desc" }, { displayOrder: "asc" }],

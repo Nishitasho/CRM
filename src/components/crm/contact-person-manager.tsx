@@ -27,6 +27,7 @@ export function ContactPersonManager({
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<ContactPerson | null>(null);
+  const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
   async function save(event: FormEvent<HTMLFormElement>) {
@@ -83,6 +84,7 @@ export function ContactPersonManager({
 
     setError("");
     setEditing(null);
+    setCreating(false);
     form.reset();
     router.refresh();
   }
@@ -112,9 +114,20 @@ export function ContactPersonManager({
           <button
             type="button"
             className="secondary-button min-h-8 px-3 py-1 text-xs"
-            onClick={() => setEditing(null)}
+            onClick={() => {
+              setEditing(null);
+              setCreating(true);
+            }}
           >
             新規追加へ
+          </button>
+        ) : canEdit ? (
+          <button
+            type="button"
+            className="secondary-button min-h-8 px-3 py-1 text-xs"
+            onClick={() => setCreating((value) => !value)}
+          >
+            {creating ? "閉じる" : "＋ 担当者"}
           </button>
         ) : null}
       </div>
@@ -151,7 +164,10 @@ export function ContactPersonManager({
                   <button
                     type="button"
                     className="text-xs font-semibold text-brand-700"
-                    onClick={() => setEditing(contact)}
+                    onClick={() => {
+                      setEditing(contact);
+                      setCreating(false);
+                    }}
                   >
                     編集
                   </button>
@@ -174,7 +190,7 @@ export function ContactPersonManager({
         ) : null}
       </div>
 
-      {canEdit ? (
+      {canEdit && (creating || editing) ? (
         <form
           key={editing?.id ?? "new"}
           onSubmit={save}

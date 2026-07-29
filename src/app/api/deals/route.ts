@@ -14,6 +14,7 @@ import {
 } from "@/lib/crm";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { createDeliveryProjectsForDeal } from "@/lib/delivery";
 import { dealSchema, listQuerySchema } from "@/lib/validation";
 
 export async function GET(request: Request) {
@@ -82,7 +83,12 @@ export async function POST(request: Request) {
       );
     requirePermission(context.membership.role, Permission.CRM_WRITE);
     const input = dealSchema.parse(await request.json());
-    const { companyId, ...dealInput } = input;
+    const {
+      companyId,
+      businessUnitId: requestedBusinessUnitId,
+      primaryProductId,
+      ...dealInput
+    } = input;
     const ownerUserId = dealInput.ownerUserId ?? context.user.id;
     await validateOwner(context.organization.id, ownerUserId);
     if (companyId) {
@@ -101,17 +107,33 @@ export async function POST(request: Request) {
         { message: "パイプラインまたはステージが正しくありません。" },
         { status: 400 },
       );
+    const businessUnitId =
+      stage.pipeline.businessUnitId ?? requestedBusinessUnitId ?? null;
     if (stage.stageType === "LOST" && !dealInput.lostReason)
       return NextResponse.json(
         { message: "失注理由を入力してください。" },
         { status: 400 },
       );
-    if (
-      !(await assertBusinessUnitAccess(context, stage.pipeline.businessUnitId))
-    ) {
+    if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
       return NextResponse.json(
         { message: "この事業部へ商談を作成する権限がありません。" },
         { status: 403 },
+      );
+    }
+    const product = primaryProductId
+      ? await prisma.product.findFirst({
+          where: {
+            id: primaryProductId,
+            organizationId: context.organization.id,
+            status: "ACTIVE",
+          },
+          select: { id: true, name: true },
+        })
+      : null;
+    if (primaryProductId && !product) {
+      return NextResponse.json(
+        { message: "商品が見つかりません。" },
+        { status: 400 },
       );
     }
     const deal = await prisma.$transaction(async (tx) => {
@@ -120,7 +142,7 @@ export async function POST(request: Request) {
           ...dealInput,
           ownerUserId,
           organizationId: context.organization.id,
-          businessUnitId: stage.pipeline.businessUnitId,
+          businessUnitId,
           amount: dealInput.amount ?? null,
           probability: stage.probability,
           status: stage.stageType,
@@ -130,6 +152,29 @@ export async function POST(request: Request) {
               : dealInput.closeDate,
         },
       });
+      if (product) {
+        await tx.dealLineItem.create({
+          data: {
+            organizationId: context.organization.id,
+            businessUnitId,
+            dealId: created.id,
+            productId: product.id,
+            name: product.name,
+            quantity: 1,
+            unitPriceAmount: dealInput.amount ?? null,
+            expectedRevenueAmount: dealInput.amount ?? null,
+            revenueAmount:
+              stage.stageType === "WON" ? (dealInput.amount ?? null) : null,
+            status:
+              stage.stageType === "WON"
+                ? "WON"
+                : stage.stageType === "LOST"
+                  ? "LOST"
+                  : "PROPOSED",
+            metadata: { primary: true, source: "CORE_DEAL_FORM" },
+          },
+        });
+      }
       if (companyId) {
         await tx.objectAssociation.upsert({
           where: {
@@ -175,7 +220,26 @@ export async function POST(request: Request) {
       });
       return created;
     });
-    return NextResponse.json({ item: deal }, { status: 201 });
+    let deliveryProjectResult = null;
+    if (stage.stageType === "WON") {
+      try {
+        deliveryProjectResult = await createDeliveryProjectsForDeal({
+          organizationId: context.organization.id,
+          dealId: deal.id,
+          actorUserId: context.user.id,
+        });
+      } catch (error) {
+        console.error("[deals:create] CS案件の自動作成に失敗", {
+          organizationId: context.organization.id,
+          dealId: deal.id,
+          error: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
+    return NextResponse.json(
+      { item: deal, deliveryProjectResult },
+      { status: 201 },
+    );
   } catch (error) {
     return apiError(error);
   }

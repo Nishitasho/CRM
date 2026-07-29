@@ -2,7 +2,7 @@ import { hash } from "bcryptjs";
 import { NextResponse } from "next/server";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { createSession } from "@/lib/auth";
-import { createDefaultPipeline } from "@/lib/organization";
+import { ensureCoreCrmDefaults } from "@/lib/core-crm";
 import { prisma } from "@/lib/prisma";
 import { makeOrganizationSlug, normalizeEmail } from "@/lib/security";
 import { registerSchema } from "@/lib/validation";
@@ -40,7 +40,10 @@ export async function POST(request: Request) {
           role: "SUPER_ADMIN",
         },
       });
-      await createDefaultPipeline(tx, organization.id);
+      await ensureCoreCrmDefaults(tx, {
+        organizationId: organization.id,
+        userId: user.id,
+      });
       await tx.auditLog.create({
         data: {
           organizationId: organization.id,

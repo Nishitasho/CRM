@@ -191,6 +191,8 @@ export const companySchema = z.object({
 export const dealSchema = z.object({
   ownerUserId: optionalUuid,
   companyId: optionalUuid,
+  businessUnitId: optionalUuid,
+  primaryProductId: optionalUuid,
   pipelineId: z.string().uuid("パイプラインを選択してください。"),
   stageId: z.string().uuid("ステージを選択してください。"),
   name: z.string().trim().min(1, "商談名を入力してください。").max(200),
@@ -217,6 +219,17 @@ export const dealStageSchema = z.object({
   lostReason: optionalText(1000),
   primaryLossReasonId: optionalUuid,
   lossReasonNote: optionalText(2000),
+  propertyValues: z.record(z.unknown()).default({}),
+  lineItemOutcomes: z
+    .array(
+      z.object({
+        lineItemId: z.string().uuid(),
+        status: z.enum(["WON", "LOST"]),
+        billingStartedAt: optionalDate,
+      }),
+    )
+    .max(100)
+    .optional(),
 });
 
 export const activitySchema = z.object({
@@ -989,30 +1002,59 @@ export const dealLineItemSchema = z
     expectedRevenueAmount: optionalNumber,
     expectedGrossProfitAmount: optionalNumber,
     collectedAmount: optionalNumber,
+    meetingAt: optionalDate,
     contractedAt: optionalDate,
     collectedAt: optionalDate,
     billingStartedAt: optionalDate,
     cancelledAt: optionalDate,
     status: z
-      .enum(["PROPOSED", "WON", "LOST", "CANCELLED", "NOT_SELECTED"])
-      .default("PROPOSED"),
+      .enum([
+        "PLANNED",
+        "CONSIDERING",
+        "PROPOSED",
+        "WON",
+        "BILLED",
+        "LOST",
+        "CANCELLED",
+        "NOT_SELECTED",
+      ])
+      .default("PLANNED"),
     lossReasonId: optionalUuid,
     lossReasonNote: optionalText(2000),
     customFields: customFieldValues.default({}),
   })
   .superRefine((value, ctx) => {
-    if (
-      ["LOST", "CANCELLED", "NOT_SELECTED"].includes(value.status) &&
-      !value.lossReasonId
-    ) {
+    if (value.status === "BILLED" && !value.billingStartedAt) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["lossReasonId"],
-        message:
-          "商品明細を失注・キャンセル・不採用にする場合は理由を選択してください。",
+        path: ["billingStartedAt"],
+        message: "商材ステータスを課金にする場合は課金日を入力してください。",
       });
     }
   });
+
+export const dealLineItemWorkflowSchema = z
+  .object({
+    status: z
+      .enum(["PLANNED", "CONSIDERING", "WON", "BILLED", "LOST"])
+      .optional(),
+    meetingAt: optionalDate,
+    revenueAmount: optionalNumber,
+    collectedAt: optionalDate,
+    billingStartedAt: z.preprocess(
+      (value) => (value === "" ? null : value),
+      z.coerce.date().nullable().optional(),
+    ),
+  })
+  .refine(
+    (value) =>
+      value.status !== undefined ||
+      value.meetingAt !== undefined ||
+      value.revenueAmount !== undefined ||
+      value.collectedAt !== undefined ||
+      value.billingStartedAt !== undefined,
+    { message: "変更内容を指定してください。" },
+  );
 
 export const attachmentRuleSchema = z.object({
   businessUnitId: optionalUuid,
@@ -1197,22 +1239,24 @@ export const deliveryHandoffRejectSchema = z.object({
     .max(2000),
 });
 
-export const deliveryCrossSellSchema = z.object({
-  productId: optionalUuid,
-  productName: optionalText(180),
-  expectedRevenueAmount: optionalNumber,
-  expectedGrossProfitAmount: optionalNumber,
-  salesOwnerMode: z.enum(["CS_OWNED", "FS_HANDOFF"]).default("CS_OWNED"),
-  fsUserId: optionalUuid,
-  pipelineId: z.string().uuid("パイプラインを選択してください。"),
-  stageId: z.string().uuid("初期ステージを選択してください。"),
-  expectedCloseDate: optionalDate,
-  title: optionalText(200),
-  proposalBackground: optionalText(4000),
-  handoffNote: optionalText(4000),
-  overrideDuplicate: z.boolean().default(false),
-  overrideReason: optionalText(1000),
-}).refine((value) => value.salesOwnerMode !== "FS_HANDOFF" || value.fsUserId, {
-  message: "FSへ引き継ぐ場合はFS担当者を選択してください。",
-  path: ["fsUserId"],
-});
+export const deliveryCrossSellSchema = z
+  .object({
+    productId: optionalUuid,
+    productName: optionalText(180),
+    expectedRevenueAmount: optionalNumber,
+    expectedGrossProfitAmount: optionalNumber,
+    salesOwnerMode: z.enum(["CS_OWNED", "FS_HANDOFF"]).default("CS_OWNED"),
+    fsUserId: optionalUuid,
+    pipelineId: z.string().uuid("パイプラインを選択してください。"),
+    stageId: z.string().uuid("初期ステージを選択してください。"),
+    expectedCloseDate: optionalDate,
+    title: optionalText(200),
+    proposalBackground: optionalText(4000),
+    handoffNote: optionalText(4000),
+    overrideDuplicate: z.boolean().default(false),
+    overrideReason: optionalText(1000),
+  })
+  .refine((value) => value.salesOwnerMode !== "FS_HANDOFF" || value.fsUserId, {
+    message: "FSへ引き継ぐ場合はFS担当者を選択してください。",
+    path: ["fsUserId"],
+  });

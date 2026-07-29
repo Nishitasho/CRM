@@ -12,6 +12,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium",
+    "e2e:preview": "playwright test",
+    "e2e:seed": "tsx scripts/e2e-seed.ts",
+    "preview:smoke": "tsx scripts/preview-smoke.ts",
     "db:local:start": "bash scripts/local-db-start.sh",
     "db:local:stop": "bash scripts/local-db-stop.sh",
     "db:generate": "prisma generate",
@@ -32,6 +37,7 @@
     "zod": "3.24.2"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
     "@types/bcryptjs": "2.4.6",
     "@types/node": "22.13.10",
     "@types/papaparse": "^5.3.16",

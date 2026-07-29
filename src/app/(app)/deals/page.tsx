@@ -1,4 +1,4 @@
-import { DealStatus, Prisma } from "@prisma/client";
+import { DealStatus, DealType, Prisma } from "@prisma/client";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ObjectNav } from "@/components/crm/object-nav";
@@ -10,7 +10,8 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
-import { buildDealQualityIssues } from "@/lib/deal-quality";
+import { getStandardDealViews } from "@/lib/deal-saved-views";
+import { analyzeDealQuality } from "@/lib/deal-quality";
 import { prisma } from "@/lib/prisma";
 
 export default async function DealsPage({
@@ -27,11 +28,32 @@ export default async function DealsPage({
     closeTo?: string;
     nextAction?: string;
     quality?: string;
+    dealType?: string;
+    viewId?: string;
   }>;
 }) {
   const context = await getAuthContext();
   if (!context) redirect("/login");
-  const params = await searchParams;
+  const rawParams = await searchParams;
+  const standardViews = getStandardDealViews();
+  const activeViewId = rawParams.viewId;
+  const activeView =
+    standardViews.find((view) => view.id === activeViewId) ??
+    (activeViewId
+      ? await prisma.savedView.findFirst({
+          where: {
+            id: activeViewId,
+            organizationId: context.organization.id,
+            objectType: "DEAL",
+            OR: [{ userId: context.user.id }, { isShared: true }],
+          },
+        })
+      : null);
+  const viewFilters =
+    activeView?.filters && typeof activeView.filters === "object"
+      ? (activeView.filters as Record<string, string>)
+      : {};
+  const params = mergeViewParams(viewFilters, rawParams);
   const q = params.q?.trim() ?? "";
   const page = Math.max(1, Number(params.page) || 1);
   const pageSize = 20;
@@ -73,6 +95,9 @@ export default async function DealsPage({
     ? params.nextAction
     : "";
   const quality = isQualityFilter(params.quality) ? params.quality : "";
+  const selectedDealType = isDealTypeFilter(params.dealType)
+    ? params.dealType
+    : "";
   const owners = await prisma.organizationMember.findMany({
     where: {
       organizationId: context.organization.id,
@@ -83,8 +108,10 @@ export default async function DealsPage({
   });
   const ownerIds = new Set(owners.map((owner) => owner.userId));
   const selectedOwnerUserId =
-    params.ownerUserId && ownerIds.has(params.ownerUserId)
-      ? params.ownerUserId
+    params.ownerUserId === "me"
+      ? context.user.id
+      : params.ownerUserId && ownerIds.has(params.ownerUserId)
+        ? params.ownerUserId
       : "";
   const dateRange: Prisma.DateTimeNullableFilter | undefined =
     closeFrom || closeTo
@@ -94,7 +121,23 @@ export default async function DealsPage({
         }
       : undefined;
   const nextActionFilter = buildNextActionFilter(nextAction);
-  const qualityFilter = buildQualityFilter(quality);
+  const forecastCommitIds =
+    quality === "forecast_commit"
+      ? (
+          await prisma.forecastCategory.findMany({
+            where: {
+              organizationId: context.organization.id,
+              OR: [
+                { key: { contains: "commit", mode: "insensitive" } },
+                { name: { contains: "commit", mode: "insensitive" } },
+                { name: { contains: "コミット", mode: "insensitive" } },
+              ],
+            },
+            select: { id: true },
+          })
+        ).map((item) => item.id)
+      : [];
+  const qualityFilter = buildQualityFilter(quality, { forecastCommitIds });
   const where: Prisma.DealWhereInput = {
     organizationId: context.organization.id,
     deletedAt: null,
@@ -113,6 +156,7 @@ export default async function DealsPage({
     ...(selectedStageId ? { stageId: selectedStageId } : {}),
     ...(selectedOwnerUserId ? { ownerUserId: selectedOwnerUserId } : {}),
     ...(selectedStatus ? { status: selectedStatus } : {}),
+    ...(selectedDealType ? { dealType: selectedDealType } : {}),
     ...(dateRange ? { expectedCloseDate: dateRange } : {}),
     ...nextActionFilter,
     ...qualityFilter,
@@ -126,6 +170,7 @@ export default async function DealsPage({
     closeTo,
     nextAction,
     quality,
+    dealType: selectedDealType,
   });
   const [items, total] = await Promise.all([
     prisma.deal.findMany({
@@ -156,16 +201,33 @@ export default async function DealsPage({
   const links = await prisma.objectAssociation.findMany({
     where: {
       organizationId: context.organization.id,
-      sourceObjectType: "DEAL",
-      sourceObjectId: { in: items.map((item) => item.id) },
-      targetObjectType: "COMPANY",
+      OR: [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: { in: items.map((item) => item.id) },
+          targetObjectType: "COMPANY",
+        },
+        {
+          sourceObjectType: "COMPANY",
+          targetObjectType: "DEAL",
+          targetObjectId: { in: items.map((item) => item.id) },
+        },
+      ],
       isPrimary: true,
     },
   });
+  const companyIdForLink = (link: (typeof links)[number]) =>
+    link.sourceObjectType === "COMPANY"
+      ? link.sourceObjectId
+      : link.targetObjectId;
+  const dealIdForLink = (link: (typeof links)[number]) =>
+    link.sourceObjectType === "DEAL"
+      ? link.sourceObjectId
+      : link.targetObjectId;
   const companies = await prisma.company.findMany({
     where: {
       organizationId: context.organization.id,
-      id: { in: links.map((link) => link.targetObjectId) },
+      id: { in: links.map(companyIdForLink) },
     },
     select: { id: true, name: true },
   });
@@ -174,8 +236,8 @@ export default async function DealsPage({
   );
   const dealCompanies = new Map(
     links.map((link) => [
-      link.sourceObjectId,
-      companyNames.get(link.targetObjectId) ?? null,
+      dealIdForLink(link),
+      companyNames.get(companyIdForLink(link)) ?? null,
     ]),
   );
   const activityLinks = await prisma.objectAssociation.findMany({
@@ -207,7 +269,7 @@ export default async function DealsPage({
     }
   }
   const enhancedItems = items.map((item) => {
-    const qualityIssues = buildDealQualityIssues({
+    const qualityAnalysis = analyzeDealQuality({
       status: item.status,
       stageType: item.stage.stageType,
       stageName: item.stage.name,
@@ -234,7 +296,7 @@ export default async function DealsPage({
       ...item,
       companyName: dealCompanies.get(item.id) ?? null,
       lastActivityAt: lastActivityByDeal.get(item.id) ?? null,
-      qualityIssues,
+      qualityIssues: qualityAnalysis.alerts,
     };
   });
   const query = new URLSearchParams();
@@ -258,9 +320,25 @@ export default async function DealsPage({
         }
       />
       <ObjectNav active="deals" />
-      <SavedViewBar objectType="DEAL" q={q} filters={filterParams} />
+      <details className="mb-4 rounded-lg border border-line bg-white px-4 py-3">
+        <summary className="cursor-pointer text-sm font-bold text-slate-600">
+          保存ビュー
+        </summary>
+        <div className="mt-3">
+          <SavedViewBar
+            objectType="DEAL"
+            q={q}
+            filters={filterParams}
+            activeViewId={activeViewId ?? ""}
+            standardViews={standardViews}
+          />
+        </div>
+      </details>
       <section className="mb-5 rounded-2xl border border-line bg-white p-4 shadow-sm">
         <form className="grid gap-3 lg:grid-cols-12">
+          {activeViewId ? (
+            <input type="hidden" name="viewId" value={activeViewId} />
+          ) : null}
           <label className="lg:col-span-4">
             <span className="mb-1 block text-xs font-bold text-slate-500">
               キーワード
@@ -269,35 +347,14 @@ export default async function DealsPage({
               className="text-field"
               name="q"
               defaultValue={q}
-              placeholder="商談名・流入元・次アクションで検索"
+              placeholder="商談名・次回アクションで検索"
             />
-          </label>
-          <label className="lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">
-              パイプライン
-            </span>
-            <select
-              className="text-field"
-              name="pipelineId"
-              defaultValue={selectedPipelineId}
-            >
-              <option value="">すべて</option>
-              {pipelines.map((pipeline) => (
-                <option key={pipeline.id} value={pipeline.id}>
-                  {pipeline.name}
-                </option>
-              ))}
-            </select>
           </label>
           <label className="lg:col-span-2">
             <span className="mb-1 block text-xs font-bold text-slate-500">
               ステージ
             </span>
-            <select
-              className="text-field"
-              name="stageId"
-              defaultValue={selectedStageId}
-            >
+            <select className="text-field" name="stageId" defaultValue={selectedStageId}>
               <option value="">すべて</option>
               {selectableStages.map((stage) => (
                 <option key={stage.id} value={stage.id}>
@@ -312,11 +369,7 @@ export default async function DealsPage({
             <span className="mb-1 block text-xs font-bold text-slate-500">
               担当者
             </span>
-            <select
-              className="text-field"
-              name="ownerUserId"
-              defaultValue={selectedOwnerUserId}
-            >
+            <select className="text-field" name="ownerUserId" defaultValue={selectedOwnerUserId}>
               <option value="">すべて</option>
               {owners.map((owner) => (
                 <option key={owner.userId} value={owner.userId}>
@@ -329,85 +382,58 @@ export default async function DealsPage({
             <span className="mb-1 block text-xs font-bold text-slate-500">
               ステータス
             </span>
-            <select
-              className="text-field"
-              name="status"
-              defaultValue={selectedStatus}
-            >
+            <select className="text-field" name="status" defaultValue={selectedStatus}>
               <option value="">すべて</option>
               {Object.entries(DEAL_STATUS_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
+                <option key={value} value={value}>{label}</option>
               ))}
             </select>
           </label>
-          <label className="lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">
-              受注予定日 From
-            </span>
-            <input
-              className="text-field"
-              type="date"
-              name="closeFrom"
-              defaultValue={closeFrom}
-            />
-          </label>
-          <label className="lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">
-              受注予定日 To
-            </span>
-            <input
-              className="text-field"
-              type="date"
-              name="closeTo"
-              defaultValue={closeTo}
-            />
-          </label>
-          <label className="lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">
-              次アクション
-            </span>
-            <select
-              className="text-field"
-              name="nextAction"
-              defaultValue={nextAction}
-            >
-              <option value="">すべて</option>
-              <option value="overdue">期限超過</option>
-              <option value="today">今日まで</option>
-              <option value="week">7日以内</option>
-              <option value="none">未設定</option>
-            </select>
-          </label>
-          <label className="lg:col-span-2">
-            <span className="mb-1 block text-xs font-bold text-slate-500">
-              要対応
-            </span>
-            <select
-              className="text-field"
-              name="quality"
-              defaultValue={quality}
-            >
-              <option value="">すべて</option>
-              {Object.entries(QUALITY_FILTER_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="flex flex-wrap items-end gap-2 lg:col-span-4">
-            <button className="primary-button" type="submit">
-              <Icon name="search" className="h-4 w-4" />
-              絞り込む
-            </button>
-            <Link href="/deals" className="secondary-button">
-              クリア
-            </Link>
-            <a className="secondary-button" href={exportHref}>
-              CSVエクスポート
-            </a>
+          <button className="primary-button self-end lg:col-span-2" type="submit">
+            <Icon name="search" className="h-4 w-4" />
+            絞り込む
+          </button>
+
+          <details className="rounded-lg border border-line bg-slate-50 px-4 py-3 lg:col-span-12">
+            <summary className="cursor-pointer text-sm font-bold text-slate-600">
+              詳細条件
+            </summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+              <FilterSelect
+                label="パイプライン"
+                name="pipelineId"
+                value={selectedPipelineId}
+                options={pipelines.map((pipeline) => ({
+                  value: pipeline.id,
+                  label: pipeline.name,
+                }))}
+              />
+              <FilterDate label="受注予定日 From" name="closeFrom" value={closeFrom} />
+              <FilterDate label="受注予定日 To" name="closeTo" value={closeTo} />
+              <FilterSelect
+                label="次回アクション"
+                name="nextAction"
+                value={nextAction}
+                options={Object.entries(NEXT_ACTION_LABELS).map(([value, label]) => ({ value, label }))}
+              />
+              <FilterSelect
+                label="要対応"
+                name="quality"
+                value={quality}
+                options={Object.entries(QUALITY_FILTER_LABELS).map(([value, label]) => ({ value, label }))}
+              />
+              <FilterSelect
+                label="商談種別"
+                name="dealType"
+                value={selectedDealType}
+                options={Object.entries(DEAL_TYPE_LABELS).map(([value, label]) => ({ value, label }))}
+              />
+            </div>
+          </details>
+
+          <div className="flex flex-wrap items-center gap-2 lg:col-span-12">
+            <Link href="/deals" className="secondary-button">クリア</Link>
+            <a className="secondary-button" href={exportHref}>CSVエクスポート</a>
             <Link className="primary-button ml-auto" href="/deals/new">
               <Icon name="plus" className="h-4 w-4" />
               商談を追加
@@ -447,6 +473,9 @@ export default async function DealsPage({
           ) : null}
           {quality ? (
             <FilterPill label={`要対応: ${QUALITY_FILTER_LABELS[quality]}`} />
+          ) : null}
+          {selectedDealType ? (
+            <FilterPill label={`商談種別: ${DEAL_TYPE_LABELS[selectedDealType]}`} />
           ) : null}
         </div>
       </section>
@@ -583,7 +612,15 @@ const QUALITY_FILTER_LABELS = {
   expected_close_overdue: "受注予定日超過",
   missing_line_items: "商品明細なし",
   missing_forecast: "Forecast未設定",
+  stale_stage: "放置商談",
+  data_quality: "データ不足",
+  forecast_commit: "Forecast Commit",
 } as const;
+
+const DEAL_TYPE_LABELS: Record<DealType, string> = {
+  NEW_BUSINESS: "新規商談",
+  CROSS_SELL: "クロスセル",
+};
 
 function isDealStatus(value: string | undefined): value is DealStatus {
   return Boolean(value && value in DEAL_STATUS_LABELS);
@@ -599,6 +636,10 @@ function isQualityFilter(
   value: string | undefined,
 ): value is keyof typeof QUALITY_FILTER_LABELS {
   return Boolean(value && value in QUALITY_FILTER_LABELS);
+}
+
+function isDealTypeFilter(value: string | undefined): value is DealType {
+  return Boolean(value && value in DEAL_TYPE_LABELS);
 }
 
 function validDateParam(value: string | undefined) {
@@ -648,6 +689,7 @@ function buildNextActionFilter(
 
 function buildQualityFilter(
   value: keyof typeof QUALITY_FILTER_LABELS | "",
+  options: { forecastCommitIds?: string[] } = {},
 ): Prisma.DealWhereInput {
   const today = new Date();
   const todayJst = new Intl.DateTimeFormat("sv-SE", {
@@ -676,6 +718,28 @@ function buildQualityFilter(
   if (value === "missing_forecast") {
     return { status: "OPEN", forecastCategoryId: null };
   }
+  if (value === "stale_stage") {
+    return { status: "OPEN" };
+  }
+  if (value === "data_quality") {
+    return {
+      status: "OPEN",
+      OR: [
+        { nextActionDate: { lt: todayDate } },
+        { nextActionDate: null },
+        { nextAction: null },
+        { nextAction: "" },
+        { expectedCloseDate: { lt: todayDate } },
+        { forecastCategoryId: null },
+        { lineItems: { none: {} } },
+      ],
+    };
+  }
+  if (value === "forecast_commit") {
+    return options.forecastCommitIds?.length
+      ? { forecastCategoryId: { in: options.forecastCommitIds } }
+      : { id: "__no_forecast_commit_category__" };
+  }
   return {};
 }
 
@@ -685,10 +749,69 @@ function compactParams(params: Record<string, string>) {
   );
 }
 
+function mergeViewParams(
+  viewFilters: Record<string, string>,
+  rawParams: Record<string, string | string[] | undefined>,
+) {
+  const merged: Record<string, string> = { ...viewFilters };
+  for (const [key, value] of Object.entries(rawParams)) {
+    const oneValue = Array.isArray(value) ? value[0] : value;
+    if (oneValue !== undefined) merged[key] = oneValue;
+  }
+  return merged;
+}
+
 function stageTone(stageType: "OPEN" | "WON" | "LOST") {
   if (stageType === "WON") return "bg-emerald-50 text-emerald-700";
   if (stageType === "LOST") return "bg-red-50 text-red-700";
   return "bg-brand-50 text-brand-700";
+}
+
+function FilterSelect({
+  label,
+  name,
+  value,
+  options,
+}: {
+  label: string;
+  name: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <label>
+      <span className="mb-1 block text-xs font-bold text-slate-500">
+        {label}
+      </span>
+      <select className="text-field" name={name} defaultValue={value}>
+        <option value="">すべて</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function FilterDate({
+  label,
+  name,
+  value,
+}: {
+  label: string;
+  name: string;
+  value: string;
+}) {
+  return (
+    <label>
+      <span className="mb-1 block text-xs font-bold text-slate-500">
+        {label}
+      </span>
+      <input className="text-field" type="date" name={name} defaultValue={value} />
+    </label>
+  );
 }
 
 function FilterPill({ label }: { label: string }) {

@@ -39,6 +39,7 @@ export function RecordDetail({
   canDelete,
   defaultEmail = "",
   timelineBefore,
+  showEmailComposer = true,
 }: {
   objectType: "CONTACT" | "COMPANY" | "DEAL";
   objectId: string;
@@ -53,6 +54,7 @@ export function RecordDetail({
   canDelete: boolean;
   defaultEmail?: string;
   timelineBefore?: React.ReactNode;
+  showEmailComposer?: boolean;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)_300px]">
@@ -91,12 +93,14 @@ export function RecordDetail({
         </section>
       </aside>
       <main className="space-y-4">
-        <EmailLogComposer
-          objectType={objectType}
-          objectId={objectId}
-          defaultTo={defaultEmail}
-          canEdit={canEdit}
-        />
+        {showEmailComposer ? (
+          <EmailLogComposer
+            objectType={objectType}
+            objectId={objectId}
+            defaultTo={defaultEmail}
+            canEdit={canEdit}
+          />
+        ) : null}
         <ActivityComposer
           objectType={objectType}
           objectId={objectId}

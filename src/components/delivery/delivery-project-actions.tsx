@@ -12,6 +12,7 @@ type ProjectDefaults = {
   id: string;
   name: string;
   companyName: string | null;
+  stageId: string | null;
   ownerUserId: string | null;
   healthStatus: string;
   expectedPublishDate: string | null;
@@ -26,7 +27,13 @@ type ProjectDefaults = {
 
 function asDateInput(value: string | null) {
   if (!value) return "";
-  return value.slice(0, 10);
+  const normalized = value.trim().replace(/[./]/g, "-");
+  const direct = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (direct) {
+    return `${direct[1]}-${direct[2].padStart(2, "0")}-${direct[3].padStart(2, "0")}`;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
 }
 
 function stringValue(value: unknown) {
@@ -49,7 +56,7 @@ function Field({
   wide?: boolean;
 }) {
   return (
-    <label className={`block ${wide ? "md:col-span-2" : ""}`}>
+      <label className={`block ${wide ? "sm:col-span-2" : ""}`}>
       <span className="field-label">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
@@ -62,12 +69,14 @@ export function DeliveryProjectActions({
   stages,
   dealPipelines,
   products,
+  canEdit,
 }: {
   project: ProjectDefaults;
   users: Option[];
   stages: StageOption[];
   dealPipelines: PipelineOption[];
   products: ProductOption[];
+  canEdit: boolean;
 }) {
   const router = useRouter();
   const [message, setMessage] = useState("");
@@ -113,6 +122,13 @@ export function DeliveryProjectActions({
       nextAction: form.get("nextAction"),
       nextActionDate: form.get("nextActionDate"),
       blocker: form.get("blocker"),
+      scopeSnapshot: {
+        ...scope,
+        hearingDate: form.get("hearingDate") || null,
+        firstDraftDueDate: form.get("firstDraftDueDate") || null,
+        firstDraftSubmittedAt: form.get("firstDraftSubmittedAt") || null,
+        completedWebsiteUrl: form.get("completedWebsiteUrl") || null,
+      },
     });
   }
 
@@ -188,14 +204,50 @@ export function DeliveryProjectActions({
       ) : null}
 
       <section className="card p-5">
+        <div>
+          <p className="text-xs font-bold uppercase text-brand-700">Progress</p>
+          <h2 className="mt-1 font-bold">制作進捗を更新</h2>
+        </div>
+        <form onSubmit={transition} className="mt-4 grid gap-3">
+          <Field label="現在の進捗">
+            <select
+              className="text-field"
+              name="stageId"
+              defaultValue={project.stageId ?? stages[0]?.id}
+              disabled={!canEdit}
+            >
+              {stages.map((stage) => (
+                <option key={stage.id} value={stage.id}>
+                  {stage.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="進捗メモ">
+            <input
+              className="text-field"
+              name="note"
+              placeholder="変更理由や顧客状況"
+              disabled={!canEdit}
+            />
+          </Field>
+          {canEdit ? (
+            <button className="primary-button w-full">進捗を保存</button>
+          ) : null}
+        </form>
+      </section>
+
+      <section className="card p-5">
         <div className="flex flex-wrap gap-2">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => setCrossSellOpen(true)}
-          >
-            ＋ クロスセル商談
-          </button>
+          {canEdit ? (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setCrossSellOpen(true)}
+            >
+              ＋ クロスセル商談
+            </button>
+          ) : null}
           <button
             className="secondary-button"
             type="button"
@@ -204,9 +256,18 @@ export function DeliveryProjectActions({
             引き継ぎ内容
           </button>
         </div>
-        <form onSubmit={updateProject} className="mt-5 grid gap-4">
+        <div className="mt-5">
+          <p className="text-xs font-bold uppercase text-brand-700">Daily update</p>
+          <h2 className="mt-1 font-bold">日程・次回アクション</h2>
+        </div>
+        <form onSubmit={updateProject} className="mt-5 grid gap-4 sm:grid-cols-2">
           <Field label="CS担当">
-            <select className="text-field" name="ownerUserId" defaultValue={project.ownerUserId ?? ""}>
+            <select
+              className="text-field"
+              name="ownerUserId"
+              defaultValue={project.ownerUserId ?? ""}
+              disabled={!canEdit}
+            >
               <option value="">未設定</option>
               {users.map((user) => (
                 <option key={user.id} value={user.id}>
@@ -215,49 +276,112 @@ export function DeliveryProjectActions({
               ))}
             </select>
           </Field>
-          <Field label="ヘルス">
-            <select className="text-field" name="healthStatus" defaultValue={project.healthStatus}>
-              <option value="ON_TRACK">順調</option>
-              <option value="AT_RISK">注意</option>
-              <option value="OFF_TRACK">遅延</option>
-              <option value="BLOCKED">停止</option>
-            </select>
-          </Field>
-          <Field label="次回アクション">
-            <input className="text-field" name="nextAction" defaultValue={project.nextAction ?? ""} />
+          <Field label="ヒアリング実施日">
+            <input
+              className="text-field"
+              type="date"
+              name="hearingDate"
+              defaultValue={asDateInput(stringValue(scope.hearingDate) || null)}
+              disabled={!canEdit}
+            />
           </Field>
           <Field label="次回アクション日">
-            <input className="text-field" type="date" name="nextActionDate" defaultValue={asDateInput(project.nextActionDate)} />
+            <input
+              className="text-field"
+              type="date"
+              name="nextActionDate"
+              defaultValue={asDateInput(project.nextActionDate)}
+              disabled={!canEdit}
+            />
           </Field>
-          <Field label="対応阻害要因">
-            <input className="text-field" name="blocker" defaultValue={project.blocker ?? ""} />
+          <Field label="次回アクション">
+            <input
+              className="text-field"
+              name="nextAction"
+              defaultValue={project.nextAction ?? ""}
+              placeholder="例: 素材回収の確認連絡"
+              disabled={!canEdit}
+            />
           </Field>
-          <Field label="公開予定日">
-            <input className="text-field" type="date" name="expectedPublishDate" defaultValue={asDateInput(project.expectedPublishDate)} />
+          <Field label="初稿予定日">
+            <input
+              className="text-field"
+              type="date"
+              name="firstDraftDueDate"
+              defaultValue={asDateInput(stringValue(scope.firstDraftDueDate) || null)}
+              disabled={!canEdit}
+            />
           </Field>
-          <Field label="実公開日">
-            <input className="text-field" type="date" name="actualPublishDate" defaultValue={asDateInput(project.actualPublishDate)} />
+          <Field label="初稿提出日">
+            <input
+              className="text-field"
+              type="date"
+              name="firstDraftSubmittedAt"
+              defaultValue={asDateInput(stringValue(scope.firstDraftSubmittedAt) || null)}
+              disabled={!canEdit}
+            />
           </Field>
-          <button className="primary-button w-full">保存</button>
-        </form>
-      </section>
-
-      <section className="card p-5">
-        <h2 className="font-bold">CSステージ</h2>
-        <form onSubmit={transition} className="mt-4 grid gap-3">
-          <Field label="移動先">
-            <select className="text-field" name="stageId">
-              {stages.map((stage) => (
-                <option key={stage.id} value={stage.id}>
-                  {stage.name}
-                </option>
-              ))}
-            </select>
+          <Field label="納品予定日">
+            <input
+              className="text-field"
+              type="date"
+              name="expectedPublishDate"
+              defaultValue={asDateInput(project.expectedPublishDate)}
+              disabled={!canEdit}
+            />
           </Field>
-          <Field label="メモ">
-            <input className="text-field" name="note" />
+          <Field label="納品日">
+            <input
+              className="text-field"
+              type="date"
+              name="actualPublishDate"
+              defaultValue={asDateInput(project.actualPublishDate)}
+              disabled={!canEdit}
+            />
           </Field>
-          <button className="secondary-button w-full">ステージを変更</button>
+          <Field label="完成HP" wide>
+            <input
+              className="text-field"
+              type="url"
+              name="completedWebsiteUrl"
+              defaultValue={stringValue(scope.completedWebsiteUrl)}
+              placeholder="https://"
+              disabled={!canEdit}
+            />
+          </Field>
+          <details className="sm:col-span-2 rounded-lg border border-line p-4">
+            <summary className="cursor-pointer text-sm font-bold text-slate-600">
+              ヘルス・阻害要因
+            </summary>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <Field label="ヘルス">
+                <select
+                  className="text-field"
+                  name="healthStatus"
+                  defaultValue={project.healthStatus}
+                  disabled={!canEdit}
+                >
+                  <option value="ON_TRACK">順調</option>
+                  <option value="AT_RISK">注意</option>
+                  <option value="OFF_TRACK">遅延</option>
+                  <option value="BLOCKED">停止</option>
+                </select>
+              </Field>
+              <Field label="対応阻害要因">
+                <input
+                  className="text-field"
+                  name="blocker"
+                  defaultValue={project.blocker ?? ""}
+                  disabled={!canEdit}
+                />
+              </Field>
+            </div>
+          </details>
+          {canEdit ? (
+            <button className="primary-button sm:col-span-2 w-full">
+              案件情報を保存
+            </button>
+          ) : null}
         </form>
       </section>
 

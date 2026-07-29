@@ -12,7 +12,6 @@ import {
   DealAlertRuleType,
   DealParticipantRole,
   DeliveryHandoffStatus,
-  DeliveryStageType,
   DecisionMakerStatus,
   FieldVisitStatus,
   ForecastCategoryStatus,
@@ -40,80 +39,13 @@ import {
   LossReasonStatus,
 } from "@prisma/client";
 import { hash } from "bcryptjs";
+import {
+  firstDivisionSalesStages,
+  hdDivisionSalesStages,
+  spreadsheetDeliveryStages,
+} from "../src/lib/spreadsheet-stages";
 
 const prisma = new PrismaClient();
-
-const stages = [
-  {
-    name: "新規リード",
-    probability: 10,
-    stageType: StageType.OPEN,
-    requiredFields: [],
-    staleDays: 5,
-  },
-  {
-    name: "アポ獲得",
-    probability: 20,
-    stageType: StageType.OPEN,
-    requiredFields: ["appointment_acquired_date", "next_action", "next_action_date"],
-    staleDays: 3,
-  },
-  {
-    name: "商談予定",
-    probability: 35,
-    stageType: StageType.OPEN,
-    requiredFields: [
-      "appointment_acquired_date",
-      "meeting_date",
-      "line_items",
-      "forecast_category",
-      "next_action_date",
-    ],
-    staleDays: 3,
-  },
-  {
-    name: "提案中",
-    probability: 55,
-    stageType: StageType.OPEN,
-    requiredFields: [
-      "meeting_date",
-      "proposed_line_items",
-      "expected_amount",
-      "forecast_category",
-      "next_action",
-    ],
-    staleDays: 5,
-  },
-  {
-    name: "契約確認中",
-    probability: 80,
-    stageType: StageType.OPEN,
-    requiredFields: ["proposed_line_items", "expected_amount", "closer"],
-    staleDays: 5,
-  },
-  {
-    name: "受注",
-    probability: 100,
-    stageType: StageType.WON,
-    requiredFields: [
-      "won_line_items",
-      "confirmed_amount",
-      "won_date",
-      "collected_date",
-      "billing_date",
-      "contracted_at",
-      "closer",
-    ],
-    staleDays: null,
-  },
-  {
-    name: "失注",
-    probability: 0,
-    stageType: StageType.LOST,
-    requiredFields: ["loss_reason"],
-    staleDays: null,
-  },
-];
 
 const june2026Start = new Date(Date.UTC(2026, 5, 1));
 const june2026End = new Date(Date.UTC(2026, 5, 30));
@@ -439,19 +371,29 @@ async function main() {
     },
   });
 
-  for (const [index, stage] of stages.entries()) {
+  for (const [index, stage] of firstDivisionSalesStages.entries()) {
+    const stageData = {
+      ...stage,
+      requiredFields: [...stage.requiredFields],
+    };
     await prisma.pipelineStage.upsert({
       where: {
         pipelineId_sortOrder: { pipelineId: pipeline.id, sortOrder: index + 1 },
       },
-      update: stage,
+      update: stageData,
       create: {
         organizationId: organization.id,
         pipelineId: pipeline.id,
         sortOrder: index + 1,
-        ...stage,
+        ...stageData,
       },
     });
+  }
+  for (const [index, stage] of hdDivisionSalesStages.entries()) {
+    const stageData = {
+      ...stage,
+      requiredFields: [...stage.requiredFields],
+    };
     await prisma.pipelineStage.upsert({
       where: {
         pipelineId_sortOrder: {
@@ -459,12 +401,12 @@ async function main() {
           sortOrder: index + 1,
         },
       },
-      update: stage,
+      update: stageData,
       create: {
         organizationId: organization.id,
         pipelineId: hdPipeline.id,
         sortOrder: index + 1,
-        ...stage,
+        ...stageData,
       },
     });
   }
@@ -605,7 +547,7 @@ async function main() {
       name: "パイプライン",
       probability: 20,
       displayOrder: 1,
-      aliases: ["E商談", "F日程変更中"],
+      aliases: ["F日程変更中", "E商談", "E2商談", "E2前確通過商談"],
     },
     {
       key: "upside",
@@ -626,14 +568,14 @@ async function main() {
       name: "コミット",
       probability: 85,
       displayOrder: 4,
-      aliases: ["B商談済み回答待ち", "Aエントリー済み", "A受注"],
+      aliases: ["B商談済み回答待ち", "B素材回収待ち"],
     },
     {
       key: "closed_won",
       name: "受注確定",
       probability: 100,
       displayOrder: 5,
-      aliases: ["AA課金"],
+      aliases: ["A受注", "Aエントリー済み", "AA課金"],
       isClosed: true,
     },
     {
@@ -641,7 +583,17 @@ async function main() {
       name: "対象外",
       probability: 0,
       displayOrder: 6,
-      aliases: ["XAプレゼン失注", "XBプレゼン失注(非決裁者)", "XCアポ失注"],
+      aliases: [
+        "XAプレゼン失注(決裁者)",
+        "XBプレゼン失注(非決裁者)",
+        "XCアポ失注",
+        "XAA受注キャンセル",
+        "前確(付き合いNG)",
+        "前確(営業失注)",
+        "前確(条件NG)",
+        "前確(物理NG)",
+        "無効商談",
+      ],
       isOmitted: true,
     },
   ];
@@ -888,138 +840,7 @@ async function main() {
       isDefault: true,
     },
   });
-  const deliveryStageSeeds = [
-    {
-      name: "受注引き継ぎ",
-      color: "#f97316",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 2,
-      requiredFields: [],
-      taskTemplates: [
-        { key: "review-handoff", title: "引き継ぎ内容を確認", dueInDays: 1 },
-      ],
-    },
-    {
-      name: "初回連絡待ち",
-      color: "#fb923c",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 2,
-      requiredFields: ["ownerUserId", "nextActionDate"],
-      taskTemplates: [
-        { key: "first-contact", title: "初回連絡", dueInDays: 1 },
-      ],
-    },
-    {
-      name: "ヒアリング",
-      color: "#0ea5e9",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 3,
-      requiredFields: ["ownerUserId", "nextAction"],
-      taskTemplates: [
-        { key: "hearing", title: "ヒアリング実施", dueInDays: 2 },
-      ],
-    },
-    {
-      name: "素材待ち",
-      color: "#f59e0b",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 5,
-      requiredFields: ["nextAction", "expectedPublishDate"],
-      taskTemplates: [
-        { key: "collect-materials", title: "素材回収", dueInDays: 3 },
-        { key: "check-domain", title: "ドメイン確認", dueInDays: 3 },
-      ],
-    },
-    {
-      name: "制作準備",
-      color: "#8b5cf6",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 3,
-      requiredFields: ["expectedPublishDate"],
-      taskTemplates: [
-        { key: "production-setup", title: "制作準備", dueInDays: 2 },
-      ],
-    },
-    {
-      name: "制作中",
-      color: "#2563eb",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 7,
-      requiredFields: ["ownerUserId", "expectedPublishDate"],
-      taskTemplates: [
-        { key: "start-production", title: "制作開始", dueInDays: 1 },
-      ],
-    },
-    {
-      name: "初稿提出",
-      color: "#0284c7",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 3,
-      requiredFields: ["nextActionDate"],
-      taskTemplates: [
-        { key: "submit-first-draft", title: "初稿提出", dueInDays: 1 },
-      ],
-    },
-    {
-      name: "修正対応",
-      color: "#7c3aed",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 5,
-      requiredFields: ["nextAction"],
-      taskTemplates: [
-        { key: "revision-check", title: "修正確認", dueInDays: 2 },
-      ],
-    },
-    {
-      name: "顧客確認",
-      color: "#0891b2",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 4,
-      requiredFields: ["nextActionDate"],
-      taskTemplates: [
-        { key: "customer-final-check", title: "顧客最終確認", dueInDays: 2 },
-      ],
-    },
-    {
-      name: "公開準備",
-      color: "#16a34a",
-      stageType: DeliveryStageType.NORMAL,
-      staleDays: 2,
-      requiredFields: ["expectedPublishDate"],
-      taskTemplates: [
-        { key: "publish-work", title: "公開作業", dueInDays: 1 },
-      ],
-    },
-    {
-      name: "公開済み",
-      color: "#15803d",
-      stageType: DeliveryStageType.PUBLISHED,
-      staleDays: 2,
-      requiredFields: ["actualPublishDate"],
-      taskTemplates: [
-        { key: "post-publish-check", title: "公開後確認", dueInDays: 1 },
-        { key: "cross-sell-check", title: "クロスセル確認", dueInDays: 3 },
-      ],
-    },
-    {
-      name: "完了",
-      color: "#0f172a",
-      stageType: DeliveryStageType.COMPLETED,
-      staleDays: null,
-      requiredFields: [],
-      taskTemplates: [],
-      isCompleted: true,
-    },
-    {
-      name: "保留",
-      color: "#64748b",
-      stageType: DeliveryStageType.PAUSED,
-      staleDays: null,
-      requiredFields: ["blocker"],
-      taskTemplates: [],
-      isPaused: true,
-    },
-  ];
+  const deliveryStageSeeds = spreadsheetDeliveryStages;
   const deliveryStages = [];
   for (const [index, stage] of deliveryStageSeeds.entries()) {
     deliveryStages.push(
@@ -1033,8 +854,8 @@ async function main() {
           color: stage.color,
           stageType: stage.stageType,
           staleDays: stage.staleDays,
-          requiredFields: stage.requiredFields,
-          taskTemplates: stage.taskTemplates,
+          requiredFields: [...stage.requiredFields],
+          taskTemplates: [...stage.taskTemplates],
           isCompleted: stage.isCompleted ?? false,
           isPaused: stage.isPaused ?? false,
         },
@@ -1061,7 +882,6 @@ async function main() {
         "grossProfitAmount",
         "contractedAt",
         "billingStartedAt",
-        "desiredPublishDate",
         "productionScope",
         "customerRequests",
         "designPreference",
@@ -1136,16 +956,6 @@ async function main() {
       productNames: ["ドメイン"],
       sortOrder: 3,
       isRequired: true,
-    },
-    {
-      name: "desired_launch_date",
-      label: "希望公開日",
-      fieldType: CustomFieldType.DATE,
-      options: [],
-      businessUnitId: null,
-      productNames: [],
-      sortOrder: 4,
-      isRequired: false,
     },
   ];
   for (const property of lineItemPropertySeeds) {
@@ -1664,14 +1474,7 @@ async function main() {
           stage.stageType === StageType.LOST
             ? QualificationResult.INVALID
             : QualificationResult.VALID,
-        legacyProgress:
-          stage.stageType === StageType.WON
-            ? "AA課金"
-            : stage.stageType === StageType.LOST
-              ? "XAプレゼン失注"
-              : forecastKey === "commit"
-                ? "B商談済み回答待ち"
-                : "E商談",
+        legacyProgress: stage.name,
         lostReason: stage.stageType === "LOST" ? "予算見送り" : null,
         source: index % 2 === 0 ? "問い合わせ" : "既存顧客紹介",
         customFields: {
@@ -1741,14 +1544,7 @@ async function main() {
           stage.stageType === StageType.LOST
             ? QualificationResult.INVALID
             : QualificationResult.VALID,
-        legacyProgress:
-          stage.stageType === StageType.WON
-            ? "AA課金"
-            : stage.stageType === StageType.LOST
-              ? "XAプレゼン失注"
-              : forecastKey === "commit"
-                ? "Aエントリー済み"
-                : "E商談",
+        legacyProgress: stage.name,
         lostReason: stage.stageType === "LOST" ? "条件不一致" : null,
         source: index % 3 === 0 ? "紹介" : "ISアポ",
         customFields: { contract_type: "月額" },
@@ -1899,16 +1695,14 @@ async function main() {
             itemName === "ドメイン"
               ? {
                   domain_name: `sample-${index + 1}.jp`,
-                  desired_launch_date: "2026-07-01",
                 }
               : itemName === "口コミットくん" || itemName === "プラリー"
                 ? {
                     target_store_count: 3 + (index % 4),
-                    desired_launch_date: "2026-07-15",
                   }
                 : isHd
                   ? { plan: index % 2 === 0 ? "スタンダード" : "ライト" }
-                  : { desired_launch_date: "2026-07-10" },
+                  : {},
           metadata: {
             legacyProgress: deal.legacyProgress,
             duplicateSafeCountUnit: "deal",
@@ -2171,7 +1965,6 @@ async function main() {
           notes: "seed引き継ぎデータ",
           fsUserId: deal.ownerUserId,
           csUserId: superAdmin.id,
-          desiredPublishDate: "2026-07-01",
           nextCustomerActionAt: "2026-06-24",
         },
         checklistSnapshot: {

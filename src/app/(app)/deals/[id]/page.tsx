@@ -7,7 +7,6 @@ import { DealTaskCard } from "@/components/tasks/deal-task-card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getRecordActivities } from "@/lib/crm";
-import { getCustomFieldDetails } from "@/lib/custom-fields";
 import {
   buildDealQualityIssues,
   highestDealQualitySeverity,
@@ -32,7 +31,6 @@ export default async function DealDetailPage({
     activities,
     related,
     options,
-    customFields,
     lineItems,
     products,
     businessUnits,
@@ -49,7 +47,6 @@ export default async function DealDetailPage({
     getRecordActivities(context.organization.id, "DEAL", id),
     getRelatedRecords(context.organization.id, "DEAL", id),
     getAssociationOptions(context.organization.id),
-    getCustomFieldDetails(context.organization.id, "DEAL", item.customFields),
     prisma.dealLineItem.findMany({
       where: { organizationId: context.organization.id, dealId: id },
       include: { product: { select: { name: true } }, priceBookEntry: true },
@@ -306,15 +303,29 @@ export default async function DealDetailPage({
                 currentStageId={item.stageId}
                 pipelines={pipelines}
                 lossReasons={dealLossReasons}
+                lineItems={lineItems.map((line) => ({
+                  id: line.id,
+                  name: line.name,
+                  productName: line.product?.name ?? null,
+                  status: line.status,
+                  billingStartedAt: line.billingStartedAt
+                    ? line.billingStartedAt.toISOString().slice(0, 10)
+                    : null,
+                }))}
                 forecastCategories={forecastCategories.map((category) => ({
                   value: category.id,
                   label: category.name,
+                }))}
+                users={ownerOptions.map((member) => ({
+                  value: member.user.id,
+                  label: member.user.name,
                 }))}
               />
             ),
             fieldType: "SELECT",
             isCustom: false,
             isEditable: false,
+            renderDirect: true,
           },
           {
             key: "probability",
@@ -477,7 +488,6 @@ export default async function DealDetailPage({
             isCustom: false,
             isEditable: true,
           },
-          ...customFields.map((field) => field.descriptor),
         ]}
         activities={activities}
         related={related}
@@ -489,8 +499,78 @@ export default async function DealDetailPage({
           context.membership.role,
           Permission.CRM_DELETE,
         )}
+        showEmailComposer={false}
         timelineBefore={
           <div className="space-y-6">
+            <DealLineItemManager
+              dealId={id}
+              lineItems={lineItems.map((line) => ({
+                id: line.id,
+                productId: line.productId,
+                priceBookEntryId: line.priceBookEntryId,
+                businessUnitId: line.businessUnitId,
+                name: line.name,
+                quantity: decimalNumber(line.quantity),
+                unitPriceAmount: decimalNumber(line.unitPriceAmount),
+                initialFee: decimalNumber(line.initialFee),
+                recurringFee: decimalNumber(line.recurringFee),
+                revenueAmount: decimalNumber(line.revenueAmount),
+                grossProfitAmount: decimalNumber(line.grossProfitAmount),
+                expectedRevenueAmount: decimalNumber(
+                  line.expectedRevenueAmount,
+                ),
+                expectedGrossProfitAmount: decimalNumber(
+                  line.expectedGrossProfitAmount,
+                ),
+                collectedAmount: decimalNumber(line.collectedAmount),
+                meetingAt: line.meetingAt?.toISOString() ?? null,
+                contractedAt: line.contractedAt?.toISOString() ?? null,
+                collectedAt: line.collectedAt?.toISOString() ?? null,
+                billingStartedAt: line.billingStartedAt?.toISOString() ?? null,
+                cancelledAt: line.cancelledAt?.toISOString() ?? null,
+                status: line.status,
+                lossReasonId: line.lossReasonId,
+                lossReasonNote: line.lossReasonNote,
+                customFields: line.customFields,
+                product: line.product,
+              }))}
+              products={products.map((product) => ({
+                id: product.id,
+                name: product.name,
+                businessUnitProducts: product.businessUnitProducts,
+                priceBookEntries: product.priceBookEntries.map((entry) => ({
+                  id: entry.id,
+                  name: entry.name,
+                  unitPriceAmount: decimalNumber(entry.unitPriceAmount),
+                  initialFee: decimalNumber(entry.initialFee),
+                  recurringFee: decimalNumber(entry.recurringFee),
+                  revenueAmount: decimalNumber(entry.revenueAmount),
+                  grossProfitAmount: decimalNumber(entry.grossProfitAmount),
+                })),
+              }))}
+              businessUnits={businessUnits}
+              lossReasons={lossReasons}
+              properties={lineItemProperties.map((property) => ({
+                id: property.id,
+                name: property.name,
+                label: property.label,
+                fieldType: property.fieldType,
+                options: property.options,
+                isRequired: property.isRequired,
+                sortOrder: property.sortOrder,
+              }))}
+              propertyScopes={propertyScopes}
+              defaultBusinessUnitId={item.businessUnitId}
+              defaultDate={item.closeDate ?? item.expectedCloseDate}
+              canEdit={canEdit}
+            />
+            <DealTaskCard
+              dealId={id}
+              items={dealTasks}
+              members={ownerOptions.map((member) => member.user)}
+              defaultOwnerUserId={item.ownerUserId ?? context.user.id}
+              canEdit={canEdit}
+            />
             {deliveryProjects.length ? (
               <section className="card overflow-hidden">
                 <div className="border-b border-line p-5">
@@ -512,27 +592,8 @@ export default async function DealDetailPage({
                 </div>
               </section>
             ) : null}
-            <DealTaskCard
-              dealId={id}
-              items={dealTasks}
-              members={ownerOptions.map((member) => member.user)}
-              defaultOwnerUserId={item.ownerUserId ?? context.user.id}
-              canEdit={canEdit}
-            />
           </div>
         }
-      />
-      <DealLineItemManager
-        dealId={id}
-        lineItems={lineItems}
-        products={products}
-        businessUnits={businessUnits}
-        lossReasons={lossReasons}
-        properties={lineItemProperties}
-        propertyScopes={propertyScopes}
-        defaultBusinessUnitId={item.businessUnitId}
-        defaultDate={item.closeDate ?? item.expectedCloseDate}
-        canEdit={canEdit}
       />
     </div>
   );
@@ -542,6 +603,12 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function decimalNumber(value: unknown) {
+  if (value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function datePropertyValue(...values: unknown[]) {
@@ -636,9 +703,7 @@ function DealSummaryPanel({
         </div>
       </div>
       <div className="card p-5">
-        <p className="text-xs font-bold uppercase text-slate-500">
-          Pipeline
-        </p>
+        <p className="text-xs font-bold uppercase text-slate-500">Pipeline</p>
         <div className="mt-3 flex items-center justify-between gap-3">
           <div>
             <p className="font-bold text-ink">{stageName}</p>
@@ -675,14 +740,22 @@ function DealSummaryPanel({
           {qualityIssues.slice(0, 3).map((issue) => (
             <p key={issue.type}>{issue.message}</p>
           ))}
-          {!qualityIssues.length ? <p>入力状態に大きな問題はありません。</p> : null}
+          {!qualityIssues.length ? (
+            <p>入力状態に大きな問題はありません。</p>
+          ) : null}
         </div>
       </div>
       <div className="card p-5 xl:col-span-3">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-          <MiniStat label="アポ獲得日" value={formatShortDate(appointmentAcquiredDate)} />
+          <MiniStat
+            label="アポ獲得日"
+            value={formatShortDate(appointmentAcquiredDate)}
+          />
           <MiniStat label="商談日" value={formatShortDate(meetingDate)} />
-          <MiniStat label="受注予定日" value={formatShortDate(expectedCloseDate)} />
+          <MiniStat
+            label="受注予定日"
+            value={formatShortDate(expectedCloseDate)}
+          />
           <MiniStat label="受注日" value={formatShortDate(closeDate)} />
           <MiniStat label="回収日" value={formatShortDate(collectedDate)} />
           <MiniStat label="課金日" value={formatShortDate(billingDate)} />

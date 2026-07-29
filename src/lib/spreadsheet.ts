@@ -163,15 +163,15 @@ function getRequiredText(files: Map<string, string>, path: string) {
 }
 
 function parseWorkbookSheets(xml: string) {
-  return Array.from(
-    xml.matchAll(/<(?:[\w.-]+:)?sheet\b([^>]*)\/?>/g),
-  ).map((match) => {
-    const attrs = parseAttributes(match[1]);
-    return {
-      name: attrs.name ?? "Sheet",
-      relationshipId: attrs["r:id"] ?? "",
-    };
-  });
+  return Array.from(xml.matchAll(/<(?:[\w.-]+:)?sheet\b([^>]*)\/?>/g)).map(
+    (match) => {
+      const attrs = parseAttributes(match[1]);
+      return {
+        name: attrs.name ?? "Sheet",
+        relationshipId: attrs["r:id"] ?? "",
+      };
+    },
+  );
 }
 
 function parseRelationships(xml: string) {
@@ -191,9 +191,7 @@ function parseSharedStrings(xml?: string) {
   if (!xml) return [];
 
   return Array.from(
-    xml.matchAll(
-      /<(?:[\w.-]+:)?si\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?si>/g,
-    ),
+    xml.matchAll(/<(?:[\w.-]+:)?si\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?si>/g),
   ).map((match) => extractTextNodes(match[1]));
 }
 
@@ -202,9 +200,7 @@ function parseDateStyles(xml?: string) {
   if (!xml) return styles;
 
   const customFormats = new Map<number, string>();
-  for (const match of xml.matchAll(
-    /<(?:[\w.-]+:)?numFmt\b([^>]*)\/?>/g,
-  )) {
+  for (const match of xml.matchAll(/<(?:[\w.-]+:)?numFmt\b([^>]*)\/?>/g)) {
     const attrs = parseAttributes(match[1]);
     if (attrs.numFmtId && attrs.formatCode)
       customFormats.set(Number(attrs.numFmtId), attrs.formatCode);
@@ -215,9 +211,7 @@ function parseDateStyles(xml?: string) {
   )?.[1];
   if (!cellXfs) return styles;
 
-  for (const match of cellXfs.matchAll(
-    /<(?:[\w.-]+:)?xf\b([^>]*)\/?>/g,
-  )) {
+  for (const match of cellXfs.matchAll(/<(?:[\w.-]+:)?xf\b([^>]*)\/?>/g)) {
     const attrs = parseAttributes(match[1]);
     const formatId = Number(attrs.numFmtId ?? 0);
     const customFormat = customFormats.get(formatId);
@@ -357,9 +351,8 @@ function readCellValue(
   dateStyles: DateStyle[],
 ) {
   const value =
-    body.match(
-      /<(?:[\w.-]+:)?v\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?v>/,
-    )?.[1] ?? "";
+    body.match(/<(?:[\w.-]+:)?v\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?v>/)?.[1] ??
+    "";
   const decodedValue = decodeXml(value);
 
   if (attrs.t === "s") return sharedStrings[Number(decodedValue)] ?? "";
@@ -376,9 +369,7 @@ function readCellValue(
 
 function extractTextNodes(xml: string) {
   return Array.from(
-    xml.matchAll(
-      /<(?:[\w.-]+:)?t\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?t>/g,
-    ),
+    xml.matchAll(/<(?:[\w.-]+:)?t\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?t>/g),
   )
     .map((match) => decodeXml(match[1]))
     .join("");

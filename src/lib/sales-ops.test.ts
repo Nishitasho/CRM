@@ -5,6 +5,7 @@ import {
   calculateAttachmentRate,
   calculateProgressDerived,
   safeRate,
+  salesAttributionShare,
 } from "./sales-ops";
 
 describe("sales operations calculations", () => {
@@ -102,6 +103,13 @@ describe("sales operations calculations", () => {
     expect(allocations.reduce((sum, item) => sum + item.amount, 0)).toBe(
       900_000,
     );
+  });
+
+  it("splits role-based sales credit equally between IS and FS", () => {
+    expect(salesAttributionShare("IS")).toBe(0.5);
+    expect(salesAttributionShare("FS")).toBe(0.5);
+    expect(salesAttributionShare("CS")).toBe(1);
+    expect(salesAttributionShare(null)).toBe(1);
   });
 
   it("defines win rate as WON divided by WON plus LOST only", () => {

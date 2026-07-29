@@ -78,8 +78,11 @@ export async function PATCH(request: Request, { params }: Params) {
         { status: 403 },
       );
     canEditRecord(context, current.ownerUserId);
-    const dealInput = { ...dealSchema.parse(await request.json()) };
+    const dealInput = dealSchema.parse(await request.json());
+    const requestedBusinessUnitId = dealInput.businessUnitId;
     delete dealInput.companyId;
+    delete dealInput.primaryProductId;
+    delete dealInput.businessUnitId;
     await validateOwner(context.organization.id, dealInput.ownerUserId);
     const stage = await prisma.pipelineStage.findFirst({
       where: {
@@ -94,9 +97,11 @@ export async function PATCH(request: Request, { params }: Params) {
         { message: "ステージが正しくありません。" },
         { status: 400 },
       );
-    if (
-      !(await assertBusinessUnitAccess(context, stage.pipeline.businessUnitId))
-    ) {
+    const businessUnitId =
+      stage.pipeline.businessUnitId ??
+      requestedBusinessUnitId ??
+      current.businessUnitId;
+    if (!(await assertBusinessUnitAccess(context, businessUnitId))) {
       return NextResponse.json(
         { message: "この事業部の商談を編集する権限がありません。" },
         { status: 403 },
@@ -148,13 +153,13 @@ export async function PATCH(request: Request, { params }: Params) {
         where: { id },
         data: {
           ...dealInput,
-          businessUnitId: stage.pipeline.businessUnitId,
+          businessUnitId,
           probability: stage.probability,
           status: stage.stageType,
           lostAt:
-            stage.stageType === "LOST" ? current.lostAt ?? new Date() : null,
+            stage.stageType === "LOST" ? (current.lostAt ?? new Date()) : null,
           wonAt:
-            stage.stageType === "WON" ? current.wonAt ?? new Date() : null,
+            stage.stageType === "WON" ? (current.wonAt ?? new Date()) : null,
           lostByUserId: stage.stageType === "LOST" ? context.user.id : null,
           closeDate:
             stage.stageType === "WON"

@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { DeliveryHandoffStatus, ScopeSyncStatus } from "@prisma/client";
+import {
+  DeliveryHandoffStatus,
+  FulfillmentType,
+  ProjectGroupingMode,
+  ScopeSyncStatus,
+} from "@prisma/client";
 import {
   buildDeliveryAlerts,
   buildDeliveryItemSnapshot,
   calculateLeadTimeDays,
   calculateOnTimePublishRate,
   detectScopeChanged,
+  selectDeliveryProjectConfig,
   validateRequiredFields,
 } from "./delivery";
 
@@ -64,6 +70,47 @@ describe("delivery operations helpers", () => {
 
     expect(detectScopeChanged(current, stored)).toBe(true);
     expect(stored.items[0].quantitySnapshot).toBe(1);
+  });
+
+  it("routes an HP project to the configured CS business unit", () => {
+    const hdConfig = {
+      productId: "product-hp",
+      businessUnitId: "business-unit-hd",
+      fulfillmentType: FulfillmentType.PROJECT,
+      autoCreateDeliveryProject: true,
+      defaultDeliveryProjectTemplateId: "template-hd",
+      projectGroupingMode: ProjectGroupingMode.GROUP_BY_DEAL,
+    };
+
+    expect(
+      selectDeliveryProjectConfig([hdConfig], {
+        productId: "product-hp",
+        sourceBusinessUnitId: "business-unit-sales",
+        productFulfillmentType: FulfillmentType.PROJECT,
+      }),
+    ).toEqual(hdConfig);
+  });
+
+  it("does not auto-create CS projects when the product configuration is disabled", () => {
+    expect(
+      selectDeliveryProjectConfig(
+        [
+          {
+            productId: "product-hp",
+            businessUnitId: "business-unit-hd",
+            fulfillmentType: FulfillmentType.PROJECT,
+            autoCreateDeliveryProject: false,
+            defaultDeliveryProjectTemplateId: null,
+            projectGroupingMode: ProjectGroupingMode.GROUP_BY_DEAL,
+          },
+        ],
+        {
+          productId: "product-hp",
+          sourceBusinessUnitId: "business-unit-sales",
+          productFulfillmentType: FulfillmentType.PROJECT,
+        },
+      ),
+    ).toBeNull();
   });
 
   it("calculates lead times and on-time publish rate", () => {

@@ -1,11 +1,31 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import {
+  SpreadsheetExecutiveOverview,
+  SpreadsheetOperationsDashboard,
+} from "@/components/dashboard/spreadsheet-operations-dashboard";
+import { DashboardFilterBar } from "@/components/dashboard/dashboard-filter-bar";
 import { Icon } from "@/components/ui/icon";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
+import {
+  ensureCoreCrmDefaults,
+  ensureCorePipelineDefaults,
+} from "@/lib/core-crm";
+import {
+  resolveDashboardPeriod,
+  type DashboardPeriod,
+} from "@/lib/dashboard-filters";
+import { jstDateOnly, jstDateString, jstDayEnd } from "@/lib/jst-date";
+import {
+  getRoleDashboardData,
+  resolveDashboardModes,
+  type DashboardActionItem,
+  type DashboardMode,
+} from "@/lib/role-dashboard";
 import { prisma } from "@/lib/prisma";
-import { getExecutiveDashboardData } from "@/lib/sales-ops";
+import { getSpreadsheetDashboardData } from "@/lib/spreadsheet-dashboard";
 
 type Props = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -20,356 +40,871 @@ function formatMoney(value: number | null | undefined) {
   return `${Math.round(value).toLocaleString("ja-JP")}円`;
 }
 
-function formatPercent(value: number | null | undefined) {
-  if (value === null || value === undefined) return "-";
-  return `${Math.round(value * 1000) / 10}%`;
-}
-
-function ratioCaption(numerator: number, denominator: number) {
-  if (!denominator) return "分母なし";
-  return `${numerator.toLocaleString("ja-JP")}件 / ${denominator.toLocaleString("ja-JP")}件${
-    denominator < 5 ? " ・ 参考値" : ""
-  }`;
-}
-
-function signedClass(value: number | null | undefined) {
-  if (!value) return "text-slate-600";
-  return value > 0 ? "text-emerald-700" : "text-red-700";
-}
-
 export default async function DashboardPage({ searchParams }: Props) {
   const context = await getAuthContext();
   if (!context) redirect("/login");
   const params = (await searchParams) ?? {};
   const organizationId = context.organization.id;
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dailyFieldCount = await prisma.dailyMetricFieldConfig.count({
+    where: { organizationId },
+  });
+  if (dailyFieldCount === 0) {
+    await ensureCoreCrmDefaults(prisma, {
+      organizationId,
+      userId: context.user.id,
+    });
+  } else {
+    await ensureCorePipelineDefaults(prisma, { organizationId });
+  }
+  const today = jstDateString();
+  const period = resolveDashboardPeriod({
+    preset: one(params.preset),
+    periodStart: one(params.periodStart),
+    periodEnd: one(params.periodEnd),
+    todayText: today,
+  });
+  const periodStart = jstDateOnly(period.start);
+  const periodEnd = jstDayEnd(period.end);
   const businessUnitSelection = await getBusinessUnitSelection(context);
+  const requestedBusinessUnitId = one(params.businessUnitId);
   const selectedBusinessUnitId =
-    one(params.businessUnitId) ?? businessUnitSelection.selectedBusinessUnitId;
+    requestedBusinessUnitId !== undefined
+      ? businessUnitSelection.units.some(
+          (unit) => unit.id === requestedBusinessUnitId,
+        )
+        ? requestedBusinessUnitId
+        : null
+      : businessUnitSelection.selectedBusinessUnitId;
   const selectedBusinessUnitName =
-    businessUnitSelection.units.find((unit) => unit.id === selectedBusinessUnitId)?.name ??
-    businessUnitSelection.selectedBusinessUnitName;
-  const [data, todayTasks, recentActivities] = await Promise.all([
-    getExecutiveDashboardData(organizationId, {
-      businessUnitId: selectedBusinessUnitId,
-      periodStart: monthStart,
-      periodEnd: monthEnd,
-    }),
-    prisma.task.findMany({
+    businessUnitSelection.units.find(
+      (unit) => unit.id === selectedBusinessUnitId,
+    )?.name ?? "全事業部";
+  const ownMemberships = await prisma.businessUnitMembership.findMany({
+    where: {
+      organizationId,
+      userId: context.user.id,
+      status: "ACTIVE",
+      ...(selectedBusinessUnitId
+        ? { businessUnitId: selectedBusinessUnitId }
+        : {}),
+    },
+    select: { workFunction: true },
+  });
+  const canSwitchMode = ["SUPER_ADMIN", "ADMIN", "MANAGER"].includes(
+    context.membership.role,
+  );
+  const availableModes = resolveDashboardModes(
+    canSwitchMode,
+    ownMemberships.map((membership) => membership.workFunction),
+  );
+  const requestedMode = one(params.mode) as DashboardMode | undefined;
+  const selectedMode = availableModes.includes(requestedMode as DashboardMode)
+    ? (requestedMode as DashboardMode)
+    : availableModes[0];
+  const showExecutive = selectedMode === "EXECUTIVE";
+  const [memberMemberships, products, pipelines] = await Promise.all([
+    prisma.businessUnitMembership.findMany({
       where: {
         organizationId,
-        ownerUserId: context.user.id,
-        dueDate: { gte: today, lt: tomorrow },
-        status: { notIn: ["COMPLETED", "CANCELED"] },
+        status: "ACTIVE",
+        ...(selectedBusinessUnitId
+          ? { businessUnitId: selectedBusinessUnitId }
+          : {}),
+        ...(selectedMode !== "EXECUTIVE" ? { workFunction: selectedMode } : {}),
+        ...(canSwitchMode ? {} : { userId: context.user.id }),
+        user: {
+          memberships: { some: { organizationId, status: "ACTIVE" } },
+        },
       },
-      orderBy: { dueDate: "asc" },
-      take: 5,
+      select: {
+        userId: true,
+        user: { select: { name: true, email: true } },
+      },
+      orderBy: { createdAt: "asc" },
     }),
-    prisma.activity.findMany({
-      where: { organizationId, deletedAt: null },
-      include: { actor: { select: { name: true } } },
-      orderBy: { occurredAt: "desc" },
-      take: 7,
+    prisma.product.findMany({
+      where: {
+        organizationId,
+        status: "ACTIVE",
+        ...(selectedBusinessUnitId
+          ? {
+              businessUnitProducts: {
+                some: {
+                  businessUnitId: selectedBusinessUnitId,
+                  status: "ACTIVE",
+                },
+              },
+            }
+          : {}),
+      },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.pipeline.findMany({
+      where: {
+        organizationId,
+        ...(selectedBusinessUnitId
+          ? { businessUnitId: selectedBusinessUnitId }
+          : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        businessUnit: { select: { name: true } },
+        stages: {
+          select: { id: true, name: true },
+          orderBy: { sortOrder: "asc" },
+        },
+      },
+      orderBy: { createdAt: "asc" },
     }),
   ]);
-  const isAllBusinessUnits = !selectedBusinessUnitId;
-  const metrics = [
-    {
-      label: "今月の商談金額",
-      value: formatMoney(data.overall.opportunityAmount),
-      caption: `${data.overall.opportunityCount.toLocaleString("ja-JP")}件`,
-      icon: "deals",
-    },
-    {
-      label: "今月の受注金額",
-      value: formatMoney(data.overall.confirmedAmount),
-      caption: `${data.overall.wonDealCount.toLocaleString("ja-JP")}件受注`,
-      icon: "dashboard",
-    },
-    {
-      label: "今月の受注件数",
-      value: data.overall.wonDealCount.toLocaleString("ja-JP"),
-      caption: ratioCaption(data.overall.wonDealCount, data.overall.winRateDenominator),
-      icon: "deals",
-    },
-    {
-      label: "全社受注率",
-      value: formatPercent(data.overall.winRate),
-      caption: "WON ÷ (WON + LOST)",
-      icon: "reports",
-    },
-    {
-      label: "着地見込",
-      value: formatMoney(data.overall.landingForecastAmount),
-      caption: `達成率 ${formatPercent(data.overall.landingAttainmentRate)}`,
-      icon: "dashboard",
-    },
-    {
-      label: "期限切れタスク",
-      value: data.overall.overdueTaskCount.toLocaleString("ja-JP"),
-      caption: "未完了",
-      icon: "tasks",
-    },
-  ] as const;
+  const userOptions = Array.from(
+    new Map(
+      memberMemberships.map((membership) => [
+        membership.userId,
+        {
+          id: membership.userId,
+          name: membership.user.name || membership.user.email,
+        },
+      ]),
+    ).values(),
+  );
+  const stageOptions = pipelines.flatMap((pipeline) =>
+    pipeline.stages.map((stage) => ({
+      id: stage.id,
+      name: stage.name,
+      group: `${pipeline.businessUnit?.name ?? "共通"} / ${pipeline.name}`,
+    })),
+  );
+  const requestedUserId = one(params.userId);
+  const requestedProductId = one(params.productId);
+  const requestedStageId = one(params.stageId);
+  const selectedUserId = canSwitchMode
+    ? (userOptions.find((user) => user.id === requestedUserId)?.id ?? null)
+    : context.user.id;
+  const selectedProductId =
+    products.find((product) => product.id === requestedProductId)?.id ?? null;
+  const selectedStageId =
+    stageOptions.find((stage) => stage.id === requestedStageId)?.id ?? null;
+  const needsSpreadsheetDashboard = showExecutive || selectedMode === "FS";
+  const [spreadsheetDashboard, roleDashboard, recentActivities] =
+    await Promise.all([
+      needsSpreadsheetDashboard
+        ? getSpreadsheetDashboardData({
+            context,
+            businessUnitId: selectedBusinessUnitId,
+            workFunction: selectedMode === "EXECUTIVE" ? null : selectedMode,
+            userId: selectedUserId,
+            productId: selectedProductId,
+            stageId: selectedStageId,
+            periodStart,
+            periodEnd,
+          })
+        : Promise.resolve(null),
+      getRoleDashboardData({
+        context,
+        mode: selectedMode,
+        businessUnitId: selectedBusinessUnitId,
+        userId: selectedUserId,
+        productId: selectedProductId,
+        stageId: selectedStageId,
+        periodStart,
+        periodEnd,
+      }),
+      prisma.activity.findMany({
+        where: {
+          organizationId,
+          deletedAt: null,
+          occurredAt: { gte: periodStart, lte: periodEnd },
+          ...(selectedUserId ? { actorUserId: selectedUserId } : {}),
+        },
+        include: { actor: { select: { name: true } } },
+        orderBy: { occurredAt: "desc" },
+        take: 7,
+      }),
+    ]);
+  const data = spreadsheetDashboard?.executive ?? null;
+  const selectedFilters = {
+    businessUnitId: selectedBusinessUnitId,
+    userId: selectedUserId,
+    productId: selectedProductId,
+    stageId: selectedStageId,
+  };
+  const selectedUserName =
+    userOptions.find((user) => user.id === selectedUserId)?.name ?? "全担当者";
 
   return (
-    <div className="mx-auto max-w-7xl">
+    <div className="mx-auto max-w-[1600px]">
       <PageHeading
-        eyebrow="Sales overview"
-        title={`おはようございます、${context.user.name}さん`}
-        description={`${selectedBusinessUnitName}の今月の営業状況です。全事業部表示では事業部ごとに分けて確認できます。`}
+        title={dashboardTitle(period)}
+        description={`${modeLabel(selectedMode)} ・ ${selectedBusinessUnitName} ・ ${period.start.replaceAll("-", "/")}〜${period.end.replaceAll("-", "/")}`}
         action={
           <Link
             href={`/deals/board${selectedBusinessUnitId ? `?businessUnitId=${selectedBusinessUnitId}` : ""}`}
             className="primary-button"
           >
-            商談パイプライン <Icon name="arrow" className="h-4 w-4" />
+            パイプラインを見る <Icon name="arrow" className="h-4 w-4" />
           </Link>
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        {metrics.map((metric) => (
-          <div className="card p-5" key={metric.label}>
-            <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-slate-500">{metric.label}</p>
-              <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-700">
-                <Icon name={metric.icon} className="h-5 w-5" />
-              </span>
-            </div>
-            <p className="mt-5 text-2xl font-bold tracking-tight">{metric.value}</p>
-            <p className="mt-2 text-xs text-slate-400">{metric.caption}</p>
-          </div>
-        ))}
-      </div>
+      <ModeTabs
+        modes={availableModes}
+        selectedMode={selectedMode}
+        period={period}
+        selectedFilters={selectedFilters}
+      />
 
-      {isAllBusinessUnits ? (
-        <section className="card mt-6 overflow-hidden">
-          <div className="border-b border-line p-5">
-            <h2 className="font-bold">事業部比較</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              全社合計を混在表示せず、事業部別に商談金額、受注率、着地見込、達成率を比較します。
-            </p>
-          </div>
-          <div className="hidden overflow-x-auto md:block">
-            <table className="w-full min-w-[1040px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs text-slate-500">
-                <tr>
-                  {["事業部", "商談金額", "商談件数", "受注額", "受注件数", "受注率", "進行中", "着地見込", "目標", "達成率", "前月比"].map((label) => (
-                    <th key={label} className="px-4 py-3 text-right first:text-left">
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {data.businessUnits.map((unit) => (
-                  <tr key={unit.businessUnitId}>
-                    <td className="px-4 py-3 font-semibold">{unit.label}</td>
-                    <td className="px-4 py-3 text-right">{formatMoney(unit.openForecastAmount + unit.confirmedAmount)}</td>
-                    <td className="px-4 py-3 text-right">{unit.opportunityCount}</td>
-                    <td className="px-4 py-3 text-right">{formatMoney(unit.confirmedAmount)}</td>
-                    <td className="px-4 py-3 text-right">{unit.wonDealCount}</td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="font-semibold">{formatPercent(unit.winRate)}</div>
-                      <div className="text-xs text-slate-400">{ratioCaption(unit.winRateNumerator, unit.winRateDenominator)}</div>
-                    </td>
-                    <td className="px-4 py-3 text-right">{unit.openForecastAmount > 0 ? "あり" : "-"}</td>
-                    <td className="px-4 py-3 text-right">{formatMoney(unit.landingForecastAmount)}</td>
-                    <td className="px-4 py-3 text-right">{formatMoney(unit.targetAmount)}</td>
-                    <td className="px-4 py-3 text-right">{formatPercent(unit.currentAttainmentRate)}</td>
-                    <td className={`px-4 py-3 text-right ${signedClass(unit.progressGap)}`}>{formatMoney(unit.progressGap)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="grid gap-3 p-4 md:hidden">
-            {data.businessUnits.map((unit) => (
-              <Link
-                key={unit.businessUnitId}
-                href={`/dashboard?businessUnitId=${unit.businessUnitId ?? ""}`}
-                className="rounded-lg border border-line p-4"
-              >
-                <p className="font-bold">{unit.label}</p>
-                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                  <MiniStat label="受注額" value={formatMoney(unit.confirmedAmount)} />
-                  <MiniStat label="受注率" value={formatPercent(unit.winRate)} />
-                  <MiniStat label="着地見込" value={formatMoney(unit.landingForecastAmount)} />
-                  <MiniStat label="達成率" value={formatPercent(unit.currentAttainmentRate)} />
-                </div>
-              </Link>
+      <DashboardFilterBar
+        mode={selectedMode}
+        period={period}
+        selected={selectedFilters}
+        businessUnits={businessUnitSelection.units.map((unit) => ({
+          id: unit.id,
+          name: unit.name,
+        }))}
+        users={userOptions}
+        products={products}
+        stages={stageOptions}
+        currentUserId={context.user.id}
+        canSeeTeam={canSwitchMode}
+      />
+
+      <DashboardSectionHeading
+        title="現状数値"
+        description={`${selectedBusinessUnitName} ・ ${selectedUserName}`}
+      />
+
+      {showExecutive && spreadsheetDashboard ? (
+        <SpreadsheetExecutiveOverview data={spreadsheetDashboard} />
+      ) : null}
+
+      {roleDashboard.roleCards.length ? (
+        <section className="overflow-hidden rounded-lg border border-line bg-white">
+          <div className="grid grid-cols-2 divide-x divide-y divide-line md:grid-cols-3 xl:grid-cols-6">
+            {roleDashboard.roleCards.map((card) => (
+              <div className="min-h-[112px] p-4" key={card.label}>
+                <p className="text-xs font-bold text-slate-500">{card.label}</p>
+                <p
+                  className={`mt-3 text-2xl font-bold ${
+                    card.label.includes("期限超過") && card.value !== "0"
+                      ? "text-red-700"
+                      : "text-ink"
+                  }`}
+                >
+                  {card.value}
+                </p>
+                {card.caption ? (
+                  <p className="mt-1 text-xs text-slate-400">{card.caption}</p>
+                ) : null}
+              </div>
             ))}
           </div>
         </section>
       ) : null}
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
-        <section className="card p-6">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="font-bold">事業部別パイプライン</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                同名ステージは混ぜず、事業部ごとに表示します。
-              </p>
-            </div>
-          </div>
-          <div className="mt-5 space-y-4">
-            {data.pipelines.map((pipeline) => {
-              const maxCount = Math.max(1, ...pipeline.stages.map((stage) => stage.count));
-              return (
-                <details key={pipeline.id} className="rounded-lg border border-line p-4" open={!isAllBusinessUnits}>
-                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
-                    <span className="font-bold">{pipeline.businessUnitName}</span>
-                    <Link
-                      href={`/deals/board?businessUnitId=${pipeline.businessUnitId ?? ""}`}
-                      className="text-sm font-bold text-brand-700"
-                    >
-                      ボードを見る
-                    </Link>
-                  </summary>
-                  <div className="mt-5 space-y-4">
-                    {pipeline.stages.map((stage) => (
-                      <div key={`${pipeline.id}:${stage.id}`}>
-                        <div className="mb-2 flex justify-between text-sm">
-                          <span className="font-semibold">{stage.name}</span>
-                          <span className="text-slate-500">
-                            {stage.count}件 ・ {formatMoney(stage.amount)}
-                          </span>
-                        </div>
-                        <div className="h-2 rounded-full bg-slate-100">
-                          <div
-                            className={`h-2 rounded-full ${stage.stageType === "WON" ? "bg-brand-500" : stage.stageType === "LOST" ? "bg-slate-400" : "bg-accent"}`}
-                            style={{
-                              width: `${Math.max(stage.count ? 7 : 0, (stage.count / maxCount) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              );
-            })}
-          </div>
-        </section>
+      {selectedMode === "IS" ? (
+        <IsActivitySection rows={roleDashboard.isActivityRows} />
+      ) : null}
 
-        <section className="card p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="font-bold">今日のタスク</h2>
-            <Link href="/tasks?filter=today" className="text-xs font-bold text-brand-700">
-              すべて表示
-            </Link>
-          </div>
-          <div className="mt-5 space-y-3">
-            {todayTasks.map((task) => (
-              <div key={task.id} className="rounded-xl border border-line p-3">
-                <p className="text-sm font-bold">{task.title}</p>
-                <p className="mt-1 text-xs text-slate-400">
-                  {task.dueDate
-                    ? new Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit" }).format(task.dueDate)
-                    : "時間未設定"}
-                </p>
-              </div>
-            ))}
-            {!todayTasks.length ? <p className="text-sm text-slate-400">今日のタスクはありません。</p> : null}
-          </div>
-        </section>
-      </div>
+      {selectedMode === "FS" && spreadsheetDashboard ? (
+        <FsPerformanceSection
+          rows={spreadsheetDashboard.executive.salespeople.rows.filter(
+            (row) => row.workFunction === "FS",
+          )}
+        />
+      ) : null}
 
-      <section className="card mt-6 overflow-hidden">
-        <div className="border-b border-line p-5">
-          <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
-            <div>
-              <h2 className="font-bold">営業担当者比較</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                受注率は受注件数 ÷ クローズ商談数（WON + LOST）です。分母5件未満は参考値です。
-              </p>
-            </div>
-            <Link
-              href={`/reports?tab=salesperson-comparison&periodStart=${data.periodStart}&periodEnd=${data.periodEnd}${selectedBusinessUnitId ? `&businessUnitId=${selectedBusinessUnitId}` : ""}`}
-              className="secondary-button"
-            >
-              詳細レポート
-            </Link>
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[960px] text-left text-sm">
-            <thead className="bg-slate-50 text-xs text-slate-500">
-              <tr>
-                {["担当者", "商談", "受注", "失注", "受注率", "受注粗利", "着地見込", "達成率"].map((label) => (
-                  <th key={label} className="px-4 py-3 text-right first:text-left">
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line">
-              {data.salespeople.rows.slice(0, 8).map((row) => (
-                <tr key={row.id}>
-                  <td className="px-4 py-3 font-semibold">
-                    <Link
-                      className="text-brand-700 hover:underline"
-                      href={`/reports?tab=salesperson-comparison&userId=${row.userId ?? ""}&periodStart=${data.periodStart}&periodEnd=${data.periodEnd}${row.businessUnitId ? `&businessUnitId=${row.businessUnitId}` : ""}`}
-                    >
-                      {row.label}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-right">{row.opportunityCount}</td>
-                  <td className="px-4 py-3 text-right">{row.wonDealCount}</td>
-                  <td className="px-4 py-3 text-right">{row.lostDealCount}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="font-semibold">{formatPercent(row.winRate)}</div>
-                    <div className="text-xs text-slate-400">{ratioCaption(row.winRateNumerator, row.winRateDenominator)}</div>
-                  </td>
-                  <td className="px-4 py-3 text-right">{formatMoney(row.grossProfitAmount)}</td>
-                  <td className="px-4 py-3 text-right">{formatMoney(row.landingForecastAmount)}</td>
-                  <td className="px-4 py-3 text-right">{formatPercent(row.currentAttainmentRate)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <DashboardFocusGrid
+        items={roleDashboard.actionItems}
+        activities={recentActivities}
+      />
 
-      <section className="card mt-6 p-6">
-        <h2 className="font-bold">最近の活動</h2>
-        <div className="mt-5 grid gap-4 md:grid-cols-2">
-          {recentActivities.map((activity) => (
-            <div key={activity.id} className="flex gap-3 rounded-xl border border-line p-4">
-              <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-brand-500 ring-4 ring-brand-50" />
-              <div>
-                <p className="text-sm font-bold">{activity.title}</p>
-                <p className="mt-1 text-xs text-slate-400">
-                  {activity.actor?.name ?? "システム"} ・{" "}
-                  {new Intl.DateTimeFormat("ja-JP", {
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  }).format(activity.occurredAt)}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      {showExecutive && data ? <PipelineSection data={data} /> : null}
+
+      {showExecutive && spreadsheetDashboard && data ? (
+        <DetailedKpiSection data={spreadsheetDashboard} />
+      ) : null}
     </div>
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
+function DashboardSectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
   return (
-    <div>
-      <p className="text-xs font-bold text-slate-400">{label}</p>
-      <p className="mt-1 font-semibold text-ink">{value}</p>
+    <div className="mb-3 mt-5 flex items-baseline justify-between gap-3">
+      <h2 className="text-lg font-bold">{title}</h2>
+      <p className="text-xs text-slate-500">{description}</p>
     </div>
   );
+}
+
+function DetailedKpiSection({
+  data,
+}: {
+  data: Awaited<ReturnType<typeof getSpreadsheetDashboardData>>;
+}) {
+  return (
+    <details className="group mt-6 border-y border-line">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-4 bg-white px-5 py-4 hover:bg-slate-50">
+        <div>
+          <h2 className="font-bold">詳細KPI・必要行動量</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            目標差、着地見込、架電から受注までの内訳
+          </p>
+        </div>
+        <span className="text-xl text-slate-400 transition group-open:rotate-45">
+          ＋
+        </span>
+      </summary>
+      <div className="border-t border-line pb-2">
+        <SpreadsheetOperationsDashboard data={data} />
+      </div>
+    </details>
+  );
+}
+
+function IsActivitySection({
+  rows,
+}: {
+  rows: Awaited<ReturnType<typeof getRoleDashboardData>>["isActivityRows"];
+}) {
+  return (
+    <section className="card mt-6 overflow-hidden">
+      <div className="flex flex-col justify-between gap-4 border-b border-line p-5 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="font-bold">ISメンバー比較</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            架電からアポ・有効商談までを担当者別に比較します。
+          </p>
+        </div>
+        <Link href="/daily-metrics" className="secondary-button">
+          日次実績を入力
+        </Link>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1120px] text-left text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500">
+            <tr>
+              {[
+                "担当者",
+                "架電",
+                "接続",
+                "接続率",
+                "オーナー接続",
+                "フル",
+                "ショート",
+                "条件NG",
+                "アポ",
+                "アポ率",
+                "商談実施",
+                "有効商談",
+                "無効商談",
+              ].map((label) => (
+                <th
+                  key={label}
+                  className="px-4 py-3 text-right first:text-left"
+                >
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((row) => (
+              <tr key={row.userId}>
+                <td className="px-4 py-3 font-bold">{row.userName}</td>
+                <td className="px-4 py-3 text-right">{row.calls}</td>
+                <td className="px-4 py-3 text-right">{row.connections}</td>
+                <td className="px-4 py-3 text-right font-semibold">
+                  {row.connectionRate}
+                </td>
+                <td className="px-4 py-3 text-right">{row.ownerContacts}</td>
+                <td className="px-4 py-3 text-right">{row.full}</td>
+                <td className="px-4 py-3 text-right">{row.short}</td>
+                <td className="px-4 py-3 text-right">{row.conditionNg}</td>
+                <td className="px-4 py-3 text-right font-bold text-brand-700">
+                  {row.appointments}
+                </td>
+                <td className="px-4 py-3 text-right font-semibold">
+                  {row.appointmentRate}
+                </td>
+                <td className="px-4 py-3 text-right">{row.attendedMeetings}</td>
+                <td className="px-4 py-3 text-right">{row.validMeetings}</td>
+                <td className="px-4 py-3 text-right">{row.invalidMeetings}</td>
+              </tr>
+            ))}
+            {!rows.length ? (
+              <tr>
+                <td
+                  colSpan={13}
+                  className="px-4 py-10 text-center text-slate-400"
+                >
+                  対象期間のIS実績はまだありません。
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function FsPerformanceSection({
+  rows,
+}: {
+  rows: Awaited<
+    ReturnType<typeof getSpreadsheetDashboardData>
+  >["executive"]["salespeople"]["rows"];
+}) {
+  return (
+    <section className="card mt-6 overflow-hidden">
+      <div className="flex flex-col justify-between gap-4 border-b border-line p-5 sm:flex-row sm:items-center">
+        <div>
+          <h2 className="font-bold">FSメンバー比較</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            商談数、受注率、粗利、着地を同じ基準で確認します。
+          </p>
+        </div>
+        <Link
+          href="/reports?tab=salesperson-comparison"
+          className="secondary-button"
+        >
+          詳細レポート
+        </Link>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1180px] text-left text-sm">
+          <thead className="bg-slate-50 text-xs text-slate-500">
+            <tr>
+              {[
+                "担当者",
+                "商談",
+                "有効商談",
+                "受注",
+                "失注",
+                "受注率",
+                "帰属粗利（50%）",
+                "帰属着地（50%）",
+                "目標達成率",
+                "前期間比",
+              ].map((label) => (
+                <th
+                  key={label}
+                  className="px-4 py-3 text-right first:sticky first:left-0 first:z-10 first:bg-slate-50 first:text-left"
+                >
+                  {label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-line">
+            {rows.map((row) => (
+              <tr key={`${row.businessUnitId}:${row.userId}`}>
+                <td className="sticky left-0 bg-white px-4 py-3 font-bold">
+                  {row.label}
+                  <span className="mt-0.5 block text-[11px] font-normal text-slate-400">
+                    {row.winRateLowSample ? "クローズ5件未満" : "集計済み"}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right">{row.opportunityCount}</td>
+                <td className="px-4 py-3 text-right">{row.validMeetings}</td>
+                <td className="px-4 py-3 text-right font-bold text-brand-700">
+                  {row.wonDealCount}
+                </td>
+                <td className="px-4 py-3 text-right">{row.lostDealCount}</td>
+                <td className="px-4 py-3 text-right font-semibold">
+                  {formatPercent(row.winRate)}
+                </td>
+                <td className="px-4 py-3 text-right font-semibold">
+                  {formatMoney(row.grossProfitAmount)}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {formatMoney(row.landingForecastAmount)}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {formatPercent(row.currentAttainmentRate)}
+                </td>
+                <td
+                  className={`px-4 py-3 text-right font-semibold ${
+                    row.previousChangeRate === null
+                      ? "text-slate-400"
+                      : row.previousChangeRate >= 0
+                        ? "text-emerald-700"
+                        : "text-red-700"
+                  }`}
+                >
+                  {formatSignedPercent(row.previousChangeRate)}
+                </td>
+              </tr>
+            ))}
+            {!rows.length ? (
+              <tr>
+                <td
+                  colSpan={10}
+                  className="px-4 py-10 text-center text-slate-400"
+                >
+                  対象期間のFS実績はまだありません。
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function PipelineSection({
+  data,
+}: {
+  data: Awaited<ReturnType<typeof getSpreadsheetDashboardData>>["executive"];
+}) {
+  return (
+    <section className="card mt-6 overflow-hidden">
+      <div className="flex items-center justify-between gap-3">
+        <div className="p-5">
+          <h2 className="font-bold">事業部別パイプライン</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            ステージ滞留と金額を確認します。
+          </p>
+        </div>
+        <Link href="/deals/board" className="secondary-button mr-5">
+          パイプラインを開く
+        </Link>
+      </div>
+      <div className="grid border-t border-line xl:grid-cols-2">
+        {data.pipelines.map((pipeline) => {
+          const maxCount = Math.max(
+            1,
+            ...pipeline.stages.map((stage) => stage.count),
+          );
+          return (
+            <div
+              key={pipeline.id}
+              className="border-b border-line p-5 last:border-b-0 xl:odd:border-r xl:[&:nth-last-child(-n+2)]:border-b-0"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-bold">{pipeline.businessUnitName}</h3>
+                <Link
+                  href={`/deals/board?businessUnitId=${pipeline.businessUnitId ?? ""}`}
+                  className="text-xs font-bold text-brand-700"
+                >
+                  ボード
+                </Link>
+              </div>
+              <div className="mt-4 space-y-3">
+                {pipeline.stages.map((stage) => (
+                  <div key={`${pipeline.id}:${stage.id}`}>
+                    <div className="mb-1 flex justify-between text-xs">
+                      <span className="font-semibold">{stage.name}</span>
+                      <span className="text-slate-500">
+                        {stage.count}件 ・ {formatMoney(stage.amount)}
+                      </span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-slate-100">
+                      <div
+                        className={`h-1.5 rounded-full ${
+                          stage.stageType === "WON"
+                            ? "bg-brand-500"
+                            : stage.stageType === "LOST"
+                              ? "bg-slate-400"
+                              : "bg-accent"
+                        }`}
+                        style={{
+                          width: `${Math.max(
+                            stage.count ? 7 : 0,
+                            (stage.count / maxCount) * 100,
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function ModeTabs({
+  modes,
+  selectedMode,
+  period,
+  selectedFilters,
+}: {
+  modes: DashboardMode[];
+  selectedMode: DashboardMode;
+  period: DashboardPeriod;
+  selectedFilters: {
+    businessUnitId?: string | null;
+    userId?: string | null;
+    productId?: string | null;
+    stageId?: string | null;
+  };
+}) {
+  return (
+    <nav
+      aria-label="ダッシュボード表示"
+      className="flex w-fit max-w-full gap-1 overflow-x-auto rounded-lg border border-line bg-slate-100 p-1"
+    >
+      {modes.map((mode) => (
+        <Link
+          key={mode}
+          href={dashboardModeHref({
+            mode,
+            period,
+            selectedFilters,
+          })}
+          className={`flex min-w-fit items-center gap-2 rounded-md px-3 py-2 text-sm font-bold transition ${
+            selectedMode === mode
+              ? "bg-white text-brand-700 shadow-sm"
+              : "text-slate-500 hover:bg-white/70 hover:text-ink"
+          }`}
+        >
+          <Icon name={modeIcon(mode)} className="h-4 w-4" />
+          {modeLabel(mode)}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+function DashboardFocusGrid({
+  items,
+  activities,
+}: {
+  items: DashboardActionItem[];
+  activities: Array<{
+    id: string;
+    title: string;
+    occurredAt: Date;
+    actor: { name: string } | null;
+  }>;
+}) {
+  return (
+    <section className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
+      <TodayActionSection items={items} />
+      <RecentActivitySection activities={activities} />
+    </section>
+  );
+}
+
+function TodayActionSection({ items }: { items: DashboardActionItem[] }) {
+  const overdueCount = items.filter((item) => item.group === "OVERDUE").length;
+  const todayCount = items.filter((item) => item.group === "TODAY").length;
+  const missingCount = items.filter((item) => item.group === "MISSING").length;
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+        <div>
+          <h2 className="font-bold">今日の要対応</h2>
+          <p className="mt-1 text-xs text-slate-500">優先度の高い順に表示</p>
+        </div>
+        <Link href="/tasks" className="secondary-button">
+          タスク一覧
+        </Link>
+      </div>
+      <div className="grid grid-cols-3 divide-x divide-line border-b border-line bg-slate-50">
+        <ActionCount
+          label="期限超過"
+          value={overdueCount}
+          tone={overdueCount > 0 ? "danger" : "neutral"}
+        />
+        <ActionCount label="今日予定" value={todayCount} tone="brand" />
+        <ActionCount label="入力漏れ" value={missingCount} tone="warning" />
+      </div>
+      <div className="divide-y divide-line">
+        {items.slice(0, 5).map((item) => (
+          <Link
+            key={item.id}
+            href={item.href}
+            className="group grid gap-3 px-5 py-3.5 transition hover:bg-brand-50/60 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center"
+          >
+            <span
+              className={`w-fit rounded-full px-2 py-1 text-[11px] font-bold ${badgeTone(item.badge)}`}
+            >
+              {item.badge}
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold text-ink">
+                {item.title}
+              </p>
+              <p className="mt-0.5 truncate text-xs text-slate-500">
+                {item.description}
+              </p>
+            </div>
+            <span className="flex items-center gap-2 text-xs font-bold text-slate-400">
+              {groupLabel(item.group)}
+              <Icon
+                name="arrow"
+                className="h-3.5 w-3.5 transition group-hover:translate-x-0.5"
+              />
+            </span>
+          </Link>
+        ))}
+        {!items.length ? (
+          <div className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+            今日の要対応はありません。
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function ActionCount({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "danger" | "warning" | "brand" | "neutral";
+}) {
+  const valueTone =
+    tone === "danger"
+      ? "text-red-700"
+      : tone === "warning"
+        ? "text-amber-700"
+        : tone === "brand"
+          ? "text-brand-700"
+          : "text-slate-500";
+  return (
+    <div className="px-4 py-3">
+      <p className="text-[11px] font-bold text-slate-400">{label}</p>
+      <p className={`mt-1 text-lg font-bold ${valueTone}`}>{value}</p>
+    </div>
+  );
+}
+
+function RecentActivitySection({
+  activities,
+}: {
+  activities: Array<{
+    id: string;
+    title: string;
+    occurredAt: Date;
+    actor: { name: string } | null;
+  }>;
+}) {
+  return (
+    <section className="card overflow-hidden">
+      <div className="border-b border-line px-5 py-4">
+        <h2 className="font-bold">最近の活動</h2>
+        <p className="mt-1 text-xs text-slate-500">チームの更新履歴</p>
+      </div>
+      <div className="divide-y divide-line">
+        {activities.slice(0, 5).map((activity) => (
+          <div key={activity.id} className="flex gap-3 px-5 py-3.5">
+            <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-brand-500" />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-bold">{activity.title}</p>
+              <p className="mt-1 text-xs text-slate-400">
+                {activity.actor?.name ?? "システム"} ・{" "}
+                {new Intl.DateTimeFormat("ja-JP", {
+                  month: "short",
+                  day: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(activity.occurredAt)}
+              </p>
+            </div>
+          </div>
+        ))}
+        {!activities.length ? (
+          <div className="px-5 py-10 text-center text-sm text-slate-400">
+            最近の活動はありません。
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function modeLabel(mode: DashboardMode) {
+  if (mode === "EXECUTIVE") return "全体";
+  if (mode === "IS") return "IS活動";
+  if (mode === "FS") return "FS商談";
+  return "CS進行";
+}
+
+function dashboardTitle(period: DashboardPeriod) {
+  if (period.preset === "THIS_WEEK") return "今週の営業状況";
+  if (period.preset === "LAST_WEEK") return "先週の営業状況";
+  if (period.preset === "THIS_MONTH") return "今月の営業状況";
+  if (period.preset === "LAST_MONTH") return "先月の営業状況";
+  return "選択期間の営業状況";
+}
+
+function modeIcon(mode: DashboardMode) {
+  if (mode === "EXECUTIVE") return "dashboard" as const;
+  if (mode === "IS") return "forms" as const;
+  if (mode === "FS") return "deals" as const;
+  return "tasks" as const;
+}
+
+function dashboardModeHref({
+  mode,
+  period,
+  selectedFilters,
+}: {
+  mode: DashboardMode;
+  period: DashboardPeriod;
+  selectedFilters: {
+    businessUnitId?: string | null;
+    userId?: string | null;
+    productId?: string | null;
+    stageId?: string | null;
+  };
+}) {
+  const params = new URLSearchParams({
+    mode,
+    preset: period.preset,
+    periodStart: period.start,
+    periodEnd: period.end,
+  });
+  if (selectedFilters.businessUnitId)
+    params.set("businessUnitId", selectedFilters.businessUnitId);
+  if (selectedFilters.userId) params.set("userId", selectedFilters.userId);
+  if (selectedFilters.productId)
+    params.set("productId", selectedFilters.productId);
+  if (selectedFilters.stageId) params.set("stageId", selectedFilters.stageId);
+  return `/dashboard?${params.toString()}`;
+}
+
+function groupLabel(group: DashboardActionItem["group"]) {
+  if (group === "OVERDUE") return "期限超過";
+  if (group === "TODAY") return "今日予定";
+  if (group === "MISSING") return "入力漏れ";
+  return "通常";
+}
+
+function badgeTone(badge: DashboardActionItem["badge"]) {
+  if (badge === "緊急") return "bg-red-50 text-red-700";
+  if (badge === "要対応") return "bg-amber-50 text-amber-700";
+  if (badge === "注意") return "bg-brand-50 text-brand-700";
+  return "bg-emerald-50 text-emerald-700";
+}
+
+function formatPercent(value: number | null | undefined) {
+  if (value === null || value === undefined) return "-";
+  return `${Math.round(value * 1000) / 10}%`;
+}
+
+function formatSignedPercent(value: number | null | undefined) {
+  if (value === null || value === undefined) return "-";
+  const percentage = Math.round(value * 1000) / 10;
+  return `${percentage > 0 ? "+" : ""}${percentage}%`;
 }

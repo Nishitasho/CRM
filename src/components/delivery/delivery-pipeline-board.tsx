@@ -22,6 +22,7 @@ type DeliveryProjectCard = {
   ownerName: string;
   expectedPublishDate: string | null;
   nextAction: string | null;
+  nextActionDate: string | null;
   healthStatus: string;
   blocker: string | null;
   stageId: string | null;
@@ -52,10 +53,12 @@ const healthClass: Record<string, string> = {
 
 function formatDate(value: string | null) {
   if (!value) return "予定日なし";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "予定日なし";
   return new Intl.DateTimeFormat("ja-JP", {
     month: "short",
     day: "numeric",
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function stayedDays(value: string | null) {
@@ -218,15 +221,23 @@ function ProjectCard({
           </dd>
         </div>
         <div>
-          <dt className="text-slate-400">公開予定</dt>
+          <dt className="text-slate-400">納品予定</dt>
           <dd className="mt-1 font-semibold text-slate-700">
             {formatDate(project.expectedPublishDate)}
           </dd>
         </div>
       </dl>
-      <p className="mt-3 line-clamp-2 text-xs leading-5 text-slate-500">
-        {project.nextAction ?? "次回アクション未設定"}
-      </p>
+      <div className="mt-3 rounded-md border border-line bg-slate-50 p-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-bold text-slate-400">次回アクション</p>
+          <span className="text-[11px] font-bold text-brand-700">
+            {formatDate(project.nextActionDate)}
+          </span>
+        </div>
+        <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-700">
+          {project.nextAction ?? "未設定"}
+        </p>
+      </div>
       <div className="mt-3 flex items-center justify-between text-[11px] font-bold text-slate-400">
         <span>{days === null ? "滞在日数 -" : `${days}日滞在`}</span>
         {project.blocker ? <span className="text-red-700">対応阻害要因あり</span> : null}

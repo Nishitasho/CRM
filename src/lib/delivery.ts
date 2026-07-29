@@ -15,6 +15,10 @@ import {
 } from "@prisma/client";
 import { BadRequestError } from "./api";
 import { prisma } from "./prisma";
+import {
+  canonicalSpreadsheetDeliveryStageName,
+  initialSpreadsheetDeliveryStageName,
+} from "./spreadsheet-stages";
 
 type Tx = Prisma.TransactionClient;
 
@@ -43,7 +47,6 @@ const defaultHandoffRequiredFields = [
   "grossProfitAmount",
   "contractedAt",
   "billingStartedAt",
-  "desiredPublishDate",
   "productionScope",
   "customerRequests",
   "designPreference",
@@ -65,7 +68,6 @@ const requiredFieldLabels: Record<string, string> = {
   grossProfitAmount: "粗利",
   contractedAt: "契約日",
   billingStartedAt: "課金開始予定日",
-  desiredPublishDate: "希望公開日",
   productionScope: "制作範囲",
   customerRequests: "顧客の要望",
   designPreference: "デザイン希望",
@@ -79,11 +81,44 @@ const requiredFieldLabels: Record<string, string> = {
   ownerUserId: "CS担当者",
   nextAction: "次回アクション",
   nextActionDate: "次回アクション日",
-  expectedPublishDate: "公開予定日",
-  actualPublishDate: "実公開日",
+  expectedPublishDate: "納品予定日",
+  actualPublishDate: "納品日",
   blocker: "対応阻害要因",
   scopeSnapshot: "制作範囲",
 };
+
+const deliveryStageAliases: Record<string, string> = {
+  引き継ぎ: "6素材回収待ち",
+  受注引き継ぎ: "6素材回収待ち",
+  初回連絡待ち: "6素材回収待ち",
+  ヒアリング: "6素材回収待ち",
+  素材待ち: "6素材回収待ち",
+  素材回収待ち: "6素材回収待ち",
+  制作準備: "5作成依頼中",
+  作成依頼中: "5作成依頼中",
+  制作中: "4作成中",
+  初稿提出: "3初稿提出済み",
+  初稿提出済み: "3初稿提出済み",
+  初稿確認: "3初稿提出済み",
+  修正対応: "2修正対応",
+  顧客確認: "2修正対応",
+  公開準備: "1URL発行",
+  公開待ち: "1URL発行",
+  URL発行待ち: "1URL発行",
+  URL発行: "1URL発行",
+  公開済み: "1URL発行",
+  納品: "8納品",
+  完了: "8納品",
+  対応不要: "7対応不要",
+  保留: "7対応不要",
+};
+
+export function deliveryStageLabel(name: string | null | undefined) {
+  if (!name) return "進捗未設定";
+  return (
+    deliveryStageAliases[name] ?? canonicalSpreadsheetDeliveryStageName(name)
+  );
+}
 
 function numberValue(value: Prisma.Decimal | number | null | undefined) {
   if (value === null || value === undefined) return 0;
@@ -95,7 +130,9 @@ function dateOnly(value: Date | null | undefined) {
 }
 
 function startOfDay(date: Date) {
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
 }
 
 function addDays(date: Date, days: number) {
@@ -131,16 +168,24 @@ export function validateRequiredFields(
     .map((field) => requiredFieldLabels[field] ?? field);
 }
 
-export function calculateLeadTimeDays(start: Date | null | undefined, end: Date | null | undefined) {
+export function calculateLeadTimeDays(
+  start: Date | null | undefined,
+  end: Date | null | undefined,
+) {
   if (!start || !end) return null;
   return Math.max(
-    Math.round((startOfDay(end).getTime() - startOfDay(start).getTime()) / 86400000),
+    Math.round(
+      (startOfDay(end).getTime() - startOfDay(start).getTime()) / 86400000,
+    ),
     0,
   );
 }
 
 export function calculateOnTimePublishRate(
-  projects: Array<{ expectedPublishDate: Date | null; actualPublishDate: Date | null }>,
+  projects: Array<{
+    expectedPublishDate: Date | null;
+    actualPublishDate: Date | null;
+  }>,
 ) {
   const published = projects.filter((project) => project.actualPublishDate);
   if (!published.length) return null;
@@ -149,7 +194,8 @@ export function calculateOnTimePublishRate(
       (project) =>
         project.expectedPublishDate &&
         project.actualPublishDate &&
-        startOfDay(project.actualPublishDate) <= startOfDay(project.expectedPublishDate),
+        startOfDay(project.actualPublishDate) <=
+          startOfDay(project.expectedPublishDate),
     ).length / published.length
   );
 }
@@ -187,13 +233,19 @@ export function buildScopeSnapshot(input: {
     businessUnitId: input.deal.businessUnitId,
     wonAt: dateOnly(input.deal.wonAt),
     contractedProducts: items.map((item) => item.productNameSnapshot),
-    contractedAmount: items.reduce((sum, item) => sum + item.revenueAmountSnapshot, 0),
+    contractedAmount: items.reduce(
+      (sum, item) => sum + item.revenueAmountSnapshot,
+      0,
+    ),
     grossProfitAmount: items.reduce(
       (sum, item) => sum + item.grossProfitAmountSnapshot,
       0,
     ),
-    contractedAt: items.find((item) => item.contractedAt)?.contractedAt ?? dateOnly(input.deal.closeDate),
-    billingStartedAt: items.find((item) => item.billingStartedAt)?.billingStartedAt ?? null,
+    contractedAt:
+      items.find((item) => item.contractedAt)?.contractedAt ??
+      dateOnly(input.deal.closeDate),
+    billingStartedAt:
+      items.find((item) => item.billingStartedAt)?.billingStartedAt ?? null,
     items,
   };
 }
@@ -202,26 +254,88 @@ export function detectScopeChanged(
   currentSnapshot: Record<string, unknown>,
   storedSnapshot: Record<string, unknown>,
 ) {
-  return JSON.stringify(currentSnapshot.items ?? []) !== JSON.stringify(storedSnapshot.items ?? []);
+  return (
+    JSON.stringify(currentSnapshot.items ?? []) !==
+    JSON.stringify(storedSnapshot.items ?? [])
+  );
 }
 
-async function getDealAssociations(tx: Tx, organizationId: string, dealId: string) {
+type DeliveryProductConfig = {
+  productId: string;
+  businessUnitId: string;
+  fulfillmentType: FulfillmentType | null;
+  autoCreateDeliveryProject: boolean;
+  defaultDeliveryProjectTemplateId: string | null;
+  projectGroupingMode: ProjectGroupingMode;
+};
+
+export function selectDeliveryProjectConfig(
+  configs: DeliveryProductConfig[],
+  input: {
+    productId: string | null;
+    sourceBusinessUnitId: string | null;
+    productFulfillmentType: FulfillmentType | null;
+  },
+) {
+  if (!input.productId) return null;
+  const eligible = configs.filter((config) => {
+    if (config.productId !== input.productId) return false;
+    const fulfillmentType =
+      config.fulfillmentType ??
+      input.productFulfillmentType ??
+      FulfillmentType.NONE;
+    return (
+      config.autoCreateDeliveryProject &&
+      fulfillmentType === FulfillmentType.PROJECT
+    );
+  });
+  return (
+    eligible.find(
+      (config) => config.businessUnitId === input.sourceBusinessUnitId,
+    ) ??
+    eligible[0] ??
+    null
+  );
+}
+
+async function getDealAssociations(
+  tx: Tx,
+  organizationId: string,
+  dealId: string,
+) {
   const companyId = await resolveDealCompanyId(tx, organizationId, dealId);
   const contactAssociations = await tx.objectAssociation.findMany({
     where: {
       organizationId,
-      sourceObjectType: "DEAL",
-      sourceObjectId: dealId,
-      targetObjectType: "CONTACT",
+      OR: [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: dealId,
+          targetObjectType: "CONTACT",
+        },
+        {
+          sourceObjectType: "CONTACT",
+          targetObjectType: "DEAL",
+          targetObjectId: dealId,
+        },
+      ],
       isPrimary: true,
     },
-    select: { targetObjectType: true, targetObjectId: true },
+    select: {
+      sourceObjectType: true,
+      sourceObjectId: true,
+      targetObjectType: true,
+      targetObjectId: true,
+    },
   });
+  const primaryContact = contactAssociations[0];
   return {
     companyId,
-    primaryContactId:
-      contactAssociations.find((item) => item.targetObjectType === "CONTACT")?.targetObjectId ??
-      null,
+    primaryContactId: primaryContact
+      ? primaryContact.sourceObjectType === "CONTACT"
+        ? primaryContact.sourceObjectId
+        : primaryContact.targetObjectId
+      : null,
   };
 }
 
@@ -276,11 +390,20 @@ async function getDefaultDeliveryPipeline(
         orderBy: [{ businessUnitId: "desc" }, { createdAt: "asc" }],
       });
   if (!pipeline) throw new BadRequestError("CSパイプラインが未設定です。");
-  const stage = await tx.deliveryPipelineStage.findFirst({
-    where: { organizationId, pipelineId: pipeline.id },
-    orderBy: { sortOrder: "asc" },
-  });
-  if (!stage) throw new BadRequestError("CSパイプラインの初期ステージが未設定です。");
+  const stage =
+    (await tx.deliveryPipelineStage.findFirst({
+      where: {
+        organizationId,
+        pipelineId: pipeline.id,
+        name: initialSpreadsheetDeliveryStageName,
+      },
+    })) ??
+    (await tx.deliveryPipelineStage.findFirst({
+      where: { organizationId, pipelineId: pipeline.id },
+      orderBy: { sortOrder: "asc" },
+    }));
+  if (!stage)
+    throw new BadRequestError("CSパイプラインの初期ステージが未設定です。");
   return { pipeline, stage };
 }
 
@@ -302,13 +425,14 @@ async function resolveTemplate(input: {
     });
     if (template) return template;
   }
-  const scopedTemplate = await input.tx.deliveryProjectTemplateProduct.findFirst({
-    where: {
-      organizationId: input.organizationId,
-      productId: { in: input.productIds },
-    },
-    orderBy: { createdAt: "asc" },
-  });
+  const scopedTemplate =
+    await input.tx.deliveryProjectTemplateProduct.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        productId: { in: input.productIds },
+      },
+      orderBy: { createdAt: "asc" },
+    });
   if (scopedTemplate) {
     const template = await input.tx.deliveryProjectTemplate.findFirst({
       where: {
@@ -324,7 +448,12 @@ async function resolveTemplate(input: {
       organizationId: input.organizationId,
       isActive: true,
       ...(input.businessUnitId
-        ? { OR: [{ businessUnitId: input.businessUnitId }, { businessUnitId: null }] }
+        ? {
+            OR: [
+              { businessUnitId: input.businessUnitId },
+              { businessUnitId: null },
+            ],
+          }
         : {}),
     },
     orderBy: [{ businessUnitId: "desc" }, { createdAt: "asc" }],
@@ -367,10 +496,19 @@ async function createInitialTasks(input: {
         sourceDeliveryStageId: input.stageId ?? null,
         autoTaskKey,
         title: String(template.title ?? "制作タスク"),
-        description: typeof template.description === "string" ? template.description : null,
-        dueDate: addDays(new Date(), Number.isFinite(dueInDays) ? dueInDays : 1),
-        priority: (template.priority as TaskPriority | undefined) ?? TaskPriority.MEDIUM,
-        taskType: (template.taskType as TaskType | undefined) ?? TaskType.FOLLOW_UP,
+        description:
+          typeof template.description === "string"
+            ? template.description
+            : null,
+        dueDate: addDays(
+          new Date(),
+          Number.isFinite(dueInDays) ? dueInDays : 1,
+        ),
+        priority:
+          (template.priority as TaskPriority | undefined) ??
+          TaskPriority.MEDIUM,
+        taskType:
+          (template.taskType as TaskType | undefined) ?? TaskType.FOLLOW_UP,
       },
     });
   }
@@ -392,7 +530,9 @@ export async function createDeliveryProjectsForDeal(input: {
       include: {
         lineItems: {
           where: {
-            status: DealLineItemStatus.WON,
+            status: {
+              in: [DealLineItemStatus.WON, DealLineItemStatus.BILLED],
+            },
             productId: { not: null },
           },
           include: { product: true, priceBookEntry: true },
@@ -409,39 +549,55 @@ export async function createDeliveryProjectsForDeal(input: {
     const configs = await tx.businessUnitProduct.findMany({
       where: {
         organizationId: input.organizationId,
-        businessUnitId: deal.businessUnitId ?? undefined,
         productId: { in: productIds },
         status: "ACTIVE",
       },
     });
-    const configByProductId = new Map(configs.map((config) => [config.productId, config]));
-    const eligibleLines = deal.lineItems.filter((line) => {
-      const config = line.productId ? configByProductId.get(line.productId) : null;
-      const fulfillmentType =
-        config?.fulfillmentType ?? line.product?.fulfillmentType ?? FulfillmentType.NONE;
-      return (
-        config?.autoCreateDeliveryProject === true &&
-        fulfillmentType === FulfillmentType.PROJECT
-      );
-    });
-    if (!eligibleLines.length) return { created: [], skipped: [], reason: "対象商品がありません。" };
+    const configByLineId = new Map(
+      deal.lineItems.map((line) => [
+        line.id,
+        selectDeliveryProjectConfig(configs, {
+          productId: line.productId,
+          sourceBusinessUnitId: line.businessUnitId ?? deal.businessUnitId,
+          productFulfillmentType: line.product?.fulfillmentType ?? null,
+        }),
+      ]),
+    );
+    const eligibleLines = deal.lineItems.filter((line) =>
+      Boolean(configByLineId.get(line.id)),
+    );
+    if (!eligibleLines.length)
+      return { created: [], skipped: [], reason: "対象商品がありません。" };
 
-    const associations = await getDealAssociations(tx, input.organizationId, deal.id);
+    const associations = await getDealAssociations(
+      tx,
+      input.organizationId,
+      deal.id,
+    );
     const groups = new Map<
       string,
-      { mode: ProjectGroupingMode; configuredTemplateId: string | null; lines: DeliveryLine[] }
+      {
+        mode: ProjectGroupingMode;
+        configuredTemplateId: string | null;
+        deliveryBusinessUnitId: string;
+        lines: DeliveryLine[];
+      }
     >();
     for (const line of eligibleLines) {
-      const config = line.productId ? configByProductId.get(line.productId) : null;
-      const mode = config?.projectGroupingMode ?? ProjectGroupingMode.GROUP_BY_DEAL;
-      const configuredTemplateId = config?.defaultDeliveryProjectTemplateId ?? null;
+      const config = configByLineId.get(line.id);
+      if (!config) continue;
+      const mode =
+        config?.projectGroupingMode ?? ProjectGroupingMode.GROUP_BY_DEAL;
+      const configuredTemplateId =
+        config?.defaultDeliveryProjectTemplateId ?? null;
       const groupKey =
         mode === ProjectGroupingMode.SEPARATE_BY_LINE_ITEM
-          ? `line:${line.id}:${configuredTemplateId ?? "default"}`
-          : `deal:${configuredTemplateId ?? "default"}`;
+          ? `line:${line.id}:${config.businessUnitId}:${configuredTemplateId ?? "default"}`
+          : `deal:${config.businessUnitId}:${configuredTemplateId ?? "default"}`;
       const group = groups.get(groupKey) ?? {
         mode,
         configuredTemplateId,
+        deliveryBusinessUnitId: config.businessUnitId,
         lines: [],
       };
       group.lines.push(line);
@@ -454,7 +610,7 @@ export async function createDeliveryProjectsForDeal(input: {
       const template = await resolveTemplate({
         tx,
         organizationId: input.organizationId,
-        businessUnitId: deal.businessUnitId,
+        businessUnitId: group.deliveryBusinessUnitId,
         productIds: group.lines
           .map((line) => line.productId)
           .filter((value): value is string => Boolean(value)),
@@ -464,7 +620,7 @@ export async function createDeliveryProjectsForDeal(input: {
       const { pipeline, stage } = await getDefaultDeliveryPipeline(
         tx,
         input.organizationId,
-        deal.businessUnitId,
+        group.deliveryBusinessUnitId,
         template?.pipelineId,
       );
       const idempotencyKey = [
@@ -496,10 +652,12 @@ export async function createDeliveryProjectsForDeal(input: {
         items: group.lines,
       });
       const defaultDueDays = template?.defaultDueBusinessDays ?? 20;
+      const defaultOwnerUserId =
+        template?.defaultCsUserId ?? deal.ownerUserId ?? input.actorUserId;
       const project = await tx.deliveryProject.create({
         data: {
           organizationId: input.organizationId,
-          businessUnitId: deal.businessUnitId,
+          businessUnitId: group.deliveryBusinessUnitId,
           companyId: associations.companyId,
           primaryContactId: associations.primaryContactId,
           sourceDealId: deal.id,
@@ -511,13 +669,13 @@ export async function createDeliveryProjectsForDeal(input: {
             group.mode === ProjectGroupingMode.SEPARATE_BY_LINE_ITEM
               ? `${deal.name} ${group.lines[0]?.product?.name ?? group.lines[0]?.name}制作`
               : `${deal.name} CS案件`,
-          ownerUserId: template?.defaultCsUserId ?? null,
+          ownerUserId: defaultOwnerUserId,
           createdByUserId: input.actorUserId,
           expectedStartDate: new Date(),
           expectedPublishDate: addDays(new Date(), defaultDueDays),
           nextAction: "CS引き継ぎ内容を確認",
           nextActionDate: addDays(new Date(), 1),
-          nextActionOwnerId: template?.defaultCsUserId ?? input.actorUserId,
+          nextActionOwnerId: defaultOwnerUserId,
           scopeSnapshot: inputJson(scopeSnapshot),
           handoffChecklist: inputJson({}),
         },
@@ -527,7 +685,7 @@ export async function createDeliveryProjectsForDeal(input: {
         await tx.deliveryProjectItem.create({
           data: {
             organizationId: input.organizationId,
-            businessUnitId: line.businessUnitId ?? deal.businessUnitId,
+            businessUnitId: group.deliveryBusinessUnitId,
             deliveryProjectId: project.id,
             sourceDealLineItemId: line.id,
             splitKey: "default",
@@ -544,9 +702,9 @@ export async function createDeliveryProjectsForDeal(input: {
       await tx.deliveryHandoff.create({
         data: {
           organizationId: input.organizationId,
-          businessUnitId: deal.businessUnitId,
+          businessUnitId: group.deliveryBusinessUnitId,
           deliveryProjectId: project.id,
-          assignedCsUserId: template?.defaultCsUserId ?? null,
+          assignedCsUserId: defaultOwnerUserId,
           status: DeliveryHandoffStatus.DRAFT,
           handoffSnapshot: inputJson(scopeSnapshot),
           checklistSnapshot: inputJson({}),
@@ -556,7 +714,7 @@ export async function createDeliveryProjectsForDeal(input: {
       await tx.deliveryProjectStageHistory.create({
         data: {
           organizationId: input.organizationId,
-          businessUnitId: deal.businessUnitId,
+          businessUnitId: group.deliveryBusinessUnitId,
           deliveryProjectId: project.id,
           toStageId: stage.id,
           changedByUserId: input.actorUserId,
@@ -595,7 +753,12 @@ export async function getEligibleDeliveryDeals(organizationId: string) {
     where: { organizationId, status: DealStatus.WON, deletedAt: null },
     include: {
       lineItems: {
-        where: { status: DealLineItemStatus.WON, productId: { not: null } },
+        where: {
+          status: {
+            in: [DealLineItemStatus.WON, DealLineItemStatus.BILLED],
+          },
+          productId: { not: null },
+        },
         include: { product: true },
       },
     },
@@ -623,26 +786,26 @@ export async function getEligibleDeliveryDeals(organizationId: string) {
     },
     select: { sourceDealLineItemId: true },
   });
-  const existingLineIds = new Set(existingItems.map((item) => item.sourceDealLineItemId));
+  const existingLineIds = new Set(
+    existingItems.map((item) => item.sourceDealLineItemId),
+  );
   return deals
     .map((deal) => {
-      const targetLines = deal.lineItems.filter((line) => {
-        const config = configs.find(
-          (item) =>
-            item.productId === line.productId &&
-            item.businessUnitId === deal.businessUnitId,
-        );
-        const fulfillmentType =
-          config?.fulfillmentType ?? line.product?.fulfillmentType ?? FulfillmentType.NONE;
-        return (
-          fulfillmentType === FulfillmentType.PROJECT &&
-          config?.autoCreateDeliveryProject === true
-        );
-      });
+      const targetLines = deal.lineItems.filter((line) =>
+        Boolean(
+          selectDeliveryProjectConfig(configs, {
+            productId: line.productId,
+            sourceBusinessUnitId: line.businessUnitId ?? deal.businessUnitId,
+            productFulfillmentType: line.product?.fulfillmentType ?? null,
+          }),
+        ),
+      );
       return {
         deal,
         targetLines,
-        createdLineCount: targetLines.filter((line) => existingLineIds.has(line.id)).length,
+        createdLineCount: targetLines.filter((line) =>
+          existingLineIds.has(line.id),
+        ).length,
         needsProject: targetLines.some((line) => !existingLineIds.has(line.id)),
         reason: targetLines.length
           ? targetLines.some((line) => existingLineIds.has(line.id))
@@ -664,17 +827,26 @@ export async function submitDeliveryHandoff(input: {
 }) {
   return prisma.$transaction(async (tx) => {
     const project = await tx.deliveryProject.findFirst({
-      where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
+      where: {
+        id: input.projectId,
+        organizationId: input.organizationId,
+        deletedAt: null,
+      },
     });
     if (!project) throw new BadRequestError("CS案件が見つかりません。");
     const template = project.templateId
       ? await tx.deliveryProjectTemplate.findFirst({
-          where: { id: project.templateId, organizationId: input.organizationId },
+          where: {
+            id: project.templateId,
+            organizationId: input.organizationId,
+          },
         })
       : null;
-    const required = Array.isArray(template?.handoffRequiredFields)
-      ? template!.handoffRequiredFields.map(String)
-      : defaultHandoffRequiredFields;
+    const required = (
+      Array.isArray(template?.handoffRequiredFields)
+        ? template!.handoffRequiredFields.map(String)
+        : defaultHandoffRequiredFields
+    ).filter((field) => field !== "desiredPublishDate");
     const scope = asRecord(project.scopeSnapshot);
     const handoffSnapshot = {
       ...scope,
@@ -683,10 +855,15 @@ export async function submitDeliveryHandoff(input: {
     };
     const missing = validateRequiredFields(handoffSnapshot, required);
     if (missing.length) {
-      throw new BadRequestError(`引き継ぎに不足があります: ${missing.join("、")}`);
+      throw new BadRequestError(
+        `引き継ぎに不足があります: ${missing.join("、")}`,
+      );
     }
     const latest = await tx.deliveryHandoff.findFirst({
-      where: { organizationId: input.organizationId, deliveryProjectId: project.id },
+      where: {
+        organizationId: input.organizationId,
+        deliveryProjectId: project.id,
+      },
       orderBy: { version: "desc" },
     });
     const handoff = await tx.deliveryHandoff.create({
@@ -721,7 +898,10 @@ export async function submitDeliveryHandoff(input: {
         type: "SYSTEM_EVENT",
         title: "CS引き継ぎを提出",
         body: "FSからCSへ引き継ぎが提出されました。",
-        metadata: inputJson({ handoffId: handoff.id, version: handoff.version }),
+        metadata: inputJson({
+          handoffId: handoff.id,
+          version: handoff.version,
+        }),
       },
     });
     return handoff;
@@ -790,7 +970,8 @@ export async function rejectDeliveryHandoff(input: {
       },
       orderBy: { version: "desc" },
     });
-    if (!handoff) throw new BadRequestError("差し戻しできる引き継ぎがありません。");
+    if (!handoff)
+      throw new BadRequestError("差し戻しできる引き継ぎがありません。");
     const rejected = await tx.deliveryHandoff.update({
       where: { id: handoff.id },
       data: {
@@ -833,13 +1014,18 @@ export async function transitionDeliveryProject(input: {
   return prisma.$transaction(async (tx) => {
     const [project, stage] = await Promise.all([
       tx.deliveryProject.findFirst({
-        where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
+        where: {
+          id: input.projectId,
+          organizationId: input.organizationId,
+          deletedAt: null,
+        },
       }),
       tx.deliveryPipelineStage.findFirst({
         where: { id: input.stageId, organizationId: input.organizationId },
       }),
     ]);
-    if (!project || !stage) throw new BadRequestError("CS案件またはステージが見つかりません。");
+    if (!project || !stage)
+      throw new BadRequestError("CS案件またはステージが見つかりません。");
     const values = {
       ...asRecord(project.scopeSnapshot),
       ownerUserId: project.ownerUserId,
@@ -855,7 +1041,9 @@ export async function transitionDeliveryProject(input: {
       : [];
     const missing = validateRequiredFields(values, required);
     if (missing.length) {
-      throw new BadRequestError(`ステージ移動に不足があります: ${missing.join("、")}`);
+      throw new BadRequestError(
+        `ステージ移動に不足があります: ${missing.join("、")}`,
+      );
     }
     const now = new Date();
     const openHistory = await tx.deliveryProjectStageHistory.findFirst({
@@ -872,7 +1060,9 @@ export async function transitionDeliveryProject(input: {
         data: {
           exitedAt: now,
           durationMinutes: Math.max(
-            Math.round((now.getTime() - openHistory.enteredAt.getTime()) / 60000),
+            Math.round(
+              (now.getTime() - openHistory.enteredAt.getTime()) / 60000,
+            ),
             0,
           ),
         },
@@ -944,15 +1134,26 @@ export async function syncDeliveryScope(input: {
 }) {
   return prisma.$transaction(async (tx) => {
     const project = await tx.deliveryProject.findFirst({
-      where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
+      where: {
+        id: input.projectId,
+        organizationId: input.organizationId,
+        deletedAt: null,
+      },
       include: { items: true },
     });
-    if (!project || !project.sourceDealId) throw new BadRequestError("CS案件が見つかりません。");
+    if (!project || !project.sourceDealId)
+      throw new BadRequestError("CS案件が見つかりません。");
     const deal = await tx.deal.findFirst({
       where: { id: project.sourceDealId, organizationId: input.organizationId },
       include: {
         lineItems: {
-          where: { id: { in: project.items.map((item) => item.sourceDealLineItemId).filter(Boolean) as string[] } },
+          where: {
+            id: {
+              in: project.items
+                .map((item) => item.sourceDealLineItemId)
+                .filter(Boolean) as string[],
+            },
+          },
           include: { product: true, priceBookEntry: true },
         },
       },
@@ -967,7 +1168,10 @@ export async function syncDeliveryScope(input: {
       primaryContactId: project.primaryContactId,
       items: deal.lineItems,
     });
-    const changed = detectScopeChanged(currentSnapshot, asRecord(project.scopeSnapshot));
+    const changed = detectScopeChanged(
+      currentSnapshot,
+      asRecord(project.scopeSnapshot),
+    );
     if (!changed) {
       return tx.deliveryProject.update({
         where: { id: project.id },
@@ -1018,22 +1222,33 @@ export async function createCrossSellDeal(input: {
   return prisma.$transaction(async (tx) => {
     const [project, stage] = await Promise.all([
       tx.deliveryProject.findFirst({
-        where: { id: input.projectId, organizationId: input.organizationId, deletedAt: null },
+        where: {
+          id: input.projectId,
+          organizationId: input.organizationId,
+          deletedAt: null,
+        },
       }),
       tx.pipelineStage.findFirst({
         where: { id: input.stageId, organizationId: input.organizationId },
       }),
     ]);
-    if (!project || !stage) throw new BadRequestError("CS案件または商談ステージが見つかりません。");
+    if (!project || !stage)
+      throw new BadRequestError("CS案件または商談ステージが見つかりません。");
     if (!project.companyId) {
-      throw new BadRequestError("CS案件に会社が設定されていないため、商談を作成できません。");
+      throw new BadRequestError(
+        "CS案件に会社が設定されていないため、商談を作成できません。",
+      );
     }
     if (stage.pipelineId !== input.pipelineId) {
-      throw new BadRequestError("ステージとパイプラインの組み合わせが正しくありません。");
+      throw new BadRequestError(
+        "ステージとパイプラインの組み合わせが正しくありません。",
+      );
     }
     const csUserId = project.ownerUserId ?? input.actorUserId;
     if (input.salesOwnerMode === "FS_HANDOFF" && !input.fsUserId) {
-      throw new BadRequestError("FSへ引き継ぐ場合はFS担当者を選択してください。");
+      throw new BadRequestError(
+        "FSへ引き継ぐ場合はFS担当者を選択してください。",
+      );
     }
     if (input.fsUserId) {
       const fsMember = await tx.organizationMember.findUnique({
@@ -1046,7 +1261,9 @@ export async function createCrossSellDeal(input: {
         select: { status: true },
       });
       if (!fsMember || fsMember.status !== "ACTIVE") {
-        throw new BadRequestError("指定されたFS担当者はこの組織に所属していません。");
+        throw new BadRequestError(
+          "指定されたFS担当者はこの組織に所属していません。",
+        );
       }
     }
     const duplicate = input.productId
@@ -1058,7 +1275,10 @@ export async function createCrossSellDeal(input: {
             status: "OPEN",
             lineItems: { some: { productId: input.productId } },
           },
-          include: { stage: { select: { name: true } }, owner: { select: { name: true } } },
+          include: {
+            stage: { select: { name: true } },
+            owner: { select: { name: true } },
+          },
         })
       : null;
     if (duplicate && !input.overrideDuplicate) {
@@ -1075,10 +1295,14 @@ export async function createCrossSellDeal(input: {
         pipelineId: input.pipelineId,
         stageId: input.stageId,
         name: input.title || `${project.name} クロスセル商談`,
-        amount: input.expectedRevenueAmount ?? input.expectedGrossProfitAmount ?? null,
+        amount:
+          input.expectedRevenueAmount ??
+          input.expectedGrossProfitAmount ??
+          null,
         expectedCloseDate: input.expectedCloseDate ?? null,
         probability: stage.probability,
-        status: stage.stageType === StageType.WON ? DealStatus.WON : DealStatus.OPEN,
+        status:
+          stage.stageType === StageType.WON ? DealStatus.WON : DealStatus.OPEN,
         dealType: "CROSS_SELL",
         originProjectId: project.id,
         originDealId: project.sourceDealId,
@@ -1102,7 +1326,7 @@ export async function createCrossSellDeal(input: {
           quantity: 1,
           expectedRevenueAmount: input.expectedRevenueAmount ?? null,
           expectedGrossProfitAmount: input.expectedGrossProfitAmount ?? null,
-          status: DealLineItemStatus.PROPOSED,
+          status: DealLineItemStatus.PLANNED,
           source: "CROSS_SELL",
         },
       });
@@ -1132,26 +1356,26 @@ export async function createCrossSellDeal(input: {
             },
           ]
         : [
-        {
-          organizationId: input.organizationId,
-          dealId: deal.id,
-              userId: csUserId,
-          workFunction: "CS",
-          role: DealParticipantRole.CROSS_SELL_ORIGINATOR,
-              creditShare: 100,
-          creditedAt: new Date(),
-          snapshotUserName: null,
-        },
-        {
-          organizationId: input.organizationId,
-          dealId: deal.id,
+            {
+              organizationId: input.organizationId,
+              dealId: deal.id,
               userId: csUserId,
               workFunction: "CS",
-          role: DealParticipantRole.CLOSER,
-          creditShare: 100,
-          creditedAt: new Date(),
-          snapshotUserName: null,
-        },
+              role: DealParticipantRole.CROSS_SELL_ORIGINATOR,
+              creditShare: 100,
+              creditedAt: new Date(),
+              snapshotUserName: null,
+            },
+            {
+              organizationId: input.organizationId,
+              dealId: deal.id,
+              userId: csUserId,
+              workFunction: "CS",
+              role: DealParticipantRole.CLOSER,
+              creditShare: 100,
+              creditedAt: new Date(),
+              snapshotUserName: null,
+            },
           ];
     await tx.dealParticipant.createMany({ data: participantRows });
     await tx.objectAssociation.createMany({
@@ -1182,20 +1406,25 @@ export async function createCrossSellDeal(input: {
       skipDuplicates: true,
     });
     await tx.salesPerformanceEvent.createMany({
-      data: [{
-        organizationId: input.organizationId,
-        businessUnitId: project.businessUnitId,
-        dealId: deal.id,
-        creditedUserId: csUserId,
-        creditedRole: DealParticipantRole.CROSS_SELL_ORIGINATOR,
-        workFunction: "CS",
-        eventType: "CROSS_SELL_CREATED",
-        source: "SYSTEM",
-        occurredAt: new Date(),
-        quantity: 1,
-        idempotencyKey: `cross-sell-created:${deal.id}:${csUserId}`,
-        metadata: inputJson({ originProjectId: project.id, originDealId: project.sourceDealId }),
-      }],
+      data: [
+        {
+          organizationId: input.organizationId,
+          businessUnitId: project.businessUnitId,
+          dealId: deal.id,
+          creditedUserId: csUserId,
+          creditedRole: DealParticipantRole.CROSS_SELL_ORIGINATOR,
+          workFunction: "CS",
+          eventType: "CROSS_SELL_CREATED",
+          source: "SYSTEM",
+          occurredAt: new Date(),
+          quantity: 1,
+          idempotencyKey: `cross-sell-created:${deal.id}:${csUserId}`,
+          metadata: inputJson({
+            originProjectId: project.id,
+            originDealId: project.sourceDealId,
+          }),
+        },
+      ],
       skipDuplicates: true,
     });
     await tx.activity.create({
@@ -1213,42 +1442,69 @@ export async function createCrossSellDeal(input: {
   });
 }
 
-export function buildDeliveryAlerts(projects: Array<{
-  id: string;
-  name: string;
-  ownerUserId: string | null;
-  handoffStatus: DeliveryHandoffStatus;
-  expectedPublishDate: Date | null;
-  actualPublishDate: Date | null;
-  nextAction: string | null;
-  nextActionDate: Date | null;
-  blocker: string | null;
-  scopeSyncStatus: ScopeSyncStatus;
-  stage?: { name: string; staleDays: number | null } | null;
-  stageEnteredAt?: Date | null;
-}>) {
+export function buildDeliveryAlerts(
+  projects: Array<{
+    id: string;
+    name: string;
+    ownerUserId: string | null;
+    handoffStatus: DeliveryHandoffStatus;
+    expectedPublishDate: Date | null;
+    actualPublishDate: Date | null;
+    nextAction: string | null;
+    nextActionDate: Date | null;
+    blocker: string | null;
+    scopeSyncStatus: ScopeSyncStatus;
+    stage?: { name: string; staleDays: number | null } | null;
+    stageEnteredAt?: Date | null;
+  }>,
+) {
   const today = startOfDay(new Date());
-  const alerts: Array<{ projectId: string; projectName: string; type: string; message: string }> = [];
+  const alerts: Array<{
+    projectId: string;
+    projectName: string;
+    type: string;
+    message: string;
+  }> = [];
   for (const project of projects) {
     const common = { projectId: project.id, projectName: project.name };
     if (project.handoffStatus === DeliveryHandoffStatus.READY) {
-      alerts.push({ ...common, type: "HANDOFF_WAITING", message: "CS受領待ちです。" });
+      alerts.push({
+        ...common,
+        type: "HANDOFF_WAITING",
+        message: "CS受領待ちです。",
+      });
     }
     if (!project.ownerUserId) {
-      alerts.push({ ...common, type: "MISSING_CS_OWNER", message: "CS担当者が未設定です。" });
+      alerts.push({
+        ...common,
+        type: "MISSING_CS_OWNER",
+        message: "CS担当者が未設定です。",
+      });
     }
     if (!project.nextAction) {
-      alerts.push({ ...common, type: "MISSING_NEXT_ACTION", message: "次回アクションが未設定です。" });
+      alerts.push({
+        ...common,
+        type: "MISSING_NEXT_ACTION",
+        message: "次回アクションが未設定です。",
+      });
     }
     if (project.nextActionDate && startOfDay(project.nextActionDate) < today) {
-      alerts.push({ ...common, type: "NEXT_ACTION_OVERDUE", message: "次回アクション期限を過ぎています。" });
+      alerts.push({
+        ...common,
+        type: "NEXT_ACTION_OVERDUE",
+        message: "次回アクション期限を過ぎています。",
+      });
     }
     if (
       project.expectedPublishDate &&
       !project.actualPublishDate &&
       startOfDay(project.expectedPublishDate) < today
     ) {
-      alerts.push({ ...common, type: "PUBLISH_OVERDUE", message: "公開予定日を過ぎています。" });
+      alerts.push({
+        ...common,
+        type: "PUBLISH_OVERDUE",
+        message: "納品予定日を過ぎています。",
+      });
     }
     if (project.blocker) {
       alerts.push({
@@ -1258,10 +1514,15 @@ export function buildDeliveryAlerts(projects: Array<{
       });
     }
     if (project.scopeSyncStatus === ScopeSyncStatus.SOURCE_CHANGED) {
-      alerts.push({ ...common, type: "SOURCE_CHANGED", message: "元商談内容が変更されています。" });
+      alerts.push({
+        ...common,
+        type: "SOURCE_CHANGED",
+        message: "元商談内容が変更されています。",
+      });
     }
     if (project.stage?.staleDays && project.stageEnteredAt) {
-      const stayedDays = calculateLeadTimeDays(project.stageEnteredAt, new Date()) ?? 0;
+      const stayedDays =
+        calculateLeadTimeDays(project.stageEnteredAt, new Date()) ?? 0;
       if (stayedDays > project.stage.staleDays) {
         alerts.push({
           ...common,
@@ -1297,7 +1558,9 @@ export async function getCsDashboardReport(organizationId: string) {
   const activeProjects = projects.filter((project) =>
     ["NOT_STARTED", "IN_PROGRESS", "PAUSED"].includes(project.status),
   );
-  const publishedProjects = projects.filter((project) => project.actualPublishDate);
+  const publishedProjects = projects.filter(
+    (project) => project.actualPublishDate,
+  );
   const thisWeekEnd = addDays(startOfDay(new Date()), 7);
   const alerts = buildDeliveryAlerts(
     projects.map((project) => ({
@@ -1306,7 +1569,9 @@ export async function getCsDashboardReport(organizationId: string) {
     })),
   );
   const crossSellCreated = crossSellDeals.length;
-  const crossSellWon = crossSellDeals.filter((deal) => deal.status === DealStatus.WON);
+  const crossSellWon = crossSellDeals.filter(
+    (deal) => deal.status === DealStatus.WON,
+  );
   const crossSellWonGrossProfit = crossSellWon.reduce(
     (sum, deal) =>
       sum +
@@ -1331,28 +1596,35 @@ export async function getCsDashboardReport(organizationId: string) {
           startOfDay(project.expectedPublishDate) <= thisWeekEnd &&
           !project.actualPublishDate,
       ).length,
-      publishOverdueCount: alerts.filter((alert) => alert.type === "PUBLISH_OVERDUE").length,
-      completedCount: projects.filter((project) => project.status === DeliveryProjectStatus.COMPLETED).length,
+      publishOverdueCount: alerts.filter(
+        (alert) => alert.type === "PUBLISH_OVERDUE",
+      ).length,
+      completedCount: projects.filter(
+        (project) => project.status === DeliveryProjectStatus.COMPLETED,
+      ).length,
       publishedCount: publishedProjects.length,
       blockerCount: projects.filter((project) => project.blocker).length,
-      missingNextActionCount: alerts.filter((alert) => alert.type === "MISSING_NEXT_ACTION").length,
+      missingNextActionCount: alerts.filter(
+        (alert) => alert.type === "MISSING_NEXT_ACTION",
+      ).length,
       onTimePublishRate: calculateOnTimePublishRate(projects),
       crossSellCreated,
       crossSellWonCount: crossSellWon.length,
       crossSellWonGrossProfit,
-      crossSellWinRate: crossSellCreated ? crossSellWon.length / crossSellCreated : null,
+      crossSellWinRate: crossSellCreated
+        ? crossSellWon.length / crossSellCreated
+        : null,
     },
-    stageDurations: histories.reduce<Record<string, { count: number; minutes: number }>>(
-      (map, history) => {
-        const key = history.toStageId ?? "unknown";
-        const current = map[key] ?? { count: 0, minutes: 0 };
-        current.count += 1;
-        current.minutes += history.durationMinutes ?? 0;
-        map[key] = current;
-        return map;
-      },
-      {},
-    ),
+    stageDurations: histories.reduce<
+      Record<string, { count: number; minutes: number }>
+    >((map, history) => {
+      const key = history.toStageId ?? "unknown";
+      const current = map[key] ?? { count: 0, minutes: 0 };
+      current.count += 1;
+      current.minutes += history.durationMinutes ?? 0;
+      map[key] = current;
+      return map;
+    }, {}),
     ownerLoads: Object.values(
       projects.reduce<
         Record<
@@ -1374,7 +1646,8 @@ export async function getCsDashboardReport(organizationId: string) {
           blockerCount: 0,
           crossSellCreatedCount: 0,
         };
-        if (activeProjects.some((item) => item.id === project.id)) row.activeProjectCount += 1;
+        if (activeProjects.some((item) => item.id === project.id))
+          row.activeProjectCount += 1;
         if (
           project.expectedPublishDate &&
           !project.actualPublishDate &&

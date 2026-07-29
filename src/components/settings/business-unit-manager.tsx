@@ -72,9 +72,15 @@ export function BusinessUnitManager({
       if (result.item) {
         setItems((current) => {
           const next = editing
-            ? current.map((item) => (item.id === result.item.id ? result.item : item))
+            ? current.map((item) =>
+                item.id === result.item.id ? result.item : item,
+              )
             : [result.item, ...current];
-          return next.sort((a, b) => a.displayOrder - b.displayOrder || a.name.localeCompare(b.name, "ja"));
+          return next.sort(
+            (a, b) =>
+              a.displayOrder - b.displayOrder ||
+              a.name.localeCompare(b.name, "ja"),
+          );
         });
       }
       setEditing(null);
@@ -83,7 +89,11 @@ export function BusinessUnitManager({
       formElement.reset();
       router.refresh();
     } catch (fetchError) {
-      setError(fetchError instanceof Error ? fetchError.message : "保存できませんでした。");
+      setError(
+        fetchError instanceof Error
+          ? fetchError.message
+          : "保存できませんでした。",
+      );
     } finally {
       setPending(false);
     }
@@ -127,7 +137,11 @@ export function BusinessUnitManager({
                 required
                 aria-invalid={Boolean(fieldErrors.name)}
               />
-              {fieldErrors.name ? <p className="mt-1 text-xs font-bold text-red-600">{fieldErrors.name}</p> : null}
+              {fieldErrors.name ? (
+                <p className="mt-1 text-xs font-bold text-red-600">
+                  {fieldErrors.name}
+                </p>
+              ) : null}
             </label>
             <label>
               <span className="field-label">slug</span>
@@ -139,7 +153,11 @@ export function BusinessUnitManager({
                 required
                 aria-invalid={Boolean(fieldErrors.slug)}
               />
-              {fieldErrors.slug ? <p className="mt-1 text-xs font-bold text-red-600">{fieldErrors.slug}</p> : null}
+              {fieldErrors.slug ? (
+                <p className="mt-1 text-xs font-bold text-red-600">
+                  {fieldErrors.slug}
+                </p>
+              ) : null}
             </label>
             <label>
               <span className="field-label">説明</span>
@@ -194,12 +212,18 @@ export function BusinessUnitManager({
                   <option value="WON_AT">受注日</option>
                   <option value="CONTRACTED_AT">契約日</option>
                   <option value="COLLECTED_AT">回収日</option>
-                  <option value="BILLING_STARTED_AT">課金開始日</option>
+                  <option value="BILLING_STARTED_AT">課金日</option>
                 </select>
               </label>
             </div>
             <button className="primary-button w-full" disabled={pending}>
-              {pending ? (editing ? "保存中..." : "追加中...") : editing ? "保存" : "追加"}
+              {pending
+                ? editing
+                  ? "保存中..."
+                  : "追加中..."
+                : editing
+                  ? "保存"
+                  : "追加"}
             </button>
           </div>
         </form>
@@ -245,13 +269,16 @@ export function BusinessUnitManager({
                   {unit.description ?? "説明未設定"}
                 </p>
                 <p className="mt-2 text-xs text-slate-400">
-                  {unit.amountMetricBasis === "REVENUE" ? "売上基準" : "粗利基準"} ・
+                  {unit.amountMetricBasis === "REVENUE"
+                    ? "売上基準"
+                    : "粗利基準"}{" "}
+                  ・
                   {unit.confirmedAmountDateBasis === "CONTRACTED_AT"
                     ? "契約日基準"
                     : unit.confirmedAmountDateBasis === "COLLECTED_AT"
                       ? "回収日基準"
                       : unit.confirmedAmountDateBasis === "BILLING_STARTED_AT"
-                        ? "課金開始日基準"
+                        ? "課金日基準"
                         : "受注日基準"}
                 </p>
               </div>

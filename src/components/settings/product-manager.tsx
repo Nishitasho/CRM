@@ -446,7 +446,9 @@ export function ProductManager({
                             }${item.autoCreateDeliveryProject ? " / 自動" : ""}`,
                         )
                         .join(" / ") ||
-                        fulfillmentTypeLabels[product.fulfillmentType ?? "NONE"]}
+                        fulfillmentTypeLabels[
+                          product.fulfillmentType ?? "NONE"
+                        ]}
                     </td>
                     <td className="px-4 py-3 text-right">
                       {money(price?.revenueAmount)}
@@ -878,7 +880,7 @@ export function ProductManager({
                   <option value="WON_AT">受注日</option>
                   <option value="CONTRACTED_AT">契約日</option>
                   <option value="COLLECTED_AT">回収日</option>
-                  <option value="BILLING_STARTED_AT">課金開始日</option>
+                  <option value="BILLING_STARTED_AT">課金日</option>
                 </select>
               </Field>
               <Field label="目標付帯率（%）">
@@ -1106,7 +1108,9 @@ export function ProductManager({
                         <input
                           type="checkbox"
                           name={`status:${status}`}
-                          defaultChecked={reason.applicableStatus.includes(status)}
+                          defaultChecked={reason.applicableStatus.includes(
+                            status,
+                          )}
                           disabled={!canManage}
                         />
                         {status}
@@ -1134,7 +1138,10 @@ export function ProductManager({
                 </label>
                 {canManage ? (
                   <div className="flex justify-end gap-2 md:col-span-6">
-                    <button className="secondary-button py-2 text-xs" type="submit">
+                    <button
+                      className="secondary-button py-2 text-xs"
+                      type="submit"
+                    >
                       更新
                     </button>
                     <button

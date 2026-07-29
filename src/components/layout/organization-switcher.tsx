@@ -31,7 +31,7 @@ export function OrganizationSwitcher({
   return (
     <select
       aria-label="利用する組織"
-      className="max-w-[220px] rounded-lg border border-line bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-brand-500 disabled:opacity-60"
+      className="min-w-0 max-w-[112px] rounded-lg border border-line bg-white px-2 py-2 text-sm font-semibold outline-none focus:border-brand-500 disabled:opacity-60 sm:max-w-[180px] sm:px-3 xl:max-w-[220px]"
       value={activeOrganizationId}
       disabled={pending}
       onChange={(event) => switchOrganization(event.target.value)}

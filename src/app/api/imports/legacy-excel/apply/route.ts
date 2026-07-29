@@ -1,11 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
+  parseLegacyExcelApplyRequest,
+  type LegacyExcelApplyRequest,
+} from "@/lib/legacy-excel-apply-request";
+import {
   applyLegacyExcelImport,
+  checkLegacyExcelImportJobOrganization,
   defaultLegacyExcelApplyTargets,
   getLegacyExcelConfirmText,
   getLegacyExcelUnresolvedDeliveryProjectConfirmText,
@@ -17,35 +21,6 @@ import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 300;
-
-const applySchema = z.object({
-  importJobId: z.string().uuid(),
-  resume: z.boolean().optional(),
-  confirmed: z.boolean().optional(),
-  confirmText: z.string().optional(),
-  applyTargets: z
-    .object({
-      masters: z.boolean().optional(),
-      companiesContacts: z.boolean().optional(),
-      deals: z.boolean().optional(),
-      dealLineItems: z.boolean().optional(),
-      deliveryProjects: z.boolean().optional(),
-      unresolvedDeliveryProjects: z.boolean().optional(),
-      activities: z.boolean().optional(),
-      dailyMetrics: z.boolean().optional(),
-      kpiTargets: z.boolean().optional(),
-    })
-    .optional(),
-  unresolvedDeliveryProjectConfirmText: z.string().optional(),
-  manualMatches: z
-    .record(
-      z.object({
-        progressCandidateId: z.string().optional(),
-        decision: z.enum(["MANUAL", "UNRESOLVED", "IGNORE"]).optional(),
-      }),
-    )
-    .optional(),
-});
 
 type ApplyError = { row: string; message: string };
 
@@ -66,7 +41,10 @@ export async function POST(request: Request) {
   try {
     const context = await getAuthContext();
     if (!context)
-      return NextResponse.json({ message: "ログインが必要です。" }, { status: 401 });
+      return NextResponse.json(
+        { message: "ログインが必要です。" },
+        { status: 401 },
+      );
     requirePermission(context.membership.role, Permission.IMPORT_DATA);
     if (!canUseLegacyProgressImport(context.membership.role)) {
       return NextResponse.json(
@@ -75,23 +53,39 @@ export async function POST(request: Request) {
       );
     }
 
-    const input = applySchema.parse(await request.json());
+    const input = parseLegacyExcelApplyRequest(await request.json());
     const job = await prisma.importJob.findFirst({
       where: {
         id: input.importJobId,
-        organizationId: context.organization.id,
         objectType: "LEGACY_EXCEL_WORKBOOK",
       },
     });
-    if (!job) {
+    const organizationCheck = checkLegacyExcelImportJobOrganization(
+      job,
+      context.organization.id,
+    );
+    if (organizationCheck === "NOT_FOUND") {
       return NextResponse.json(
         { message: "dry run結果が見つかりません。" },
         { status: 404 },
       );
     }
+    if (organizationCheck === "FORBIDDEN") {
+      return NextResponse.json(
+        { message: "このImportJobは現在の組織には反映できません。" },
+        { status: 403 },
+      );
+    }
+    const authorizedJob = job!;
     const resume = input.resume === true;
-    const canResume = job.status === "PROCESSING" || job.status === "FAILED";
-    if (resume ? !canResume : job.status !== "READY" && job.status !== "FAILED") {
+    const canResume =
+      authorizedJob.status === "PROCESSING" ||
+      authorizedJob.status === "FAILED";
+    if (
+      resume
+        ? !canResume
+        : authorizedJob.status !== "READY" && authorizedJob.status !== "FAILED"
+    ) {
       return NextResponse.json(
         {
           message: resume
@@ -102,14 +96,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const mapping = job.mapping as Prisma.JsonObject;
+    const mapping = authorizedJob.mapping as Prisma.JsonObject;
     const dryRun = (mapping.dryRunSummary ??
       (mapping.provider === "legacy_excel_workbook" ? mapping : undefined)) as
       | LegacyExcelDryRunResult
       | undefined;
-    if (!dryRun?.workbookFingerprint || dryRun.provider !== "legacy_excel_workbook") {
+    if (
+      !dryRun?.workbookFingerprint ||
+      dryRun.provider !== "legacy_excel_workbook"
+    ) {
       return NextResponse.json(
-        { message: "dry run結果の形式が不正です。もう一度dry runを実行してください。" },
+        {
+          message:
+            "dry run結果の形式が不正です。もう一度dry runを実行してください。",
+        },
         { status: 400 },
       );
     }
@@ -119,14 +119,15 @@ export async function POST(request: Request) {
       | undefined;
     const applyTargets = normalizeApplyTargets(
       resume
-        ? storedTargets ?? defaultLegacyExcelApplyTargets
-        : input.applyTargets ?? defaultLegacyExcelApplyTargets,
+        ? (storedTargets ?? defaultLegacyExcelApplyTargets)
+        : (input.applyTargets ?? defaultLegacyExcelApplyTargets),
     );
     const validationMessage = validateApplyRequest(
       applyTargets,
       resume,
       input,
       mapping,
+      context.organization.name,
     );
     if (validationMessage) {
       return NextResponse.json({ message: validationMessage }, { status: 400 });
@@ -136,7 +137,7 @@ export async function POST(request: Request) {
       ...((mapping.manualMatches ?? {}) as NonNullable<
         Parameters<typeof applyLegacyExcelImport>[0]["manualMatches"]
       >),
-      ...(resume ? {} : input.manualMatches ?? {}),
+      ...(resume ? {} : (input.manualMatches ?? {})),
     };
     const storedProgress = readApplyProgress(mapping.applyProgress);
     const progress =
@@ -149,7 +150,7 @@ export async function POST(request: Request) {
     const result = await applyLegacyExcelImport({
       organizationId: context.organization.id,
       actorUserId: context.user.id,
-      importJobId: job.id,
+      importJobId: authorizedJob.id,
       dryRun: batch.dryRun,
       referenceDryRun: dryRun,
       applyTargets,
@@ -179,10 +180,9 @@ export async function POST(request: Request) {
       dryRunSummary: dryRun,
       applyTargets,
       manualMatches,
-      unresolvedDeliveryProjectConfirmText:
-        resume
-          ? mapping.unresolvedDeliveryProjectConfirmText ?? ""
-          : input.unresolvedDeliveryProjectConfirmText ?? "",
+      unresolvedDeliveryProjectConfirmText: resume
+        ? (mapping.unresolvedDeliveryProjectConfirmText ?? "")
+        : (input.unresolvedDeliveryProjectConfirmText ?? ""),
       applyStartedAt: mapping.applyStartedAt ?? new Date().toISOString(),
       applyProgress: nextProgress,
       applySummary: {
@@ -196,7 +196,10 @@ export async function POST(request: Request) {
       ...(complete ? { applyCompletedAt: new Date().toISOString() } : {}),
     };
     await prisma.importJob.update({
-      where: { id: job.id, organizationId: context.organization.id },
+      where: {
+        id: authorizedJob.id,
+        organizationId: context.organization.id,
+      },
       data: {
         status,
         successCount: nextProgress.created + nextProgress.updated,
@@ -230,7 +233,7 @@ export async function POST(request: Request) {
           actorUserId: context.user.id,
           action: "legacy_excel.apply",
           targetType: "import_job",
-          targetId: job.id,
+          targetId: authorizedJob.id,
           after: response as Prisma.InputJsonValue,
           ...metadata,
         },
@@ -246,14 +249,16 @@ export async function POST(request: Request) {
 function validateApplyRequest(
   applyTargets: LegacyExcelApplyTargets,
   resume: boolean,
-  input: z.infer<typeof applySchema>,
+  input: LegacyExcelApplyRequest,
   mapping: Prisma.JsonObject,
+  organizationName: string,
 ) {
+  const expectedConfirmText = getLegacyExcelConfirmText(organizationName);
   if (
     !resume &&
-    (!input.confirmed || input.confirmText !== getLegacyExcelConfirmText())
+    (!input.confirmed || input.confirmText !== expectedConfirmText)
   ) {
-    return `本登録には「${getLegacyExcelConfirmText()}」の確認入力が必要です。`;
+    return `本登録には「${expectedConfirmText}」の確認入力が必要です。`;
   }
   if (
     (applyTargets.deals || applyTargets.dealLineItems) &&
@@ -275,7 +280,8 @@ function validateApplyRequest(
     : input.unresolvedDeliveryProjectConfirmText;
   if (
     applyTargets.unresolvedDeliveryProjects &&
-    unresolvedConfirmation !== getLegacyExcelUnresolvedDeliveryProjectConfirmText()
+    unresolvedConfirmation !==
+      getLegacyExcelUnresolvedDeliveryProjectConfirmText()
   ) {
     return `未紐付けCS案件の本登録には「${getLegacyExcelUnresolvedDeliveryProjectConfirmText()}」の確認入力が必要です。`;
   }
@@ -312,7 +318,9 @@ function readApplyProgress(value: Prisma.JsonValue | undefined) {
     updated: typeof progress.updated === "number" ? progress.updated : 0,
     skipped: typeof progress.skipped === "number" ? progress.skipped : 0,
     warnings: Array.isArray(progress.warnings)
-      ? progress.warnings.filter((item): item is string => typeof item === "string")
+      ? progress.warnings.filter(
+          (item): item is string => typeof item === "string",
+        )
       : [],
     errors: Array.isArray(progress.errors)
       ? progress.errors.filter(isApplyError)
@@ -345,9 +353,7 @@ async function deriveApplyProgress(
     },
   });
   const dealKeys = new Set(
-    links
-      .filter((link) => link.targetObjectType === "DEAL")
-      .map(linkKey),
+    links.filter((link) => link.targetObjectType === "DEAL").map(linkKey),
   );
   const projectKeys = new Set(
     links
@@ -380,7 +386,10 @@ function contiguousProcessedCount(
   processedKeys: Set<string>,
 ) {
   let index = 0;
-  while (index < candidates.length && processedKeys.has(candidateKey(candidates[index]))) {
+  while (
+    index < candidates.length &&
+    processedKeys.has(candidateKey(candidates[index]))
+  ) {
     index += 1;
   }
   return index;
@@ -399,7 +408,11 @@ function candidateKey(candidate: {
   rowNumber: number;
   rowFingerprint: string;
 }) {
-  return [candidate.sheetName, candidate.rowNumber, candidate.rowFingerprint].join("\u0000");
+  return [
+    candidate.sheetName,
+    candidate.rowNumber,
+    candidate.rowFingerprint,
+  ].join("\u0000");
 }
 
 function buildApplyBatch(

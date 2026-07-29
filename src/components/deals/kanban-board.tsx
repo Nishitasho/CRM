@@ -26,6 +26,10 @@ type Deal = {
   lastActivityAt: string | null;
   qualityIssueCount: number;
   primaryQualityIssue: string | null;
+  primaryAlertTitle: string | null;
+  priorityLevel: "CRITICAL" | "ACTION_REQUIRED" | "ATTENTION" | "HEALTHY";
+  priorityScore: number;
+  forecastCategoryName: string | null;
   daysSinceUpdated: number;
   ownerName: string;
   companyName: string | null;
@@ -50,6 +54,7 @@ type PendingRequirements = PendingMove & {
     lostReason?: string | null;
     primaryLossReasonId?: string | null;
     lossReasonNote?: string | null;
+    propertyValues?: Record<string, string>;
   };
   missingRequirementKeys: string[];
   missingLabels: string[];
@@ -62,12 +67,18 @@ type LossReason = {
   requiresNote: boolean;
 };
 
+type Option = { value: string; label: string };
+
 export function KanbanBoard({
   stages,
   lossReasons,
+  density = "standard",
+  users = [],
 }: {
   stages: Stage[];
   lossReasons: LossReason[];
+  density?: "compact" | "standard" | "detail";
+  users?: Option[];
 }) {
   const router = useRouter();
   const sensors = useSensors(
@@ -99,7 +110,7 @@ export function KanbanBoard({
       return;
     }
 
-    await updateStage(deal, stage);
+    await preflightOrUpdate(deal, stage);
   }
 
   async function submitLostReason(event: FormEvent<HTMLFormElement>) {
@@ -145,6 +156,7 @@ export function KanbanBoard({
       lostReason?: string | null;
       primaryLossReasonId?: string | null;
       lossReasonNote?: string | null;
+      propertyValues?: Record<string, string>;
     },
   ) {
     const response = await fetch(`/api/deals/${deal.id}/stage`, {
@@ -182,6 +194,45 @@ export function KanbanBoard({
     router.refresh();
   }
 
+  async function preflightOrUpdate(deal: Deal, stage: Stage) {
+    const response = await fetch(`/api/deals/${deal.id}/stage/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stageId: stage.id }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setError(result.message ?? "ステージ変更前の確認に失敗しました。");
+      return;
+    }
+    if (
+      result.canTransition === false &&
+      Array.isArray(result.missingRequirementKeys) &&
+      result.missingRequirementKeys.length
+    ) {
+      setPendingRequirements({
+        deal,
+        stage,
+        missingRequirementKeys: result.missingRequirementKeys.map(String),
+        missingLabels: Array.isArray(result.missingFields)
+          ? result.missingFields.map((field: unknown) =>
+              typeof field === "string"
+                ? field
+                : field &&
+                    typeof field === "object" &&
+                    "label" in field &&
+                    typeof field.label === "string"
+                  ? field.label
+                  : String(field),
+            )
+          : [],
+      });
+      setError("");
+      return;
+    }
+    await updateStage(deal, stage);
+  }
+
   return (
     <>
       <DndContext
@@ -201,11 +252,11 @@ export function KanbanBoard({
         ) : null}
         <div className="flex gap-4 overflow-x-auto pb-5">
           {stages.map((stage) => (
-            <StageColumn key={stage.id} stage={stage} />
+            <StageColumn key={stage.id} stage={stage} density={density} />
           ))}
         </div>
         <DragOverlay>
-          {active ? <DealCard deal={active} overlay /> : null}
+          {active ? <DealCard deal={active} density={density} overlay /> : null}
         </DragOverlay>
       </DndContext>
 
@@ -300,12 +351,16 @@ export function KanbanBoard({
           title="不足項目を入力"
           missingRequirementKeys={pendingRequirements.missingRequirementKeys}
           missingLabels={pendingRequirements.missingLabels}
+          inputOptions={{ users }}
           onCancel={() => setPendingRequirements(null)}
-          onSaved={() =>
+          onSaved={(propertyValues) =>
             updateStage(
               pendingRequirements.deal,
               pendingRequirements.stage,
-              pendingRequirements.extra,
+              {
+                ...pendingRequirements.extra,
+                propertyValues,
+              },
             )
           }
         />
@@ -314,7 +369,13 @@ export function KanbanBoard({
   );
 }
 
-function StageColumn({ stage }: { stage: Stage }) {
+function StageColumn({
+  stage,
+  density,
+}: {
+  stage: Stage;
+  density: "compact" | "standard" | "detail";
+}) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   const total = stage.deals.reduce((sum, deal) => sum + (deal.amount ?? 0), 0);
 
@@ -338,7 +399,7 @@ function StageColumn({ stage }: { stage: Stage }) {
       </div>
       <div className="min-h-24 space-y-3">
         {stage.deals.map((deal) => (
-          <DraggableCard key={deal.id} deal={deal} />
+          <DraggableCard key={deal.id} deal={deal} density={density} />
         ))}
         {!stage.deals.length ? (
           <div className="grid min-h-24 place-items-center rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-400">
@@ -350,7 +411,13 @@ function StageColumn({ stage }: { stage: Stage }) {
   );
 }
 
-function DraggableCard({ deal }: { deal: Deal }) {
+function DraggableCard({
+  deal,
+  density,
+}: {
+  deal: Deal;
+  density: "compact" | "standard" | "detail";
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({ id: deal.id });
 
@@ -364,16 +431,18 @@ function DraggableCard({ deal }: { deal: Deal }) {
         isDragging ? "opacity-30" : "cursor-grab active:cursor-grabbing"
       }
     >
-      <DealCard deal={deal} />
+      <DealCard deal={deal} density={density} />
     </div>
   );
 }
 
 function DealCard({
   deal,
+  density,
   overlay = false,
 }: {
   deal: Deal;
+  density: "compact" | "standard" | "detail";
   overlay?: boolean;
 }) {
   const nextActionDate = deal.nextActionDate
@@ -389,13 +458,22 @@ function DealCard({
         overlay ? "w-[285px] rotate-2 shadow-xl" : "shadow-sm"
       }`}
     >
-      <Link
-        href={`/deals/${deal.id}`}
-        onClick={(event) => event.stopPropagation()}
-        className="text-sm font-bold hover:text-brand-700"
-      >
-        {deal.name}
-      </Link>
+      <div className="flex items-start justify-between gap-2">
+        <Link
+          href={`/deals/${deal.id}`}
+          onClick={(event) => event.stopPropagation()}
+          className="text-sm font-bold hover:text-brand-700"
+        >
+          {deal.name}
+        </Link>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${priorityTone(
+            deal.priorityLevel,
+          )}`}
+        >
+          {priorityLabel(deal.priorityLevel)}
+        </span>
+      </div>
       <p className="mt-2 text-xs text-slate-500">
         {deal.companyName ?? "会社未設定"}
       </p>
@@ -404,7 +482,8 @@ function DealCard({
           ? `${deal.amount.toLocaleString("ja-JP")}円`
           : "金額未設定"}
       </p>
-      <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+      {density !== "compact" ? (
+        <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
         <div className="flex items-center justify-between gap-2 text-[11px] font-bold text-slate-500">
           <span>ネクストアクション</span>
           <span className="shrink-0">{nextActionDate}</span>
@@ -412,8 +491,10 @@ function DealCard({
         <p className="mt-1 max-h-10 overflow-hidden break-words text-xs leading-5 text-slate-600">
           {deal.nextAction?.trim() || "メモ未設定"}
         </p>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+        </div>
+      ) : null}
+      {density !== "compact" ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
         <div className="rounded-lg bg-slate-50 px-2 py-1.5">
           <span className="block font-bold text-slate-400">最終接触</span>
           <span>{deal.lastActivityAt ? shortDate(deal.lastActivityAt) : "履歴なし"}</span>
@@ -422,10 +503,25 @@ function DealCard({
           <span className="block font-bold text-slate-400">更新停滞</span>
           <span>{deal.daysSinceUpdated}日</span>
         </div>
-      </div>
+        </div>
+      ) : null}
+      {density === "detail" ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-500">
+          <div className="rounded-lg bg-slate-50 px-2 py-1.5">
+            <span className="block font-bold text-slate-400">受注予定</span>
+            <span>{deal.expectedCloseDate ? shortDate(deal.expectedCloseDate) : "予定日なし"}</span>
+          </div>
+          <div className="rounded-lg bg-slate-50 px-2 py-1.5">
+            <span className="block font-bold text-slate-400">Forecast</span>
+            <span>{deal.forecastCategoryName ?? "未設定"}</span>
+          </div>
+        </div>
+      ) : null}
       {deal.qualityIssueCount ? (
         <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <p className="font-bold">要確認 {deal.qualityIssueCount}件</p>
+          <p className="font-bold">
+            {deal.primaryAlertTitle ?? "要確認"} {deal.qualityIssueCount}件
+          </p>
           <p className="mt-1 max-h-10 overflow-hidden">{deal.primaryQualityIssue}</p>
         </div>
       ) : null}
@@ -449,4 +545,18 @@ function shortDate(value: string) {
     month: "short",
     day: "numeric",
   }).format(new Date(value));
+}
+
+function priorityLabel(value: Deal["priorityLevel"]) {
+  if (value === "CRITICAL") return "緊急";
+  if (value === "ACTION_REQUIRED") return "要対応";
+  if (value === "ATTENTION") return "注意";
+  return "順調";
+}
+
+function priorityTone(value: Deal["priorityLevel"]) {
+  if (value === "CRITICAL") return "bg-red-50 text-red-700";
+  if (value === "ACTION_REQUIRED") return "bg-amber-50 text-amber-700";
+  if (value === "ATTENTION") return "bg-brand-50 text-brand-700";
+  return "bg-emerald-50 text-emerald-700";
 }

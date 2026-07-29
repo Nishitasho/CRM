@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  coreAppointmentFormSchema,
   defaultAppointmentFormSchema,
   normalizeAppointmentFormSchema,
   validateAppointmentPayloadAgainstSchema,
@@ -29,11 +30,18 @@ describe("appointment form config", () => {
       ...schema,
       fields: schema.fields.map((field) =>
         field.fieldKey === "companyName"
-          ? { ...field, required: false, isVisible: false, fieldType: "TEXTAREA" }
+          ? {
+              ...field,
+              required: false,
+              isVisible: false,
+              fieldType: "TEXTAREA",
+            }
           : field,
       ),
     });
-    const companyName = next.fields.find((field) => field.fieldKey === "companyName");
+    const companyName = next.fields.find(
+      (field) => field.fieldKey === "companyName",
+    );
     expect(companyName?.required).toBe(true);
     expect(companyName?.isVisible).toBe(true);
     expect(companyName?.fieldType).toBe("TEXT");
@@ -49,7 +57,10 @@ describe("appointment form config", () => {
           : field,
       ),
     });
-    expect(next.fields.find((field) => field.fieldKey === "sourceChannel")?.isVisible).toBe(true);
+    expect(
+      next.fields.find((field) => field.fieldKey === "sourceChannel")
+        ?.isVisible,
+    ).toBe(true);
   });
 
   it("rejects direct invalid option values", () => {
@@ -84,6 +95,62 @@ describe("appointment form config", () => {
     expect(result.customFields.customMemo).toMatchObject({
       value: "温度感高め",
       crmObject: "DEAL",
+    });
+  });
+
+  it("keeps the daily IS form focused on customer, schedule and handoff", () => {
+    const schema = coreAppointmentFormSchema(defaultAppointmentFormSchema());
+    expect(schema.fields.map((field) => field.fieldKey)).toEqual([
+      "assignedFsUserId",
+      "storeName",
+      "prefectureCode",
+      "address",
+      "contactName",
+      "phone",
+      "scheduledStartAt",
+      "durationMinutes",
+      "meetingFormat",
+      "primaryProductId",
+      "handoffNotes",
+    ]);
+    expect(schema.fields.map((field) => field.label)).toEqual([
+      "FS担当者",
+      "店舗名",
+      "都道府県",
+      "店舗住所",
+      "オーナー・担当者名",
+      "店舗番号",
+      "商談開始日時",
+      "所要時間",
+      "商談形式",
+      "主商材",
+      "引継ぎメモ",
+    ]);
+    expect(schema.fields.every((field) => field.required)).toBe(true);
+    expect(schema.sections.map((section) => section.title)).toEqual([
+      "店舗・担当",
+      "商談",
+      "引き継ぎ",
+    ]);
+  });
+
+  it("accepts the compact form values together with generated system values", () => {
+    const schema = coreAppointmentFormSchema(defaultAppointmentFormSchema());
+    const result = validateAppointmentPayloadAgainstSchema(schema, {
+      ...basePayload,
+      assignedFsUserId: "00000000-0000-4000-8000-000000000005",
+      storeName: "テスト店舗",
+      address: "千代田区丸の内1-1-1",
+      phone: "03-0000-0000",
+      durationMinutes: "60",
+      meetingFormat: "ONLINE",
+      handoffNotes: "オンライン商談でご案内済みです。",
+    });
+
+    expect(result).toMatchObject({
+      storeName: "テスト店舗",
+      durationMinutes: "60",
+      meetingFormat: "ONLINE",
     });
   });
 });

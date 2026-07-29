@@ -74,7 +74,7 @@ export default async function DailyMetricsPage({ searchParams }: Props) {
   const definitions = configs.map((config) => config.metricDefinition);
   const metricDefinitionIds = definitions.map((definition) => definition.id);
   const targetDateValue = dateOnly(targetDate);
-  const [entries, allEntries, expectedMemberships, territories, industries, products, campaigns, callLists] = await Promise.all([
+  const [entries, allEntries, expectedMemberships, callLists] = await Promise.all([
     prisma.dailyMetricEntry.findMany({
       where: {
         organizationId: context.organization.id,
@@ -128,58 +128,13 @@ export default async function DailyMetricsPage({ searchParams }: Props) {
           select: { user: { select: { id: true, name: true } } },
         })
       : Promise.resolve([]),
-    prisma.salesTerritory.findMany({
-      where: {
-        organizationId: context.organization.id,
-        isActive: true,
-        OR: [{ businessUnitId: selectedBusinessUnitId }, { businessUnitId: null }],
-      },
-      select: { id: true, name: true },
-      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
-    }),
-    prisma.industry.findMany({
-      where: { organizationId: context.organization.id, isActive: true },
-      select: { id: true, name: true },
-      orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
-    }),
-    prisma.product.findMany({
-      where: {
-        organizationId: context.organization.id,
-        status: "ACTIVE",
-        businessUnitProducts: {
-          some: {
-            businessUnitId: selectedBusinessUnitId,
-            status: "ACTIVE",
-          },
-        },
-      },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.outboundCampaign.findMany({
-      where: {
-        organizationId: context.organization.id,
-        status: "ACTIVE",
-        OR: [{ businessUnitId: selectedBusinessUnitId }, { businessUnitId: null }],
-      },
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    }),
     prisma.callList.findMany({
       where: {
         organizationId: context.organization.id,
         status: "ACTIVE",
         OR: [{ businessUnitId: selectedBusinessUnitId }, { businessUnitId: null }],
       },
-      select: {
-        id: true,
-        name: true,
-        campaignId: true,
-        territoryId: true,
-        prefectureCode: true,
-        industryId: true,
-        productId: true,
-      },
+      select: { id: true, name: true },
       orderBy: { name: "asc" },
     }),
   ]);
@@ -234,12 +189,17 @@ export default async function DailyMetricsPage({ searchParams }: Props) {
         action={
           <div className="flex flex-wrap gap-2">
             {canManageFields ? (
-              <Link
-                href={`/settings/daily-metric-fields?businessUnitId=${selectedBusinessUnitId}&workFunction=${selectedWorkFunction}`}
-                className="secondary-button"
-              >
-                入力項目を管理
-              </Link>
+              <>
+                <Link href="/settings/targets" className="secondary-button">
+                  IS目標を設定
+                </Link>
+                <Link
+                  href={`/settings/daily-metric-fields?businessUnitId=${selectedBusinessUnitId}&workFunction=${selectedWorkFunction}`}
+                  className="secondary-button"
+                >
+                  入力項目を管理
+                </Link>
+              </>
             ) : null}
             <Link href="/reports" className="secondary-button">
               レポートへ
@@ -265,10 +225,6 @@ export default async function DailyMetricsPage({ searchParams }: Props) {
         missingUsers={missingUsers}
         approvalEntries={approvalEntries}
         warnings={warnings}
-        territories={territories}
-        industries={industries}
-        products={products}
-        campaigns={campaigns}
         callLists={callLists}
       />
     </div>

@@ -7,7 +7,7 @@ import { getCrmFormOptions } from "@/lib/page-data";
 export default async function NewCompanyPage() {
   const context = await getAuthContext();
   if (!context) redirect("/login");
-  const { members, customProperties } = await getCrmFormOptions(
+  const { members } = await getCrmFormOptions(
     context.organization.id,
   );
 
@@ -21,9 +21,7 @@ export default async function NewCompanyPage() {
       <RecordForm
         type="company"
         members={members}
-        customProperties={customProperties.filter(
-          (property) => property.objectType === "COMPANY",
-        )}
+        customProperties={[]}
       />
     </div>
   );

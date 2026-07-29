@@ -9,10 +9,17 @@ import {
   SalesPerformanceEventType,
   WorkFunction,
 } from "@prisma/client";
+import {
+  calculateProductWinRate,
+  isBillingStageName,
+  isOpenLineItemStatus,
+  isWonLineItemStatus,
+} from "@/lib/deal-line-item-state";
 import { getBusinessCalendarSummary } from "./business-calendar";
-import { buildDealQualityIssues } from "./deal-quality";
+import { analyzeDealQuality } from "./deal-quality";
 import { DEAL_STAGE_REQUIREMENT_LABELS } from "./deal-stage-requirements";
 import { prisma } from "./prisma";
+import { isInvalidDealStageName } from "./spreadsheet-stages";
 
 export type SalesReportFilter = {
   periodStart: Date;
@@ -21,6 +28,7 @@ export type SalesReportFilter = {
   userId?: string | null;
   workFunction?: WorkFunction | null;
   productId?: string | null;
+  stageId?: string | null;
   productKind?: "CORE" | "ADD_ON" | "OPTIONAL" | "CROSS_SELL" | null;
   pipelineId?: string | null;
   source?: string | null;
@@ -106,6 +114,14 @@ function numberValue(value: Prisma.Decimal | number | null | undefined) {
 
 export function safeRate(numerator: number, denominator: number) {
   return denominator > 0 ? numerator / denominator : null;
+}
+
+export function salesAttributionShare(
+  workFunction: WorkFunction | null | undefined,
+) {
+  return workFunction === WorkFunction.IS || workFunction === WorkFunction.FS
+    ? 0.5
+    : 1;
 }
 
 export function calculateClosedDealWinRate(input: {
@@ -246,7 +262,7 @@ function dateBasisLabel(value: ConfirmedAmountDateBasis) {
     WON_AT: "受注日",
     CONTRACTED_AT: "契約日",
     COLLECTED_AT: "回収日",
-    BILLING_STARTED_AT: "課金開始日",
+    BILLING_STARTED_AT: "課金日",
   }[value];
 }
 
@@ -317,6 +333,7 @@ async function reportLineItems(
 ) {
   const dealWhere: Prisma.DealWhereInput = { deletedAt: null };
   if (filter.pipelineId) dealWhere.pipelineId = filter.pipelineId;
+  if (filter.stageId) dealWhere.stageId = filter.stageId;
   if (filter.forecastCategoryId)
     dealWhere.forecastCategoryId = filter.forecastCategoryId;
   if (filter.source) dealWhere.source = filter.source;
@@ -324,6 +341,19 @@ async function reportLineItems(
     dealWhere.dealType = filter.dealType;
   }
   if (filter.dealStatus) dealWhere.status = filter.dealStatus;
+  if (filter.userId) {
+    dealWhere.OR = [
+      { ownerUserId: filter.userId },
+      {
+        participants: {
+          some: {
+            userId: filter.userId,
+            status: "ACTIVE",
+          },
+        },
+      },
+    ];
+  }
   const lines = await prisma.dealLineItem.findMany({
     where: {
       organizationId,
@@ -343,6 +373,7 @@ async function reportLineItems(
           businessUnitId: true,
           pipelineId: true,
           stageId: true,
+          stage: { select: { name: true } },
           forecastCategoryId: true,
           probability: true,
           ownerUserId: true,
@@ -405,6 +436,14 @@ async function targetAmountByScope(
       organizationId,
       periodStart: { lte: filter.periodEnd },
       periodEnd: { gte: filter.periodStart },
+      ...(filter.businessUnitId
+        ? {
+            OR: [
+              { businessUnitId: filter.businessUnitId },
+              { metricDefinition: { businessUnitId: filter.businessUnitId } },
+            ],
+          }
+        : {}),
       metricDefinition: {
         unit: "CURRENCY",
         key: { contains: basisKey },
@@ -414,16 +453,68 @@ async function targetAmountByScope(
       businessUnitId: true,
       userId: true,
       targetValue: true,
+      metricDefinition: { select: { businessUnitId: true } },
     },
   });
-  const add = (map: Map<string, number>, key: string, value: number) =>
-    map.set(key, (map.get(key) ?? 0) + value);
   const map = new Map<string, number>();
+  const scopedBusinessUnitId = (target: (typeof targets)[number]) =>
+    target.businessUnitId ?? target.metricDefinition.businessUnitId;
+  const total = (items: typeof targets) =>
+    items.reduce((sum, target) => sum + numberValue(target.targetValue), 0);
+
+  const organizationTargets = targets.filter(
+    (target) => !scopedBusinessUnitId(target) && !target.userId,
+  );
+  const businessUnitTargets = targets.filter(
+    (target) => scopedBusinessUnitId(target) && !target.userId,
+  );
+  const userTargets = targets.filter((target) => target.userId);
+
+  if (filter.businessUnitId) {
+    const unitTargets = businessUnitTargets.filter(
+      (target) => scopedBusinessUnitId(target) === filter.businessUnitId,
+    );
+    const unitUserTargets = userTargets.filter(
+      (target) => scopedBusinessUnitId(target) === filter.businessUnitId,
+    );
+    map.set(
+      "overall",
+      unitTargets.length ? total(unitTargets) : total(unitUserTargets),
+    );
+  } else {
+    map.set(
+      "overall",
+      organizationTargets.length
+        ? total(organizationTargets)
+        : businessUnitTargets.length
+          ? total(businessUnitTargets)
+          : total(userTargets),
+    );
+  }
+
+  const unitIds = new Set(
+    targets
+      .map(scopedBusinessUnitId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  for (const businessUnitId of unitIds) {
+    const aggregate = businessUnitTargets.filter(
+      (target) => scopedBusinessUnitId(target) === businessUnitId,
+    );
+    const people = userTargets.filter(
+      (target) => scopedBusinessUnitId(target) === businessUnitId,
+    );
+    map.set(
+      `bu:${businessUnitId}`,
+      aggregate.length ? total(aggregate) : total(people),
+    );
+  }
   for (const target of targets) {
-    const value = numberValue(target.targetValue);
-    add(map, "overall", value);
-    if (target.businessUnitId) add(map, `bu:${target.businessUnitId}`, value);
-    if (target.userId) add(map, `user:${target.userId}`, value);
+    if (!target.userId) continue;
+    map.set(
+      `user:${target.userId}`,
+      (map.get(`user:${target.userId}`) ?? 0) + numberValue(target.targetValue),
+    );
   }
   return map;
 }
@@ -557,7 +648,7 @@ export async function getSalesProgressReport(
     overall.dateBasis = dateBasis;
 
     const isConfirmed =
-      line.status === DealLineItemStatus.WON &&
+      isWonLineItemStatus(line.status) &&
       inRange(
         confirmedDateForLine(line, dateBasis),
         filter.periodStart,
@@ -565,7 +656,7 @@ export async function getSalesProgressReport(
       );
     const isOpen =
       line.deal.status === DealStatus.OPEN &&
-      line.status === DealLineItemStatus.PROPOSED &&
+      isOpenLineItemStatus(line.status) &&
       inRange(
         line.deal.expectedCloseDate ?? line.updatedAt,
         filter.periodStart,
@@ -732,6 +823,7 @@ export async function getProductPerformanceReport(
       productName: string;
       proposedDealIds: Set<string>;
       wonDealIds: Set<string>;
+      lostDealIds: Set<string>;
       notSelectedDealIds: Set<string>;
       cancelledDealIds: Set<string>;
       revenueAmount: number;
@@ -742,6 +834,7 @@ export async function getProductPerformanceReport(
     }
   >();
   for (const line of lines) {
+    if (isInvalidDealStageName(line.deal.stage.name)) continue;
     const unitId = line.businessUnitId ?? line.deal.businessUnitId;
     const settings = unitId ? businessUnitById.get(unitId) : null;
     const dateBasis = settings?.dateBasis ?? defaultDateBasis;
@@ -752,6 +845,7 @@ export async function getProductPerformanceReport(
         productName: line.product?.name ?? line.name,
         proposedDealIds: new Set(),
         wonDealIds: new Set(),
+        lostDealIds: new Set(),
         notSelectedDealIds: new Set(),
         cancelledDealIds: new Set(),
         revenueAmount: 0,
@@ -765,17 +859,27 @@ export async function getProductPerformanceReport(
     if (unitId) row.businessUnitIds.add(unitId);
     if (line.deal.ownerUserId) row.ownerUserIds.add(line.deal.ownerUserId);
     const date =
-      line.status === DealLineItemStatus.WON
+      isWonLineItemStatus(line.status) ||
+      (line.status === DealLineItemStatus.CANCELLED && line.contractedAt)
         ? confirmedDateForLine(line, dateBasis)
         : line.updatedAt;
     if (!inRange(date, filter.periodStart, filter.periodEnd)) continue;
     row.proposedDealIds.add(line.dealId);
-    if (line.status === DealLineItemStatus.WON) {
+    if (
+      isWonLineItemStatus(line.status) ||
+      (line.status === DealLineItemStatus.CANCELLED && line.contractedAt)
+    ) {
       row.wonDealIds.add(line.dealId);
       row.revenueAmount += numberValue(line.revenueAmount);
       row.grossProfitAmount += numberValue(line.grossProfitAmount);
       row.recurringFee += numberValue(line.recurringFee);
     }
+    if (
+      line.status === DealLineItemStatus.LOST ||
+      line.status === DealLineItemStatus.NOT_SELECTED ||
+      (line.status === DealLineItemStatus.CANCELLED && !line.contractedAt)
+    )
+      row.lostDealIds.add(line.dealId);
     if (line.status === DealLineItemStatus.NOT_SELECTED)
       row.notSelectedDealIds.add(line.dealId);
     if (line.status === DealLineItemStatus.CANCELLED)
@@ -784,25 +888,37 @@ export async function getProductPerformanceReport(
   return {
     periodStart: filter.periodStart.toISOString().slice(0, 10),
     periodEnd: filter.periodEnd.toISOString().slice(0, 10),
-    rows: Array.from(rows.values()).map((row) => ({
-      productId: row.productId,
-      productName: row.productName,
-      proposedDealCount: row.proposedDealIds.size,
-      wonDealCount: row.wonDealIds.size,
-      notSelectedDealCount: row.notSelectedDealIds.size,
-      cancelledDealCount: row.cancelledDealIds.size,
-      winRate: safeRate(row.wonDealIds.size, row.proposedDealIds.size),
-      revenueAmount: row.revenueAmount,
-      grossProfitAmount: row.grossProfitAmount,
-      averageRevenueAmount: safeRate(row.revenueAmount, row.wonDealIds.size),
-      averageGrossProfitAmount: safeRate(
-        row.grossProfitAmount,
-        row.wonDealIds.size,
-      ),
-      recurringFeeAmount: row.recurringFee,
-      businessUnitCount: row.businessUnitIds.size,
-      ownerCount: row.ownerUserIds.size,
-    })),
+    rows: Array.from(rows.values()).map((row) => {
+      const outcome = calculateProductWinRate({
+        wonDealIds: row.wonDealIds,
+        lostDealIds: row.lostDealIds,
+      });
+      return {
+        productId: row.productId,
+        productName: row.productName,
+        proposedDealCount: row.proposedDealIds.size,
+        pendingDealCount: Array.from(row.proposedDealIds).filter(
+          (dealId) =>
+            !row.wonDealIds.has(dealId) && !row.lostDealIds.has(dealId),
+        ).length,
+        wonDealCount: row.wonDealIds.size,
+        lostDealCount: row.lostDealIds.size,
+        notSelectedDealCount: row.notSelectedDealIds.size,
+        cancelledDealCount: row.cancelledDealIds.size,
+        decidedDealCount: outcome.decidedCount,
+        winRate: outcome.winRate,
+        revenueAmount: row.revenueAmount,
+        grossProfitAmount: row.grossProfitAmount,
+        averageRevenueAmount: safeRate(row.revenueAmount, row.wonDealIds.size),
+        averageGrossProfitAmount: safeRate(
+          row.grossProfitAmount,
+          row.wonDealIds.size,
+        ),
+        recurringFeeAmount: row.recurringFee,
+        businessUnitCount: row.businessUnitIds.size,
+        ownerCount: row.ownerUserIds.size,
+      };
+    }),
   };
 }
 
@@ -813,7 +929,7 @@ function attachmentInputFromLines(
 ) {
   return lines.filter(
     (line) =>
-      line.status === DealLineItemStatus.WON &&
+      isWonLineItemStatus(line.status) &&
       inRange(
         confirmedDateForLine(line, dateBasis),
         filter.periodStart,
@@ -1050,7 +1166,7 @@ export async function getLossAnalysisReport(
     lines
       .filter(
         (line) =>
-          line.status === DealLineItemStatus.WON &&
+          isWonLineItemStatus(line.status) &&
           inRange(
             confirmedDateForLine(line, defaultDateBasis),
             filter.periodStart,
@@ -1081,93 +1197,113 @@ export async function getSalespersonComparisonReport(
   organizationId: string,
   filter: SalesReportFilter,
 ) {
-  const [progress, { byId: businessUnitById }, members, unitMemberships, deals, lines, events] =
-    await Promise.all([
-      getSalesProgressReport(organizationId, filter),
-      businessUnitSettings(organizationId),
-      prisma.organizationMember.findMany({
-        where: {
-          organizationId,
-          status: "ACTIVE",
-        },
-        select: {
-          userId: true,
-          user: { select: { id: true, name: true } },
-        },
-      }),
-      prisma.businessUnitMembership.findMany({
-        where: {
-          organizationId,
-          status: "ACTIVE",
-          ...(filter.businessUnitId ? { businessUnitId: filter.businessUnitId } : {}),
-          ...(filter.workFunction ? { workFunction: filter.workFunction } : {}),
-        },
-        select: { userId: true, workFunction: true, businessUnitId: true },
-      }),
-      prisma.deal.findMany({
-        where: {
-          organizationId,
-          deletedAt: null,
-          ...(filter.businessUnitId
-            ? { businessUnitId: filter.businessUnitId }
-            : {}),
-          ...(filter.pipelineId ? { pipelineId: filter.pipelineId } : {}),
-          ...(filter.source ? { source: filter.source } : {}),
-          ...(filter.dealType && filter.dealType !== "ALL"
-            ? { dealType: filter.dealType }
-            : {}),
-          ...(filter.dealStatus ? { status: filter.dealStatus } : {}),
-        },
-        select: {
-          id: true,
-          name: true,
-          status: true,
-          businessUnitId: true,
-          ownerUserId: true,
-          createdAt: true,
-          wonAt: true,
-          lostAt: true,
-          closeDate: true,
-          participants: {
-            where: { role: DealParticipantRole.CLOSER, status: "ACTIVE" },
-            select: {
-              userId: true,
-              creditShare: true,
-              workFunction: true,
-              snapshotUserName: true,
-            },
+  const [
+    progress,
+    { byId: businessUnitById },
+    members,
+    unitMemberships,
+    deals,
+    lines,
+    events,
+  ] = await Promise.all([
+    getSalesProgressReport(organizationId, filter),
+    businessUnitSettings(organizationId),
+    prisma.organizationMember.findMany({
+      where: {
+        organizationId,
+        status: "ACTIVE",
+      },
+      select: {
+        userId: true,
+        user: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.businessUnitMembership.findMany({
+      where: {
+        organizationId,
+        status: "ACTIVE",
+        ...(filter.businessUnitId
+          ? { businessUnitId: filter.businessUnitId }
+          : {}),
+        ...(filter.workFunction ? { workFunction: filter.workFunction } : {}),
+      },
+      select: { userId: true, workFunction: true, businessUnitId: true },
+    }),
+    prisma.deal.findMany({
+      where: {
+        organizationId,
+        deletedAt: null,
+        ...(filter.businessUnitId
+          ? { businessUnitId: filter.businessUnitId }
+          : {}),
+        ...(filter.pipelineId ? { pipelineId: filter.pipelineId } : {}),
+        ...(filter.stageId ? { stageId: filter.stageId } : {}),
+        ...(filter.source ? { source: filter.source } : {}),
+        ...(filter.dealType && filter.dealType !== "ALL"
+          ? { dealType: filter.dealType }
+          : {}),
+        ...(filter.dealStatus ? { status: filter.dealStatus } : {}),
+        ...(filter.productId
+          ? { lineItems: { some: { productId: filter.productId } } }
+          : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        businessUnitId: true,
+        ownerUserId: true,
+        createdAt: true,
+        wonAt: true,
+        lostAt: true,
+        closeDate: true,
+        stage: { select: { name: true } },
+        participants: {
+          where: { role: DealParticipantRole.CLOSER, status: "ACTIVE" },
+          select: {
+            userId: true,
+            creditShare: true,
+            workFunction: true,
+            snapshotUserName: true,
           },
         },
-      }),
-      reportLineItems(organizationId, filter),
-      prisma.salesPerformanceEvent.findMany({
-        where: {
-          organizationId,
-          cancelledAt: null,
-          occurredAt: { gte: filter.periodStart, lte: filter.periodEnd },
-          ...(filter.businessUnitId
-            ? { businessUnitId: filter.businessUnitId }
-            : {}),
-          ...(filter.userId ? { creditedUserId: filter.userId } : {}),
-          ...(filter.workFunction ? { workFunction: filter.workFunction } : {}),
-          ...(filter.productId ? { productId: filter.productId } : {}),
-        },
-        select: {
-          creditedUserId: true,
-          workFunction: true,
-          eventType: true,
-          quantity: true,
-          amount: true,
-          dealId: true,
-        },
-      }),
-    ]);
+      },
+    }),
+    reportLineItems(organizationId, filter),
+    prisma.salesPerformanceEvent.findMany({
+      where: {
+        organizationId,
+        cancelledAt: null,
+        occurredAt: { gte: filter.periodStart, lte: filter.periodEnd },
+        ...(filter.businessUnitId
+          ? { businessUnitId: filter.businessUnitId }
+          : {}),
+        ...(filter.userId ? { creditedUserId: filter.userId } : {}),
+        ...(filter.workFunction ? { workFunction: filter.workFunction } : {}),
+        ...(filter.productId ? { productId: filter.productId } : {}),
+      },
+      select: {
+        businessUnitId: true,
+        creditedUserId: true,
+        workFunction: true,
+        eventType: true,
+        quantity: true,
+        amount: true,
+        dealId: true,
+      },
+    }),
+  ]);
   const progressRows = new Map(
     (progress.rows ?? [])
       .flatMap((unit) => unit.children ?? [])
-      .map((row) => [`${row.businessUnitId ?? "none"}:${row.userId ?? "unassigned"}`, row]),
+      .map((row) => [
+        `${row.businessUnitId ?? "none"}:${row.userId ?? "unassigned"}`,
+        row,
+      ]),
   );
-  const userName = new Map(members.map((item) => [item.user.id, item.user.name]));
+  const userName = new Map(
+    members.map((item) => [item.user.id, item.user.name]),
+  );
   const userWorkFunctions = new Map<string, WorkFunction>();
   for (const membership of unitMemberships) {
     if (!userWorkFunctions.has(membership.userId)) {
@@ -1196,6 +1332,8 @@ export async function getSalespersonComparisonReport(
       connections: number;
       ownerContacts: number;
       fulls: number;
+      shorts: number;
+      conditionNg: number;
       appointments: number;
       attendedMeetings: number;
       validMeetings: number;
@@ -1263,6 +1401,8 @@ export async function getSalespersonComparisonReport(
         connections: 0,
         ownerContacts: 0,
         fulls: 0,
+        shorts: 0,
+        conditionNg: 0,
         appointments: 0,
         attendedMeetings: 0,
         validMeetings: 0,
@@ -1281,7 +1421,10 @@ export async function getSalespersonComparisonReport(
   }
 
   const visibleMembers = filter.workFunction
-    ? members.filter((member) => userWorkFunctions.get(member.user.id) === filter.workFunction)
+    ? members.filter(
+        (member) =>
+          userWorkFunctions.get(member.user.id) === filter.workFunction,
+      )
     : members;
   for (const user of visibleMembers) {
     ensureRow({
@@ -1294,7 +1437,9 @@ export async function getSalespersonComparisonReport(
 
   const participantOwners = (deal: (typeof deals)[number]) => {
     const closers = deal.participants.filter((participant) =>
-      filter.workFunction ? participant.workFunction === filter.workFunction : true,
+      filter.workFunction
+        ? participant.workFunction === filter.workFunction
+        : true,
     );
     if (closers.length) return closers;
     return deal.ownerUserId
@@ -1329,6 +1474,7 @@ export async function getSalespersonComparisonReport(
     const owners = participantOwners(deal);
     const wonDate = deal.wonAt ?? deal.closeDate;
     const lostDate = deal.lostAt ?? deal.closeDate;
+    const includeInWinRate = !isInvalidDealStageName(deal.stage.name);
     for (const owner of owners) {
       const row = ensureRow({
         userId: owner.userId,
@@ -1344,14 +1490,22 @@ export async function getSalespersonComparisonReport(
           row.drilldownDealIds.push(deal.id);
         });
       }
-      if (deal.status === DealStatus.WON && inRange(wonDate, filter.periodStart, filter.periodEnd)) {
+      if (
+        includeInWinRate &&
+        deal.status === DealStatus.WON &&
+        inRange(wonDate, filter.periodStart, filter.periodEnd)
+      ) {
         addDistinct(`${rowKey}:won`, deal.id, () => {
           row.wonDealCount += 1;
           row.closedDealCount += 1;
           row.drilldownDealIds.push(deal.id);
         });
       }
-      if (deal.status === DealStatus.LOST && inRange(lostDate, filter.periodStart, filter.periodEnd)) {
+      if (
+        includeInWinRate &&
+        deal.status === DealStatus.LOST &&
+        inRange(lostDate, filter.periodStart, filter.periodEnd)
+      ) {
         addDistinct(`${rowKey}:lost`, deal.id, () => {
           row.lostDealCount += 1;
           row.closedDealCount += 1;
@@ -1366,8 +1520,12 @@ export async function getSalespersonComparisonReport(
     const settings = unitId ? businessUnitById.get(unitId) : null;
     const dateBasis = settings?.dateBasis ?? defaultDateBasis;
     if (
-      line.status !== DealLineItemStatus.WON ||
-      !inRange(confirmedDateForLine(line, dateBasis), filter.periodStart, filter.periodEnd)
+      !isWonLineItemStatus(line.status) ||
+      !inRange(
+        confirmedDateForLine(line, dateBasis),
+        filter.periodStart,
+        filter.periodEnd,
+      )
     ) {
       continue;
     }
@@ -1398,7 +1556,9 @@ export async function getSalespersonComparisonReport(
           owner.creditShare === null ? null : numberValue(owner.creditShare),
       })),
     )) {
-      const owner = filteredOwners.find((item) => item.userId === allocation.userId);
+      const owner = filteredOwners.find(
+        (item) => item.userId === allocation.userId,
+      );
       const row = ensureRow({
         userId: allocation.userId,
         businessUnitId: unitId ?? null,
@@ -1416,7 +1576,9 @@ export async function getSalespersonComparisonReport(
           owner.creditShare === null ? null : numberValue(owner.creditShare),
       })),
     )) {
-      const owner = filteredOwners.find((item) => item.userId === allocation.userId);
+      const owner = filteredOwners.find(
+        (item) => item.userId === allocation.userId,
+      );
       const row = ensureRow({
         userId: allocation.userId,
         businessUnitId: unitId ?? null,
@@ -1433,31 +1595,76 @@ export async function getSalespersonComparisonReport(
   for (const event of events) {
     const row = ensureRow({
       userId: event.creditedUserId,
-      businessUnitId: filter.businessUnitId ?? null,
+      businessUnitId: event.businessUnitId ?? filter.businessUnitId ?? null,
       workFunction: event.workFunction,
     });
     if (!row) continue;
     const q = quantity(event.quantity);
     if (event.eventType === SalesPerformanceEventType.CALL) row.calls += q;
-    if (event.eventType === SalesPerformanceEventType.CONNECTION) row.connections += q;
-    if (event.eventType === SalesPerformanceEventType.OWNER_CONTACT) row.ownerContacts += q;
+    if (event.eventType === SalesPerformanceEventType.CONNECTION)
+      row.connections += q;
+    if (event.eventType === SalesPerformanceEventType.OWNER_CONTACT)
+      row.ownerContacts += q;
     if (event.eventType === SalesPerformanceEventType.FULL) row.fulls += q;
-    if (event.eventType === SalesPerformanceEventType.APPOINTMENT_SET) row.appointments += q;
-    if (event.eventType === SalesPerformanceEventType.MEETING_ATTENDED) row.attendedMeetings += q;
-    if (event.eventType === SalesPerformanceEventType.VALID_MEETING) row.validMeetings += q;
-    if (event.eventType === SalesPerformanceEventType.INVALID_MEETING) row.invalidMeetings += q;
-    if (event.eventType === SalesPerformanceEventType.CROSS_SELL_CREATED) row.crossSellCreatedCount += q;
-    if (event.eventType === SalesPerformanceEventType.CROSS_SELL_MEETING_SET) row.crossSellDealCount += q;
+    if (event.eventType === SalesPerformanceEventType.SHORT) row.shorts += q;
+    if (event.eventType === SalesPerformanceEventType.CONDITION_NG)
+      row.conditionNg += q;
+    if (event.eventType === SalesPerformanceEventType.APPOINTMENT_SET)
+      row.appointments += q;
+    if (event.eventType === SalesPerformanceEventType.MEETING_ATTENDED)
+      row.attendedMeetings += q;
+    if (event.eventType === SalesPerformanceEventType.VALID_MEETING)
+      row.validMeetings += q;
+    if (event.eventType === SalesPerformanceEventType.INVALID_MEETING)
+      row.invalidMeetings += q;
+    if (event.eventType === SalesPerformanceEventType.CROSS_SELL_CREATED)
+      row.crossSellCreatedCount += q;
+    if (event.eventType === SalesPerformanceEventType.CROSS_SELL_MEETING_SET)
+      row.crossSellDealCount += q;
     if (event.eventType === SalesPerformanceEventType.CROSS_SELL_WON) {
       row.crossSellWonCount += q;
       row.crossSellGrossProfitAmount += numberValue(event.amount);
     }
-    if (event.eventType === SalesPerformanceEventType.CROSS_SELL_ORIGINATED_GP) {
+    if (
+      event.eventType === SalesPerformanceEventType.CROSS_SELL_ORIGINATED_GP
+    ) {
       row.crossSellGrossProfitAmount += numberValue(event.amount);
     }
   }
 
   for (const row of rows.values()) {
+    const attributionShare = salesAttributionShare(row.workFunction);
+    if (attributionShare !== 1) {
+      row.revenueAmount *= attributionShare;
+      row.grossProfitAmount *= attributionShare;
+      row.confirmedAmount *= attributionShare;
+      row.openForecastAmount *= attributionShare;
+      row.weightedForecastAmount *= attributionShare;
+      row.progressGap = row.confirmedAmount - row.idealProgressAmount;
+      row.landingForecastAmount =
+        row.confirmedAmount + row.weightedForecastAmount;
+      row.currentAttainmentRate = safeRate(
+        row.confirmedAmount,
+        row.targetAmount,
+      );
+      row.landingAttainmentRate = safeRate(
+        row.landingForecastAmount,
+        row.targetAmount,
+      );
+      row.targetRemainingAmount = Math.max(
+        row.targetAmount - row.confirmedAmount,
+        0,
+      );
+      row.overTargetAmount = Math.max(
+        row.confirmedAmount - row.targetAmount,
+        0,
+      );
+      row.landingGap = row.landingForecastAmount - row.targetAmount;
+      row.dailyRequiredAmount =
+        row.remainingWorkingDays > 0
+          ? row.targetRemainingAmount / row.remainingWorkingDays
+          : null;
+    }
     const winRate = calculateClosedDealWinRate({
       wonDealCount: row.wonDealCount,
       lostDealCount: row.lostDealCount,
@@ -1467,7 +1674,10 @@ export async function getSalespersonComparisonReport(
     row.winRate = winRate.rate;
     row.winRateLowSample = winRate.lowSample;
     row.averageRevenueAmount = safeRate(row.revenueAmount, row.wonDealCount);
-    row.averageGrossProfitAmount = safeRate(row.grossProfitAmount, row.wonDealCount);
+    row.averageGrossProfitAmount = safeRate(
+      row.grossProfitAmount,
+      row.wonDealCount,
+    );
     row.appointmentWinRate = safeRate(row.wonDealCount, row.appointments);
     row.validMeetingWinRate = safeRate(row.wonDealCount, row.validMeetings);
   }
@@ -1481,6 +1691,11 @@ export async function getSalespersonComparisonReport(
       row.confirmedAmount > 0 ||
       row.landingForecastAmount > 0 ||
       row.calls > 0 ||
+      row.connections > 0 ||
+      row.ownerContacts > 0 ||
+      row.fulls > 0 ||
+      row.shorts > 0 ||
+      row.conditionNg > 0 ||
       row.appointments > 0 ||
       row.crossSellCreatedCount > 0 ||
       row.targetAmount > 0
@@ -1491,7 +1706,8 @@ export async function getSalespersonComparisonReport(
     periodEnd: progress.periodEnd,
     basisLabel: progress.basisLabel,
     dateBasisLabel: progress.dateBasisLabel,
-    winRateDefinition: "受注件数 ÷ クローズ商談数（WON + LOST）",
+    winRateDefinition:
+      "受注件数 ÷ クローズ商談数（WON + LOST、無効商談を除く）",
     rows: outputRows.sort((a, b) => {
       if (b.winRateDenominator !== a.winRateDenominator)
         return b.winRateDenominator - a.winRateDenominator;
@@ -1513,7 +1729,9 @@ export async function getExecutiveDashboardData(
         where: {
           organizationId,
           isDefault: true,
-          ...(filter.businessUnitId ? { businessUnitId: filter.businessUnitId } : {}),
+          ...(filter.businessUnitId
+            ? { businessUnitId: filter.businessUnitId }
+            : {}),
         },
         include: {
           businessUnit: { select: { id: true, name: true } },
@@ -1526,6 +1744,25 @@ export async function getExecutiveDashboardData(
                   ...(filter.businessUnitId
                     ? { businessUnitId: filter.businessUnitId }
                     : {}),
+                  ...(filter.userId
+                    ? {
+                        OR: [
+                          { ownerUserId: filter.userId },
+                          {
+                            participants: {
+                              some: {
+                                userId: filter.userId,
+                                status: "ACTIVE",
+                              },
+                            },
+                          },
+                        ],
+                      }
+                    : {}),
+                  ...(filter.productId
+                    ? { lineItems: { some: { productId: filter.productId } } }
+                    : {}),
+                  ...(filter.stageId ? { stageId: filter.stageId } : {}),
                 },
                 select: { id: true, amount: true },
               },
@@ -1533,13 +1770,17 @@ export async function getExecutiveDashboardData(
             orderBy: { sortOrder: "asc" },
           },
         },
-        orderBy: [{ businessUnit: { displayOrder: "asc" } }, { createdAt: "asc" }],
+        orderBy: [
+          { businessUnit: { displayOrder: "asc" } },
+          { createdAt: "asc" },
+        ],
       }),
       prisma.task.count({
         where: {
           organizationId,
           dueDate: { lt: filter.periodEnd },
           status: { notIn: ["COMPLETED", "CANCELED"] },
+          ...(filter.userId ? { ownerUserId: filter.userId } : {}),
         },
       }),
       prisma.deal.aggregate({
@@ -1547,7 +1788,25 @@ export async function getExecutiveDashboardData(
           organizationId,
           deletedAt: null,
           createdAt: { gte: filter.periodStart, lte: filter.periodEnd },
-          ...(filter.businessUnitId ? { businessUnitId: filter.businessUnitId } : {}),
+          ...(filter.businessUnitId
+            ? { businessUnitId: filter.businessUnitId }
+            : {}),
+          ...(filter.userId
+            ? {
+                OR: [
+                  { ownerUserId: filter.userId },
+                  {
+                    participants: {
+                      some: { userId: filter.userId, status: "ACTIVE" },
+                    },
+                  },
+                ],
+              }
+            : {}),
+          ...(filter.productId
+            ? { lineItems: { some: { productId: filter.productId } } }
+            : {}),
+          ...(filter.stageId ? { stageId: filter.stageId } : {}),
         },
         _sum: { amount: true },
         _count: true,
@@ -1557,22 +1816,35 @@ export async function getExecutiveDashboardData(
   const salesByBusinessUnit = new Map<string | null, typeof salespeople.rows>();
   for (const row of salespeople.rows) {
     const key = row.businessUnitId ?? null;
-    salesByBusinessUnit.set(key, [...(salesByBusinessUnit.get(key) ?? []), row]);
+    salesByBusinessUnit.set(key, [
+      ...(salesByBusinessUnit.get(key) ?? []),
+      row,
+    ]);
   }
   const businessUnits = (progress.rows ?? []).map((row) => {
     const people = salesByBusinessUnit.get(row.businessUnitId ?? null) ?? [];
-    const wonDealCount = people.reduce((sum, person) => sum + person.wonDealCount, 0);
-    const lostDealCount = people.reduce((sum, person) => sum + person.lostDealCount, 0);
+    const wonDealCount = people.reduce(
+      (sum, person) => sum + person.wonDealCount,
+      0,
+    );
+    const lostDealCount = people.reduce(
+      (sum, person) => sum + person.lostDealCount,
+      0,
+    );
     return {
       ...row,
-      opportunityCount: people.reduce((sum, person) => sum + person.opportunityCount, 0),
+      opportunityCount: people.reduce(
+        (sum, person) => sum + person.opportunityCount,
+        0,
+      ),
       wonDealCount,
       lostDealCount,
       closedDealCount: wonDealCount + lostDealCount,
       winRate: safeRate(wonDealCount, wonDealCount + lostDealCount),
       winRateNumerator: wonDealCount,
       winRateDenominator: wonDealCount + lostDealCount,
-      winRateLowSample: wonDealCount + lostDealCount > 0 && wonDealCount + lostDealCount < 5,
+      winRateLowSample:
+        wonDealCount + lostDealCount > 0 && wonDealCount + lostDealCount < 5,
     };
   });
 
@@ -1584,13 +1856,22 @@ export async function getExecutiveDashboardData(
       opportunityAmount: numberValue(monthDeals._sum.amount),
       opportunityCount: monthDeals._count,
       overdueTaskCount: overdueTasks,
-      wonDealCount: salespeople.rows.reduce((sum, row) => sum + row.wonDealCount, 0),
-      lostDealCount: salespeople.rows.reduce((sum, row) => sum + row.lostDealCount, 0),
+      wonDealCount: salespeople.rows.reduce(
+        (sum, row) => sum + row.wonDealCount,
+        0,
+      ),
+      lostDealCount: salespeople.rows.reduce(
+        (sum, row) => sum + row.lostDealCount,
+        0,
+      ),
       winRate: safeRate(
         salespeople.rows.reduce((sum, row) => sum + row.wonDealCount, 0),
         salespeople.rows.reduce((sum, row) => sum + row.closedDealCount, 0),
       ),
-      winRateDenominator: salespeople.rows.reduce((sum, row) => sum + row.closedDealCount, 0),
+      winRateDenominator: salespeople.rows.reduce(
+        (sum, row) => sum + row.closedDealCount,
+        0,
+      ),
     },
     businessUnits,
     salespeople,
@@ -1604,7 +1885,10 @@ export async function getExecutiveDashboardData(
         name: stage.name,
         stageType: stage.stageType,
         count: stage.deals.length,
-        amount: stage.deals.reduce((sum, deal) => sum + numberValue(deal.amount), 0),
+        amount: stage.deals.reduce(
+          (sum, deal) => sum + numberValue(deal.amount),
+          0,
+        ),
       })),
     })),
   };
@@ -1639,7 +1923,7 @@ export async function getDealQualityAlerts(
       businessUnitId: deal.businessUnitId,
       stageName: deal.stage.name,
     };
-    for (const issue of buildDealQualityIssues({
+    const analysis = analyzeDealQuality({
       status: deal.status,
       stageType: deal.stage.stageType,
       stageName: deal.stage.name,
@@ -1657,15 +1941,20 @@ export async function getDealQualityAlerts(
       closerCount: deal.participants.length,
       hasProposedLineItemWithoutExpectedAmount: deal.lineItems.some(
         (line) =>
-          line.status === "PROPOSED" &&
+          isOpenLineItemStatus(line.status) &&
           !line.expectedRevenueAmount &&
           !line.expectedGrossProfitAmount,
       ),
-    })) {
+    });
+    for (const issue of analysis.alerts) {
       alerts.push({
         ...common,
         type: issue.type,
+        title: issue.title,
         message: issue.message,
+        score: issue.score,
+        priorityScore: analysis.priorityScore,
+        priorityLevel: analysis.priorityLevel,
       });
     }
   }
@@ -1676,12 +1965,14 @@ export async function validateDealStageRequirements(input: {
   organizationId: string;
   dealId: string;
   stageId: string;
+  client?: Prisma.TransactionClient;
 }) {
+  const client = input.client ?? prisma;
   const [stage, deal] = await Promise.all([
-    prisma.pipelineStage.findFirst({
+    client.pipelineStage.findFirst({
       where: { id: input.stageId, organizationId: input.organizationId },
     }),
-    prisma.deal.findFirst({
+    client.deal.findFirst({
       where: { id: input.dealId, organizationId: input.organizationId },
       include: {
         lineItems: true,
@@ -1694,9 +1985,12 @@ export async function validateDealStageRequirements(input: {
     ? stage.requiredFields.map(String)
     : [];
   const missing: string[] = [];
-  const hasWonLine = deal.lineItems.some((line) => line.status === "WON");
-  const hasProposedLine = deal.lineItems.some((line) =>
-    ["PROPOSED", "WON"].includes(line.status),
+  const hasWonLine = deal.lineItems.some((line) =>
+    isWonLineItemStatus(line.status),
+  );
+  const hasProposedLine = deal.lineItems.some(
+    (line) =>
+      isOpenLineItemStatus(line.status) || isWonLineItemStatus(line.status),
   );
   const customFields = asRecord(deal.customFields);
   for (const key of required) {
@@ -1748,10 +2042,24 @@ export async function validateDealStageRequirements(input: {
     }
     if (
       key === "billing_date" &&
-      !hasDateValue(customFields.billingDate, customFields.billingStartedAt) &&
-      !deal.lineItems.some((line) => line.billingStartedAt)
+      (isBillingStageName(stage.name)
+        ? !hasWonLine ||
+          deal.lineItems.some(
+            (line) =>
+              isWonLineItemStatus(line.status) &&
+              (line.status !== "BILLED" || !line.billingStartedAt),
+          )
+        : !hasDateValue(
+            customFields.billingDate,
+            customFields.billingStartedAt,
+          ) && !deal.lineItems.some((line) => line.billingStartedAt))
     ) {
-      missing.push(requirementLabel(key, "課金日"));
+      missing.push(
+        requirementLabel(
+          key,
+          isBillingStageName(stage.name) ? "全受注商材の課金日" : "課金日",
+        ),
+      );
     }
     if (
       key === "expected_amount" &&

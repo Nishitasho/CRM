@@ -10,10 +10,6 @@ import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { getBusinessUnitSelection } from "@/lib/business-units";
 import {
-  ensureCoreCrmDefaults,
-  ensureCorePipelineDefaults,
-} from "@/lib/core-crm";
-import {
   resolveDashboardPeriod,
   type DashboardPeriod,
 } from "@/lib/dashboard-filters";
@@ -45,17 +41,6 @@ export default async function DashboardPage({ searchParams }: Props) {
   if (!context) redirect("/login");
   const params = (await searchParams) ?? {};
   const organizationId = context.organization.id;
-  const dailyFieldCount = await prisma.dailyMetricFieldConfig.count({
-    where: { organizationId },
-  });
-  if (dailyFieldCount === 0) {
-    await ensureCoreCrmDefaults(prisma, {
-      organizationId,
-      userId: context.user.id,
-    });
-  } else {
-    await ensureCorePipelineDefaults(prisma, { organizationId });
-  }
   const today = jstDateString();
   const period = resolveDashboardPeriod({
     preset: one(params.preset),

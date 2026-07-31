@@ -1221,7 +1221,7 @@ export function LegacyExcelImporter({
         <section className="card border-amber-300 p-6">
           <h2 className="font-bold">旧移行データの重複整理</h2>
           <p className="mt-2 text-sm text-slate-600">
-            今回のExcelと元行が完全一致する旧移行データだけが対象です。会社・担当者・手入力データは変更しません。
+            過去の完了済みExcel移行で作成され、今回の移行で再利用されていない旧データだけが対象です。会社・担当者・手入力データは変更しません。
           </p>
           <div className="mt-4 grid gap-2 text-sm md:grid-cols-4">
             <ApplyPreviewCount

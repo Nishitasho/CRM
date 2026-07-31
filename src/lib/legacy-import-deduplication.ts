@@ -53,6 +53,36 @@ export function findSupersededLegacyTargets(
   return result;
 }
 
+export function findHistoricalLegacyTargetsNotRetained(
+  currentLinks: LegacyCleanupLink[],
+  historicalLinks: LegacyCleanupLink[],
+): SupersededLegacyTargets {
+  const retained = new Map(
+    LEGACY_CLEANUP_TARGET_TYPES.map((type) => [type, new Set<string>()]),
+  );
+  for (const link of currentLinks) {
+    if (!isCleanupTargetType(link.targetObjectType)) continue;
+    retained.get(link.targetObjectType)!.add(link.targetObjectId);
+  }
+
+  const result = emptyTargets();
+  const seen = new Map(
+    LEGACY_CLEANUP_TARGET_TYPES.map((type) => [type, new Set<string>()]),
+  );
+  for (const link of historicalLinks) {
+    if (!isCleanupTargetType(link.targetObjectType)) continue;
+    const type = link.targetObjectType;
+    if (retained.get(type)!.has(link.targetObjectId)) continue;
+    const targets = seen.get(type)!;
+    if (targets.has(link.targetObjectId)) continue;
+    targets.add(link.targetObjectId);
+    result[type].push(link.targetObjectId);
+  }
+
+  for (const type of LEGACY_CLEANUP_TARGET_TYPES) result[type].sort();
+  return result;
+}
+
 export function legacyCleanupPlanHash(input: {
   importJobId: string;
   dealIds: string[];

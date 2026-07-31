@@ -5,7 +5,7 @@ import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
-  findSupersededLegacyTargets,
+  findHistoricalLegacyTargetsNotRetained,
   LEGACY_CLEANUP_TARGET_TYPES,
   legacyCleanupPlanHash,
 } from "@/lib/legacy-import-deduplication";
@@ -246,7 +246,10 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     },
     select: linkSelect,
   });
-  const superseded = findSupersededLegacyTargets(currentLinks, historicalLinks);
+  const superseded = findHistoricalLegacyTargetsNotRetained(
+    currentLinks,
+    historicalLinks,
+  );
 
   const [deals, projects, activities] = await Promise.all([
     prisma.deal.findMany({

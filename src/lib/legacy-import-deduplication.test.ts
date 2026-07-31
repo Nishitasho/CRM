@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findHistoricalLegacyTargetsNotRetained,
   findSupersededLegacyTargets,
   legacyCleanupPlanHash,
   type LegacyCleanupLink,
@@ -68,6 +69,34 @@ describe("legacy import deduplication", () => {
 
     expect(legacyCleanupPlanHash(base)).not.toBe(
       legacyCleanupPlanHash({ ...base, dealIds: ["another-deal"] }),
+    );
+  });
+
+  it("過去ImportJobのターゲットから今回再利用されたIDを除外する", () => {
+    const current = [
+      link({ importJobId: "job-new", targetObjectId: "deal-retained" }),
+      link({
+        importJobId: "job-new",
+        targetObjectType: "DELIVERY_PROJECT",
+        targetObjectId: "project-new",
+      }),
+    ];
+    const historical = [
+      link({ targetObjectId: "deal-old" }),
+      link({ targetObjectId: "deal-retained" }),
+      link({
+        targetObjectType: "DELIVERY_PROJECT",
+        targetObjectId: "project-old",
+      }),
+    ];
+
+    expect(findHistoricalLegacyTargetsNotRetained(current, historical)).toEqual(
+      {
+        DEAL: ["deal-old"],
+        DEAL_LINE_ITEM: [],
+        DELIVERY_PROJECT: ["project-old"],
+        ACTIVITY: [],
+      },
     );
   });
 });

@@ -110,6 +110,34 @@ type AssociationRepairResponse = {
   message?: string;
 };
 
+type CleanupPreview = {
+  importJobId: string;
+  planHash: string;
+  confirmationText: string;
+  counts: {
+    deals: number;
+    dealLineItems: number;
+    deliveryProjects: number;
+    activities: number;
+    tasks: number;
+    taskReminders: number;
+    performanceEvents: number;
+    associations: number;
+  };
+  samples: {
+    deals: string[];
+    deliveryProjects: string[];
+    activities: string[];
+  };
+  message?: string;
+};
+
+type CleanupResponse = {
+  complete?: boolean;
+  result?: CleanupPreview["counts"];
+  message?: string;
+};
+
 const unresolvedConfirmText =
   "元商談未紐付けのCS案件を作成することを理解しました";
 const defaultApplyTargets: ApplyTargets = {
@@ -233,6 +261,11 @@ export function LegacyExcelImporter({
   const [pending, setPending] = useState(false);
   const [resumeJobId, setResumeJobId] = useState<string | null>(null);
   const [repairJobId, setRepairJobId] = useState<string | null>(null);
+  const [cleanupJobId, setCleanupJobId] = useState<string | null>(null);
+  const [cleanupPreview, setCleanupPreview] = useState<CleanupPreview | null>(
+    null,
+  );
+  const [cleanupConfirmInput, setCleanupConfirmInput] = useState("");
   const [result, setResult] = useState<DryRunResult | null>(null);
   const [manualMatches, setManualMatches] = useState<
     Record<string, ManualMatch>
@@ -248,6 +281,9 @@ export function LegacyExcelImporter({
   const [dragActive, setDragActive] = useState(false);
   const [mode, setMode] = useState<"raw" | "reviewed">("raw");
   const confirmText = `${targetOrganization.name}に反映する`;
+  const latestCompletedJobId = histories.find(
+    (history) => history.status === "COMPLETED",
+  )?.id;
 
   const canApply = Boolean(
     result &&
@@ -450,6 +486,82 @@ export function LegacyExcelImporter({
     } finally {
       setPending(false);
       setRepairJobId(null);
+    }
+  }
+
+  async function previewDuplicateCleanup(importJobId: string) {
+    setPending(true);
+    setCleanupJobId(importJobId);
+    setCleanupPreview(null);
+    setCleanupConfirmInput("");
+    setError("");
+    setMessage("旧移行データとの重複を確認しています。");
+    try {
+      const response = await fetch(
+        "/api/imports/legacy-excel/cleanup-duplicates",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "PREVIEW", importJobId }),
+        },
+      );
+      const json = (await response.json()) as CleanupPreview;
+      if (!response.ok) {
+        throw new Error(json.message ?? "重複確認に失敗しました。");
+      }
+      setCleanupPreview(json);
+      setMessage("重複候補を確認しました。件数とサンプルを確認してください。");
+    } catch (cleanupError) {
+      setError(
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : "重複確認に失敗しました。",
+      );
+    } finally {
+      setPending(false);
+      setCleanupJobId(null);
+    }
+  }
+
+  async function executeDuplicateCleanup() {
+    if (!cleanupPreview) return;
+    setPending(true);
+    setCleanupJobId(cleanupPreview.importJobId);
+    setError("");
+    setMessage("旧移行分の重複だけを整理しています。");
+    try {
+      const response = await fetch(
+        "/api/imports/legacy-excel/cleanup-duplicates",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "EXECUTE",
+            importJobId: cleanupPreview.importJobId,
+            planHash: cleanupPreview.planHash,
+            confirmation: cleanupConfirmInput,
+          }),
+        },
+      );
+      const json = (await response.json()) as CleanupResponse;
+      if (!response.ok || !json.complete || !json.result) {
+        throw new Error(json.message ?? "旧移行データの整理に失敗しました。");
+      }
+      setMessage(
+        `旧移行分を整理しました。商談 ${json.result.deals}件、商品明細 ${json.result.dealLineItems}件、CS案件 ${json.result.deliveryProjects}件、自動タスク ${json.result.tasks}件`,
+      );
+      setCleanupPreview(null);
+      setCleanupConfirmInput("");
+      router.refresh();
+    } catch (cleanupError) {
+      setError(
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : "旧移行データの整理に失敗しました。",
+      );
+    } finally {
+      setPending(false);
+      setCleanupJobId(null);
     }
   }
 
@@ -1051,29 +1163,42 @@ export function LegacyExcelImporter({
                   <td className="py-2 text-right">{item.skippedCount}</td>
                   <td className="py-2 text-right">{item.errorCount}</td>
                   <td className="py-2 text-right">
-                    {item.status === "PROCESSING" ||
-                    item.status === "FAILED" ? (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={pending}
-                        onClick={() => resumeApply(item.id)}
-                      >
-                        {resumeJobId === item.id ? "再開中" : "本登録を再開"}
-                      </button>
-                    ) : item.status === "COMPLETED" &&
+                    <div className="flex justify-end gap-2">
+                      {item.status === "PROCESSING" ||
+                      item.status === "FAILED" ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={pending}
+                          onClick={() => resumeApply(item.id)}
+                        >
+                          {resumeJobId === item.id ? "再開中" : "本登録を再開"}
+                        </button>
+                      ) : null}
+                      {item.status === "COMPLETED" &&
                       !item.associationRepairCompleted ? (
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={pending}
-                        onClick={() => repairAssociations(item.id)}
-                      >
-                        {repairJobId === item.id ? "補修中" : "関連付けを補修"}
-                      </button>
-                    ) : (
-                      "-"
-                    )}
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={pending}
+                          onClick={() => repairAssociations(item.id)}
+                        >
+                          {repairJobId === item.id
+                            ? "補修中"
+                            : "関連付けを補修"}
+                        </button>
+                      ) : null}
+                      {item.id === latestCompletedJobId ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={pending}
+                          onClick={() => previewDuplicateCleanup(item.id)}
+                        >
+                          {cleanupJobId === item.id ? "確認中" : "旧重複を確認"}
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1091,6 +1216,93 @@ export function LegacyExcelImporter({
           </table>
         </div>
       </section>
+
+      {cleanupPreview ? (
+        <section className="card border-amber-300 p-6">
+          <h2 className="font-bold">旧移行データの重複整理</h2>
+          <p className="mt-2 text-sm text-slate-600">
+            今回のExcelと元行が完全一致する旧移行データだけが対象です。会社・担当者・手入力データは変更しません。
+          </p>
+          <div className="mt-4 grid gap-2 text-sm md:grid-cols-4">
+            <ApplyPreviewCount
+              label="旧商談"
+              value={cleanupPreview.counts.deals}
+            />
+            <ApplyPreviewCount
+              label="旧商品明細"
+              value={cleanupPreview.counts.dealLineItems}
+            />
+            <ApplyPreviewCount
+              label="旧CS案件"
+              value={cleanupPreview.counts.deliveryProjects}
+            />
+            <ApplyPreviewCount
+              label="旧自動タスク"
+              value={cleanupPreview.counts.tasks}
+            />
+            <ApplyPreviewCount
+              label="旧Activity"
+              value={cleanupPreview.counts.activities}
+            />
+            <ApplyPreviewCount
+              label="関連付け"
+              value={cleanupPreview.counts.associations}
+            />
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <CleanupSamples
+              label="旧商談サンプル"
+              values={cleanupPreview.samples.deals}
+            />
+            <CleanupSamples
+              label="旧CS案件サンプル"
+              values={cleanupPreview.samples.deliveryProjects}
+            />
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
+            <label>
+              <span className="field-label">整理の確認入力</span>
+              <input
+                className="text-field"
+                value={cleanupConfirmInput}
+                onChange={(event) => setCleanupConfirmInput(event.target.value)}
+                placeholder={cleanupPreview.confirmationText}
+              />
+              <span className="mt-1 block text-xs text-amber-700">
+                「{cleanupPreview.confirmationText}」と入力すると整理できます。
+              </span>
+            </label>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={
+                pending ||
+                cleanupConfirmInput !== cleanupPreview.confirmationText
+              }
+              onClick={executeDuplicateCleanup}
+            >
+              旧重複だけを整理
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function CleanupSamples({
+  label,
+  values,
+}: {
+  label: string;
+  values: string[];
+}) {
+  return (
+    <div className="rounded-lg border border-line bg-slate-50 p-3">
+      <p className="text-xs font-bold text-slate-500">{label}</p>
+      <p className="mt-2 text-sm">
+        {values.length > 0 ? values.join(" / ") : "対象なし"}
+      </p>
     </div>
   );
 }

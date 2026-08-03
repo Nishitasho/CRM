@@ -4,6 +4,7 @@ import {
   googleFormAppointmentIdempotencyKey,
   matchGoogleFormUser,
   parseGoogleFormAppointment,
+  resolveGoogleFormAppointmentSetter,
 } from "./google-form-appointments";
 
 const currentFormResponse = {
@@ -90,6 +91,19 @@ describe("Google Forms appointment integration", () => {
         "IS担当者",
       ),
     ).toEqual({ id: "1", name: "坂本 健" });
+  });
+
+  it("keeps an external IS name without requiring a CRM account", () => {
+    expect(
+      resolveGoogleFormAppointmentSetter(
+        [{ id: "1", name: "西田 翔" }],
+        "坂本",
+        "fallback-user",
+      ),
+    ).toEqual({
+      appointmentSetterUserId: undefined,
+      externalAppointmentSetterName: "坂本",
+    });
   });
 
   it("builds one stable idempotency key per form response", () => {

@@ -19,7 +19,10 @@ import { createOpaqueToken, hashToken } from "@/lib/security";
 const schema = z.object({
   name: z.string().trim().min(1).max(160),
   businessUnitId: z.string().uuid(),
-  creditedAppointmentSetterId: z.string().uuid(),
+  creditedAppointmentSetterId: z.preprocess(
+    (value) => (value === "" ? null : value),
+    z.string().uuid().nullable().optional(),
+  ),
   formVersionId: z.string().uuid().optional().nullable(),
   expiresAt: z.string().optional().nullable(),
   passcode: z.string().trim().max(120).optional().nullable(),
@@ -77,21 +80,23 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
-    const setter = await prisma.businessUnitMembership.findFirst({
-      where: {
-        organizationId: context.organization.id,
-        businessUnitId: input.businessUnitId,
-        userId: input.creditedAppointmentSetterId,
-        workFunction: "IS",
-        status: "ACTIVE",
-      },
-      select: { userId: true },
-    });
-    if (!setter)
-      return NextResponse.json(
-        { message: "対象事業部のACTIVEなIS担当者を選択してください。" },
-        { status: 400 },
-      );
+    if (input.creditedAppointmentSetterId) {
+      const setter = await prisma.businessUnitMembership.findFirst({
+        where: {
+          organizationId: context.organization.id,
+          businessUnitId: input.businessUnitId,
+          userId: input.creditedAppointmentSetterId,
+          workFunction: "IS",
+          status: "ACTIVE",
+        },
+        select: { userId: true },
+      });
+      if (!setter)
+        return NextResponse.json(
+          { message: "対象事業部のACTIVEなIS担当者を選択してください。" },
+          { status: 400 },
+        );
+    }
     await ensureInternalAppointmentFormConfig(prisma, {
       organizationId: context.organization.id,
       businessUnitId: input.businessUnitId,
@@ -109,7 +114,8 @@ export async function POST(request: Request) {
         businessUnitId: input.businessUnitId,
         formId: formConfig.form.id,
         formVersionId: input.formVersionId ?? formConfig.version.id,
-        creditedAppointmentSetterId: input.creditedAppointmentSetterId,
+        creditedAppointmentSetterId:
+          input.creditedAppointmentSetterId ?? context.user.id,
         name: input.name,
         tokenHash: hashToken(token),
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,

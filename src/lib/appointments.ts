@@ -362,15 +362,26 @@ export async function createInternalAppointment(
     industryId: input.industryId,
   });
   const canAdminister = canAdministrateInternalAppointments(context);
+  const externalAppointmentSetterName =
+    input.externalAppointmentSetterName?.trim() || null;
   const appointmentSetterUserId =
-    input.appointmentSetterUserId ?? context.user.id;
+    input.appointmentSetterUserId ??
+    (externalAppointmentSetterName ? null : context.user.id);
   if (!input.assignedFsUserId) {
     throw new BadRequestError("FS担当者を選択してください。");
   }
-  if (!canAdminister && appointmentSetterUserId !== context.user.id) {
+  if (externalAppointmentSetterName && !canAdminister) {
+    throw new AuthorizationError("外部IS名を指定する権限がありません。");
+  }
+  if (
+    !canAdminister &&
+    appointmentSetterUserId &&
+    appointmentSetterUserId !== context.user.id
+  ) {
     throw new AuthorizationError("他のIS担当者としてアポ登録する権限がありません。");
   }
   if (
+    appointmentSetterUserId &&
     !(await isInternalAppointmentUserEligible({
       organizationId: context.organization.id,
       businessUnitId: input.businessUnitId,
@@ -431,14 +442,14 @@ export async function createInternalAppointment(
       const company = await findOrCreateCompany(
         tx,
         context.organization.id,
-        assignedFsUserId ?? appointmentSetterUserId,
+        assignedFsUserId ?? appointmentSetterUserId ?? context.user.id,
         industry.name,
         input,
       );
       const contact = await findOrCreateContact(
         tx,
         context.organization.id,
-        assignedFsUserId ?? appointmentSetterUserId,
+        assignedFsUserId ?? appointmentSetterUserId ?? context.user.id,
         company.id,
         input,
       );
@@ -473,6 +484,7 @@ export async function createInternalAppointment(
             productId: input.primaryProductId,
             campaignId: input.campaignId,
             callListId: input.callListId,
+            externalAppointmentSetterName,
             appointmentQuality: {
               issueConfirmed: input.issueConfirmed,
               decisionMakerConfirmed: input.decisionMakerConfirmed,
@@ -544,15 +556,19 @@ export async function createInternalAppointment(
       });
       await tx.dealParticipant.createMany({
         data: [
-          {
-            organizationId: context.organization.id,
-            dealId: deal.id,
-            userId: appointmentSetterUserId,
-            workFunction: "IS",
-            role: DealParticipantRole.APPOINTMENT_SETTER,
-            creditedAt: input.appointmentAcquiredAt,
-            metadata: inputJson({ sourceChannel: input.sourceChannel }),
-          },
+          ...(appointmentSetterUserId
+            ? [
+                {
+                  organizationId: context.organization.id,
+                  dealId: deal.id,
+                  userId: appointmentSetterUserId,
+                  workFunction: "IS" as const,
+                  role: DealParticipantRole.APPOINTMENT_SETTER,
+                  creditedAt: input.appointmentAcquiredAt,
+                  metadata: inputJson({ sourceChannel: input.sourceChannel }),
+                },
+              ]
+            : []),
           ...(assignedFsUserId
             ? [
                 {
@@ -575,7 +591,8 @@ export async function createInternalAppointment(
       const meetingLink = await ensureInternalMeetingLink(tx, {
         organizationId: context.organization.id,
         businessUnitId: input.businessUnitId,
-        hostUserId: assignedFsUserId ?? appointmentSetterUserId,
+        hostUserId:
+          assignedFsUserId ?? appointmentSetterUserId ?? context.user.id,
         durationMinutes,
         googleCalendarEnabled: Boolean(input.googleCalendarEnabled && assignedFsUserId),
       });
@@ -644,6 +661,7 @@ export async function createInternalAppointment(
             customFields: customValues(input, "MEETING_BOOKING"),
             storeName: input.storeName,
             meetingPurpose: input.meetingPurpose,
+            externalAppointmentSetterName,
             handoff: {
               ownerReaction: input.ownerReaction,
               appointmentBackground: input.appointmentBackground,
@@ -710,7 +728,9 @@ export async function createInternalAppointment(
           dealId: deal.id,
           meetingBookingId: booking.id,
           creditedUserId: appointmentSetterUserId,
-          creditedRole: DealParticipantRole.APPOINTMENT_SETTER,
+          creditedRole: appointmentSetterUserId
+            ? DealParticipantRole.APPOINTMENT_SETTER
+            : null,
           workFunction: "IS",
           eventType: SalesPerformanceEventType.APPOINTMENT_SET,
           source: SalesPerformanceEventSource.SYSTEM,
@@ -724,7 +744,10 @@ export async function createInternalAppointment(
           campaignId: input.campaignId,
           callListId: input.callListId,
           idempotencyKey: `internal-appointment-set:${input.idempotencyKey}`,
-          metadata: inputJson({ sourceChannel: input.sourceChannel }),
+          metadata: inputJson({
+            sourceChannel: input.sourceChannel,
+            externalAppointmentSetterName,
+          }),
         },
       });
       await createRecordActivity(tx, {
@@ -741,6 +764,7 @@ export async function createInternalAppointment(
           assignedFsUserId,
           submittedByUserId: context.user.id,
           creditedAppointmentSetterUserId: appointmentSetterUserId,
+          externalAppointmentSetterName,
           businessUnitId: input.businessUnitId,
         }),
         occurredAt: input.appointmentAcquiredAt,

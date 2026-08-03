@@ -371,6 +371,18 @@ export function matchGoogleFormUser<T extends { id: string; name: string }>(
   submittedName: string,
   roleLabel: string,
 ) {
+  const matched = findGoogleFormUser(users, submittedName, roleLabel);
+  if (matched) return matched;
+  throw new BadRequestError(
+    `${roleLabel}「${submittedName}」がCRMの対象事業部に見つかりません。`,
+  );
+}
+
+function findGoogleFormUser<T extends { id: string; name: string }>(
+  users: T[],
+  submittedName: string,
+  roleLabel: string,
+) {
   const target = normalizePersonName(submittedName);
   const exact = users.filter(
     (user) => normalizePersonName(user.name) === target,
@@ -386,9 +398,28 @@ export function matchGoogleFormUser<T extends { id: string; name: string }>(
       `${roleLabel}「${submittedName}」に一致するメンバーが複数います。`,
     );
   }
-  throw new BadRequestError(
-    `${roleLabel}「${submittedName}」がCRMの対象事業部に見つかりません。`,
-  );
+  return null;
+}
+
+export function resolveGoogleFormAppointmentSetter<
+  T extends { id: string; name: string },
+>(users: T[], submittedName: string | null, fallbackUserId: string) {
+  if (!submittedName) {
+    return {
+      appointmentSetterUserId: fallbackUserId,
+      externalAppointmentSetterName: null,
+    };
+  }
+  const matched = findGoogleFormUser(users, submittedName, "IS担当者");
+  return matched
+    ? {
+        appointmentSetterUserId: matched.id,
+        externalAppointmentSetterName: null,
+      }
+    : {
+        appointmentSetterUserId: undefined,
+        externalAppointmentSetterName: submittedName,
+      };
 }
 
 async function availableUsers(
@@ -559,13 +590,12 @@ export async function resolveGoogleFormAppointmentInput(
       workFunction: "FS",
     }),
   ]);
-  const appointmentSetterUserId = input.draft.appointmentSetterName
-    ? matchGoogleFormUser(
-        isUsers,
-        input.draft.appointmentSetterName,
-        "IS担当者",
-      ).id
-    : input.fallbackAppointmentSetterId;
+  const { appointmentSetterUserId, externalAppointmentSetterName } =
+    resolveGoogleFormAppointmentSetter(
+      isUsers,
+      input.draft.appointmentSetterName,
+      input.fallbackAppointmentSetterId,
+    );
   const assignedFsUserId = matchGoogleFormUser(
     fsUsers,
     input.draft.assignedFsName,
@@ -599,6 +629,7 @@ export async function resolveGoogleFormAppointmentInput(
     ),
     businessUnitId: input.businessUnitId,
     appointmentSetterUserId,
+    externalAppointmentSetterName,
     assignedFsUserId,
     assignmentMode: "MANUAL",
     appointmentAcquiredAt: input.draft.appointmentAcquiredAt,
@@ -643,6 +674,10 @@ export async function resolveGoogleFormAppointmentInput(
       ),
       googleFormGender: customField(input.draft.gender, "性別"),
       googleFormOwnerAge: customField(input.draft.ownerAge, "オーナー年齢"),
+      googleFormAppointmentSetterName: customField(
+        input.draft.appointmentSetterName,
+        "外部IS担当者",
+      ),
       googleFormRawAnswers: customField(
         input.draft.rawAnswers,
         "Googleフォーム回答",

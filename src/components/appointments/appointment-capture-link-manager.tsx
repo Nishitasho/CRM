@@ -150,19 +150,21 @@ export function AppointmentCaptureLinkManager({
               </select>
             </label>
             <label>
-              <span className="field-label">実績帰属IS担当者</span>
+              <span className="field-label">既定のCRM IS担当者（任意）</span>
               <select
                 className="text-field"
                 name="creditedAppointmentSetterId"
-                required
               >
-                <option value="">選択してください</option>
+                <option value="">外部IS（フォーム回答名で記録）</option>
                 {filteredUsers.map((user) => (
                   <option key={user.id} value={user.id}>
                     {user.name}
                   </option>
                 ))}
               </select>
+              <span className="mt-1 block text-xs text-slate-500">
+                GoogleフォームのIS担当者はCRMアカウントなしでも記録できます。
+              </span>
             </label>
             <label>
               <span className="field-label">有効期限</span>

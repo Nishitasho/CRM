@@ -643,6 +643,7 @@ export const appointmentCreateSchema = z
     formVersionId: optionalUuid,
     businessUnitId: z.string().uuid("事業部を選択してください。"),
     appointmentSetterUserId: optionalUuid,
+    externalAppointmentSetterName: optionalText(160),
     assignedFsUserId: optionalUuid,
     assignmentMode: z
       .enum(["MANUAL", "FIXED_USER", "ROUND_ROBIN", "TEAM_ROUND_ROBIN"])

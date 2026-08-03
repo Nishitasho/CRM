@@ -1728,7 +1728,7 @@ async function mapWithConcurrency<T, R>(
   if (items.length === 0) return [] as R[];
   const concurrency = Math.min(
     items.length,
-    Math.max(1, Math.min(8, Math.floor(requestedConcurrency))),
+    Math.max(1, Math.min(12, Math.floor(requestedConcurrency))),
   );
   const results = new Array<R>(items.length);
   let nextIndex = 0;

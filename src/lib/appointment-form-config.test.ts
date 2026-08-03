@@ -153,4 +153,25 @@ describe("appointment form config", () => {
       meetingFormat: "ONLINE",
     });
   });
+
+  it("accepts an external IS name instead of a CRM appointment setter", () => {
+    const schema = coreAppointmentFormSchema(defaultAppointmentFormSchema());
+    const result = validateAppointmentPayloadAgainstSchema(schema, {
+      ...basePayload,
+      appointmentSetterUserId: undefined,
+      externalAppointmentSetterName: "坂本",
+      assignedFsUserId: "00000000-0000-4000-8000-000000000005",
+      storeName: "テスト店舗",
+      address: "千代田区丸の内1-1-1",
+      phone: "03-0000-0000",
+      durationMinutes: "60",
+      meetingFormat: "ONLINE",
+      handoffNotes: "オンライン商談でご案内済みです。",
+    });
+
+    expect(result).toMatchObject({
+      appointmentSetterUserId: undefined,
+      externalAppointmentSetterName: "坂本",
+    });
+  });
 });

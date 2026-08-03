@@ -1088,6 +1088,13 @@ export function validateAppointmentPayloadAgainstSchema(
     }
   }
   for (const key of requiredAppointmentFieldKeys) {
+    if (
+      key === "appointmentSetterUserId" &&
+      typeof normalized.externalAppointmentSetterName === "string" &&
+      normalized.externalAppointmentSetterName.trim()
+    ) {
+      continue;
+    }
     if (normalized[key] === undefined || normalized[key] === "") {
       throw new BadRequestError(`システム必須項目 ${key} が不足しています。`);
     }

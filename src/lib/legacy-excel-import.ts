@@ -4081,6 +4081,7 @@ async function createDealLineItemIfNeeded(
   productId: string | null,
   businessUnitId: string,
 ) {
+  if (!candidate.productName) return null;
   const workflow = getLegacyDealLineItemWorkflow(candidate);
   const workflowDates = {
     meetingAt: dateOnly(workflow.meetingDate),
@@ -4136,12 +4137,6 @@ async function createDealLineItemIfNeeded(
       });
     }
   }
-  if (
-    !candidate.productName &&
-    !candidate.amount &&
-    !candidate.grossProfitAmount
-  )
-    return null;
   return tx.dealLineItem.create({
     data: {
       organizationId: input.organizationId,

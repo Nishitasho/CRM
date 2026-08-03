@@ -12,6 +12,7 @@ import {
 } from "@/lib/legacy-excel-date-refresh";
 import {
   applyLegacyExcelImport,
+  getLegacyDealLineItemWorkflow,
   getLegacyExcelConfirmText,
   legacyProgressDealExternalId,
   normalizeLegacyName,
@@ -133,6 +134,14 @@ export async function POST(request: Request) {
       links,
     );
     const plan = buildLegacyDateRefreshPlan(dryRun, validLinks);
+    const currentLineItems = buildCurrentLineItemRefreshes(dryRun, validLinks);
+    plan.lineItems = currentLineItems.rows;
+    plan.unmatched.lineItems = currentLineItems.unmatched;
+    plan.retainedLinks = plan.retainedLinks.filter(
+      (link) =>
+        link.targetObjectType !== "DEAL_LINE_ITEM" ||
+        currentLineItems.sourceRows.has(legacyLineItemRowKey(link)),
+    );
     const dealCount = await refreshDeals(context.organization.id, plan.deals);
     const lineItemCount = await refreshLineItems(
       context.organization.id,
@@ -346,11 +355,7 @@ async function repairMissingLineItems(input: {
 }
 
 function hasLineItemData(candidate: ProgressDealCandidate) {
-  return Boolean(
-    candidate.productName ||
-      candidate.amount !== null ||
-      candidate.grossProfitAmount !== null,
-  );
+  return Boolean(candidate.productName);
 }
 
 function legacyLineItemRowKey(input: {
@@ -359,6 +364,49 @@ function legacyLineItemRowKey(input: {
   rowFingerprint: string;
 }) {
   return `${input.sheetName}\u0000${input.rowNumber}\u0000${input.rowFingerprint}`;
+}
+
+function buildCurrentLineItemRefreshes(
+  dryRun: LegacyExcelDryRunResult,
+  links: SourceLink[],
+) {
+  const targetByRow = new Map(
+    links
+      .filter((link) => link.targetObjectType === "DEAL_LINE_ITEM")
+      .map((link) => [legacyLineItemRowKey(link), link.targetObjectId]),
+  );
+  const usedTargets = new Map<string, string>();
+  const sourceRows = new Set<string>();
+  const rows: LegacyLineItemDateRefresh[] = [];
+  let unmatched = 0;
+  for (const candidate of dryRun.progressCandidates) {
+    if (!candidate.productName) continue;
+    const sourceRow = `${candidate.sheetName}:${candidate.rowNumber}`;
+    const sourceRowKey = legacyLineItemRowKey(candidate);
+    sourceRows.add(sourceRowKey);
+    const targetId = targetByRow.get(sourceRowKey);
+    if (!targetId) {
+      unmatched += 1;
+      continue;
+    }
+    const previousSourceRow = usedTargets.get(targetId);
+    if (previousSourceRow) {
+      throw new Error(
+        `商品明細の紐付けが重複しています: ${previousSourceRow} / ${sourceRow}`,
+      );
+    }
+    usedTargets.set(targetId, sourceRow);
+    const workflow = getLegacyDealLineItemWorkflow(candidate);
+    rows.push({
+      id: targetId,
+      meetingAt: workflow.meetingDate,
+      contractedAt: workflow.contractedDate,
+      collectedAt: workflow.collectedDate,
+      billingStartedAt: workflow.billingDate,
+      cancelledAt: workflow.cancelledDate,
+    });
+  }
+  return { rows, unmatched, sourceRows };
 }
 
 type SourceLink = {

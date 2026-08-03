@@ -468,6 +468,7 @@ function buildApplyBatch(
       ...dryRun,
       progressCandidates,
       hpProjectCandidates,
+      customPropertyPlan: includeSetup ? dryRun.customPropertyPlan : [],
       priceBookCandidates: includeSetup ? dryRun.priceBookCandidates : [],
       dailyMetricCandidates: includeSetup ? dryRun.dailyMetricCandidates : [],
       kpiTargetCandidates: includeSetup ? dryRun.kpiTargetCandidates : [],

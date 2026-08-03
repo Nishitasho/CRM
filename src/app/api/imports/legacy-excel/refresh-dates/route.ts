@@ -11,9 +11,13 @@ import {
   type LegacyProjectDateRefresh,
 } from "@/lib/legacy-excel-date-refresh";
 import {
+  applyLegacyExcelImport,
   getLegacyExcelConfirmText,
+  legacyProgressDealExternalId,
   normalizeLegacyName,
+  type LegacyExcelApplyTargets,
   type LegacyExcelDryRunResult,
+  type ProgressDealCandidate,
 } from "@/lib/legacy-excel-import";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -21,6 +25,20 @@ import { prisma } from "@/lib/prisma";
 export const maxDuration = 300;
 
 const SQL_BATCH_SIZE = 500;
+
+const lineItemRepairTargets = {
+  masters: false,
+  companiesContacts: false,
+  deals: false,
+  dealLineItems: true,
+  deliveryProjects: false,
+  autoDeliveryProjects: false,
+  reviewDeliveryProjects: false,
+  unresolvedDeliveryProjects: false,
+  activities: false,
+  dailyMetrics: false,
+  kpiTargets: false,
+} satisfies LegacyExcelApplyTargets;
 
 export async function POST(request: Request) {
   try {
@@ -86,6 +104,12 @@ export async function POST(request: Request) {
       );
     }
 
+    const lineItemsRepaired = await repairMissingLineItems({
+      organizationId: context.organization.id,
+      actorUserId: context.user.id,
+      importJobId: job.id,
+      dryRun,
+    });
     const links = await prisma.legacySourceLink.findMany({
       where: {
         organizationId: context.organization.id,
@@ -141,6 +165,7 @@ export async function POST(request: Request) {
       deals: dealCount,
       lineItems: lineItemCount,
       projects: projectCount,
+      lineItemsRepaired,
       skipped,
       unmatched: plan.unmatched,
       verification,
@@ -187,6 +212,113 @@ export async function POST(request: Request) {
   } catch (error) {
     return apiError(error);
   }
+}
+
+async function repairMissingLineItems(input: {
+  organizationId: string;
+  actorUserId: string;
+  importJobId: string;
+  dryRun: LegacyExcelDryRunResult;
+}) {
+  const expected = input.dryRun.progressCandidates.filter(hasLineItemData);
+  const externalIds = Array.from(
+    new Set(expected.map(legacyProgressDealExternalId)),
+  );
+  const deals = await prisma.deal.findMany({
+    where: {
+      organizationId: input.organizationId,
+      externalId: { in: externalIds },
+      deletedAt: null,
+    },
+    select: { id: true, externalId: true },
+  });
+  const dealByExternalId = new Map(
+    deals
+      .filter(
+        (deal): deal is typeof deal & { externalId: string } =>
+          Boolean(deal.externalId),
+      )
+      .map((deal) => [deal.externalId, deal.id]),
+  );
+  const currentLinks = await prisma.legacySourceLink.findMany({
+    where: {
+      organizationId: input.organizationId,
+      provider: input.dryRun.provider,
+      workbookFingerprint: input.dryRun.workbookFingerprint,
+      targetObjectType: "DEAL_LINE_ITEM",
+    },
+    select: {
+      sheetName: true,
+      rowNumber: true,
+      rowFingerprint: true,
+      targetObjectId: true,
+    },
+  });
+  const currentTargetByRow = new Map(
+    currentLinks.map((link) => [
+      legacyLineItemRowKey(link),
+      link.targetObjectId,
+    ]),
+  );
+  const existingItems = await prisma.dealLineItem.findMany({
+    where: {
+      organizationId: input.organizationId,
+      id: { in: currentLinks.map((link) => link.targetObjectId) },
+    },
+    select: { id: true, dealId: true },
+  });
+  const existingDealByItemId = new Map(
+    existingItems.map((item) => [item.id, item.dealId]),
+  );
+  const missing = expected.filter((candidate) => {
+    const dealId = dealByExternalId.get(legacyProgressDealExternalId(candidate));
+    if (!dealId) return false;
+    const targetId = currentTargetByRow.get(legacyLineItemRowKey(candidate));
+    return !targetId || existingDealByItemId.get(targetId) !== dealId;
+  });
+  if (missing.length === 0) return 0;
+
+  const result = await applyLegacyExcelImport({
+    organizationId: input.organizationId,
+    actorUserId: input.actorUserId,
+    importJobId: input.importJobId,
+    dryRun: {
+      ...input.dryRun,
+      progressCandidates: missing,
+      hpProjectCandidates: [],
+      priceBookCandidates: [],
+      dailyMetricCandidates: [],
+      kpiTargetCandidates: [],
+    },
+    referenceDryRun: input.dryRun,
+    applyTargets: lineItemRepairTargets,
+    updateImportJob: false,
+    progressConcurrency: 1,
+    transactionMaxWaitMs: 15_000,
+    transactionTimeoutMs: 15_000,
+  });
+  if (result.errors.length > 0) {
+    throw new Error(
+      `商品明細の補修に失敗しました: ${result.errors[0].row} ${result.errors[0].message}`,
+    );
+  }
+  return result.created + result.updated;
+}
+
+function hasLineItemData(candidate: ProgressDealCandidate) {
+  return Boolean(
+    candidate.productName ||
+      candidate.amount !== null ||
+      candidate.grossProfitAmount !== null,
+  );
+}
+
+function legacyLineItemRowKey(input: {
+  sheetName: string;
+  rowNumber: number;
+  rowFingerprint: string;
+}) {
+  return `${input.sheetName}\u0000${input.rowNumber}\u0000${input.rowFingerprint}`;
 }
 
 type SourceLink = {

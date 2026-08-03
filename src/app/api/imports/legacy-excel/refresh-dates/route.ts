@@ -114,6 +114,7 @@ export async function POST(request: Request) {
       where: {
         organizationId: context.organization.id,
         provider: dryRun.provider,
+        workbookFingerprint: dryRun.workbookFingerprint,
         targetObjectType: {
           in: ["DEAL", "DEAL_LINE_ITEM", "DELIVERY_PROJECT", "ACTIVITY"],
         },
@@ -131,15 +132,7 @@ export async function POST(request: Request) {
       context.organization.id,
       links,
     );
-    const inferredLineItemLinks = await inferLineItemLinks(
-      context.organization.id,
-      dryRun,
-      validLinks,
-    );
-    const plan = buildLegacyDateRefreshPlan(dryRun, [
-      ...inferredLineItemLinks,
-      ...validLinks,
-    ]);
+    const plan = buildLegacyDateRefreshPlan(dryRun, validLinks);
     const dealCount = await refreshDeals(context.organization.id, plan.deals);
     const lineItemCount = await refreshLineItems(
       context.organization.id,
@@ -487,91 +480,6 @@ async function persistCurrentLinks(input: {
     },
     { maxWait: 10_000, timeout: 60_000 },
   );
-}
-
-async function inferLineItemLinks(
-  organizationId: string,
-  dryRun: LegacyExcelDryRunResult,
-  links: SourceLink[],
-) {
-  const dealByExact = new Map<string, string>();
-  const dealByRow = new Map<string, string>();
-  for (const link of links) {
-    if (link.targetObjectType !== "DEAL") continue;
-    const exactKey = sourceLinkKey(
-      link.sheetName,
-      link.rowNumber,
-      link.rowFingerprint,
-    );
-    const rowKey = sourceRowKey(link.sheetName, link.rowNumber);
-    if (!dealByExact.has(exactKey)) {
-      dealByExact.set(exactKey, link.targetObjectId);
-    }
-    if (!dealByRow.has(rowKey)) {
-      dealByRow.set(rowKey, link.targetObjectId);
-    }
-  }
-  const dealIds = Array.from(new Set(dealByRow.values()));
-  const items = await prisma.dealLineItem.findMany({
-    where: { organizationId, dealId: { in: dealIds } },
-    select: {
-      id: true,
-      dealId: true,
-      name: true,
-      product: { select: { name: true } },
-    },
-  });
-  const itemsByDeal = new Map<string, typeof items>();
-  for (const item of items) {
-    const dealItems = itemsByDeal.get(item.dealId) ?? [];
-    dealItems.push(item);
-    itemsByDeal.set(item.dealId, dealItems);
-  }
-
-  const inferred: SourceLink[] = [];
-  for (const candidate of dryRun.progressCandidates) {
-    if (!candidate.productName) continue;
-    const dealId =
-      dealByExact.get(
-        sourceLinkKey(
-          candidate.sheetName,
-          candidate.rowNumber,
-          candidate.rowFingerprint,
-        ),
-      ) ??
-      dealByRow.get(sourceRowKey(candidate.sheetName, candidate.rowNumber));
-    if (!dealId) continue;
-    const productName =
-      candidate.normalized.normalizedProductName ||
-      normalizeLegacyName(candidate.productName);
-    const matches = (itemsByDeal.get(dealId) ?? []).filter((item) => {
-      const names = [item.name, item.product?.name]
-        .filter((name): name is string => Boolean(name))
-        .map(normalizeLegacyName);
-      return names.includes(productName);
-    });
-    if (matches.length !== 1) continue;
-    inferred.push({
-      sheetName: candidate.sheetName,
-      rowNumber: candidate.rowNumber,
-      rowFingerprint: candidate.rowFingerprint,
-      targetObjectType: "DEAL_LINE_ITEM",
-      targetObjectId: matches[0].id,
-    });
-  }
-  return inferred;
-}
-
-function sourceLinkKey(
-  sheetName: string,
-  rowNumber: number,
-  rowFingerprint: string,
-) {
-  return [sheetName, rowNumber, rowFingerprint].join("\u0000");
-}
-
-function sourceRowKey(sheetName: string, rowNumber: number) {
-  return [sheetName, rowNumber].join("\u0000");
 }
 
 type DateRefreshPlan = ReturnType<typeof buildLegacyDateRefreshPlan>;

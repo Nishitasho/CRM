@@ -36,6 +36,7 @@ type ApplyProgress = {
 };
 
 const APPLY_BATCH_SIZE = 25;
+const RETRY_BATCH_SIZE = 1;
 
 export async function POST(request: Request) {
   try {
@@ -437,12 +438,12 @@ function buildApplyBatch(
   const retryProgressCandidates = normalApplyComplete
     ? dryRun.progressCandidates
         .filter((candidate) => retryErrorRows.has(candidateErrorRow(candidate)))
-        .slice(0, APPLY_BATCH_SIZE)
+        .slice(0, RETRY_BATCH_SIZE)
     : [];
   const retryProjectCandidates = normalApplyComplete
     ? dryRun.hpProjectCandidates
         .filter((candidate) => retryErrorRows.has(candidateErrorRow(candidate)))
-        .slice(0, APPLY_BATCH_SIZE - retryProgressCandidates.length)
+        .slice(0, RETRY_BATCH_SIZE - retryProgressCandidates.length)
     : [];
   const retryMode =
     retryProgressCandidates.length > 0 || retryProjectCandidates.length > 0;

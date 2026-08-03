@@ -605,12 +605,17 @@ function formatMoney(value: number) {
 }
 
 function formatDate(value: Date | null | undefined) {
-  return value ? new Intl.DateTimeFormat("ja-JP").format(value) : "未設定";
+  return value
+    ? new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+      }).format(value)
+    : "未設定";
 }
 
 function formatDateTime(value: Date | null | undefined) {
   return value
     ? new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
         month: "numeric",
         day: "numeric",
         hour: "2-digit",

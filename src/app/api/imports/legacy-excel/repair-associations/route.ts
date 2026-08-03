@@ -141,7 +141,7 @@ export async function POST(request: Request) {
         ? progressRepairTargets
         : projectRepairTargets,
       updateImportJob: false,
-      progressConcurrency: repairingProgress ? 12 : 1,
+      progressConcurrency: repairingProgress ? 8 : 1,
     });
     const nextIndex = storedProgress.index + candidates.length;
     const nextProjectIndex =

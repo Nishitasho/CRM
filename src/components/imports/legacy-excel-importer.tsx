@@ -104,6 +104,8 @@ type AssociationRepairResponse = {
   complete: boolean;
   index: number;
   total: number;
+  projectIndex: number;
+  projectTotal: number;
   updated: number;
   skipped: number;
   errors: Array<{ row: string; message: string }>;
@@ -519,7 +521,9 @@ export function LegacyExcelImporter({
           router.refresh();
           return;
         }
-        setMessage(`関連付け補修中: ${json.index}/${json.total}`);
+        setMessage(
+          `関連付け補修中: 商談 ${json.index}/${json.total}、CS案件 ${json.projectIndex}/${json.projectTotal}`,
+        );
       }
       throw new Error("関連付け補修の分割回数が上限に達しました。");
     } catch (repairError) {

@@ -103,6 +103,39 @@ export type ProgressDealCandidate = LegacyRowCandidateBase & {
   fsOwnerName: string;
 };
 
+export function legacyProgressDealExternalId(candidate: ProgressDealCandidate) {
+  const canonicalStage =
+    resolveSpreadsheetSalesStage(candidate.stage.stageName, {
+      name: candidate.businessUnitName,
+    }) ??
+    resolveSpreadsheetSalesStage(candidate.stage.label, {
+      name: candidate.businessUnitName,
+    });
+  const sourceChannel = getValue(candidate.raw, [
+    "流入元",
+    "流入経路",
+    "獲得経路",
+    "リードソース",
+  ]);
+  const contractUnit = getValue(candidate.raw, [
+    "契約単位",
+    "契約区分",
+    "契約形態",
+  ]);
+  return `legacy-deal-group:${hashParts([
+    candidate.normalized.normalizedCompanyName,
+    candidate.normalized.normalizedDealName,
+    normalizeLegacyName(candidate.businessUnitName),
+    normalizeLegacyName(canonicalStage?.name ?? candidate.stage.stageName),
+    normalizeLegacyName(candidate.fsOwnerName),
+    candidate.appointmentAcquiredAt ?? "",
+    candidate.meetingDate ?? "",
+    candidate.wonDate ?? "",
+    normalizeLegacyName(sourceChannel),
+    normalizeLegacyName(contractUnit),
+  ])}`;
+}
+
 export type HpDeliveryProjectCandidate = LegacyRowCandidateBase & {
   companyName: string;
   projectName: string;
@@ -1492,6 +1525,7 @@ export async function applyLegacyExcelImport(input: {
   applyTargets?: LegacyExcelApplyTargets;
   manualMatches?: LegacyExcelApplyInput["manualMatches"];
   updateImportJob?: boolean;
+  progressConcurrency?: number;
 }) {
   const applyTargets = normalizeApplyTargets(input.applyTargets);
   const progressResults = new Map<string, AppliedProgressResult>();
@@ -1568,21 +1602,52 @@ export async function applyLegacyExcelImport(input: {
     applyTargets.dealLineItems ||
     applyTargets.activities
   ) {
+    const groupedCandidates = new Map<string, ProgressDealCandidate[]>();
     for (const candidate of input.dryRun.progressCandidates) {
-      try {
-        const result = await prisma.$transaction(async (tx) =>
-          applyProgressCandidate(tx, input, candidate, applyTargets),
-        );
-        progressResults.set(candidate.id, result);
-        created += result.created;
-        updated += result.updated;
-        skipped += result.skipped;
-      } catch (error) {
-        errors.push({
-          row: `${candidate.sheetName}:${candidate.rowNumber}`,
-          message: error instanceof Error ? error.message : "不明なエラー",
-        });
+      const key = legacyProgressDealExternalId(candidate);
+      const group = groupedCandidates.get(key) ?? [];
+      group.push(candidate);
+      groupedCandidates.set(key, group);
+    }
+    const groupResults = await mapWithConcurrency(
+      Array.from(groupedCandidates.values()),
+      input.progressConcurrency ?? 1,
+      async (candidates) => {
+        const results: Array<{
+          candidate: ProgressDealCandidate;
+          result?: AppliedProgressResult;
+          error?: { row: string; message: string };
+        }> = [];
+        for (const candidate of candidates) {
+          try {
+            const result = await prisma.$transaction(async (tx) =>
+              applyProgressCandidate(tx, input, candidate, applyTargets),
+            );
+            results.push({ candidate, result });
+          } catch (error) {
+            results.push({
+              candidate,
+              error: {
+                row: `${candidate.sheetName}:${candidate.rowNumber}`,
+                message:
+                  error instanceof Error ? error.message : "不明なエラー",
+              },
+            });
+          }
+        }
+        return results;
+      },
+    );
+    for (const item of groupResults.flat()) {
+      if (item.error) {
+        errors.push(item.error);
+        continue;
       }
+      if (!item.result) continue;
+      progressResults.set(item.candidate.id, item.result);
+      created += item.result.created;
+      updated += item.result.updated;
+      skipped += item.result.skipped;
     }
   }
 
@@ -1653,6 +1718,30 @@ export async function applyLegacyExcelImport(input: {
     warnings,
     errors,
   };
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  requestedConcurrency: number,
+  worker: (item: T) => Promise<R>,
+) {
+  if (items.length === 0) return [] as R[];
+  const concurrency = Math.min(
+    items.length,
+    Math.max(1, Math.min(8, Math.floor(requestedConcurrency))),
+  );
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(items[index]);
+      }
+    }),
+  );
+  return results;
 }
 
 function parseMatrixRows(sheet: ParsedWorkbookSheet, type: LegacySheetType) {
@@ -2710,21 +2799,15 @@ async function applyProgressCandidate(
   candidate: ProgressDealCandidate,
   applyTargets: LegacyExcelApplyTargets,
 ): Promise<AppliedProgressResult> {
-  const existingDealLink = await findLegacyLinkTarget(
-    tx,
-    input,
-    candidate,
-    "DEAL",
-  );
-  const existingDeal = existingDealLink
-    ? await tx.deal.findFirst({
-        where: {
-          id: existingDealLink,
-          organizationId: input.organizationId,
-          deletedAt: null,
-        },
-      })
-    : null;
+  const canonicalExternalId = legacyProgressDealExternalId(candidate);
+  const existingDeal = await tx.deal.findUnique({
+    where: {
+      organizationId_externalId: {
+        organizationId: input.organizationId,
+        externalId: canonicalExternalId,
+      },
+    },
+  });
   const dealCandidate = existingDeal
     ? await aggregateCurrentProgressForDeal(
         tx,
@@ -2820,6 +2903,7 @@ async function applyProgressCandidate(
       invalidatedAt: resolvedStatus === DealStatus.INVALID ? resolvedAt : null,
     };
     const dealData = {
+      deletedAt: null,
       businessUnitId: businessUnit.id,
       ownerUserId: owner?.id ?? existingDeal?.ownerUserId ?? null,
       pipelineId: stage.pipelineId,
@@ -2852,13 +2936,13 @@ async function applyProgressCandidate(
           where: {
             organizationId_externalId: {
               organizationId: input.organizationId,
-              externalId: candidate.sourceKey.slice(0, 160),
+              externalId: canonicalExternalId,
             },
           },
           create: {
             organizationId: input.organizationId,
             source: "legacy_excel",
-            externalId: candidate.sourceKey.slice(0, 160),
+            externalId: canonicalExternalId,
             ...dealData,
           },
           update: dealData,

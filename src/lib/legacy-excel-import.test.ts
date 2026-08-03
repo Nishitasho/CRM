@@ -14,12 +14,14 @@ import {
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
   legacyDateOnly,
+  legacyProgressDealExternalId,
   mapLegacyProgressStatus,
   normalizeDomain,
   normalizeLegacyName,
   normalizePhone,
   parseLegacyDate,
   parseMoney,
+  type ProgressDealCandidate,
 } from "./legacy-excel-import";
 import { parseLegacyExcelApplyRequest } from "./legacy-excel-apply-request";
 import {
@@ -31,6 +33,58 @@ import { parseXlsxWorkbook } from "./spreadsheet";
 import { writeSimpleXlsxWorkbook } from "./simple-xlsx";
 
 describe("legacy Excel import", () => {
+  it("groups products into one deal while keeping different stages separate", () => {
+    const base = {
+      normalized: {
+        normalizedCompanyName: "ほるもんまつ井",
+        normalizedDealName: "ほるもんまつ井",
+        normalizedProductName: "rn",
+      },
+      raw: { 流入元: "アウトバウンド" },
+      businessUnitName: "HD事業部",
+      stage: { stageName: "AA課金" },
+      fsOwnerName: "営業担当",
+      appointmentAcquiredAt: "2026-06-01",
+      meetingDate: "2026-06-22",
+      wonDate: "2026-06-23",
+      productName: "RN",
+    } as unknown as ProgressDealCandidate;
+    const anotherProduct = {
+      ...base,
+      productName: "AMEX",
+      normalized: {
+        ...base.normalized,
+        normalizedProductName: "amex",
+      },
+    } as ProgressDealCandidate;
+    const anotherStage = {
+      ...base,
+      stage: { ...base.stage, stageName: "B素材回収待ち" },
+    } as ProgressDealCandidate;
+    const lostAlias = {
+      ...base,
+      stage: { ...base.stage, stageName: "審査オチ", label: "審査オチ" },
+    } as ProgressDealCandidate;
+    const lostCanonical = {
+      ...base,
+      stage: {
+        ...base.stage,
+        stageName: "XAプレゼン失注(決裁者)",
+        label: "XAプレゼン失注(決裁者)",
+      },
+    } as ProgressDealCandidate;
+
+    expect(legacyProgressDealExternalId(anotherProduct)).toBe(
+      legacyProgressDealExternalId(base),
+    );
+    expect(legacyProgressDealExternalId(anotherStage)).not.toBe(
+      legacyProgressDealExternalId(base),
+    );
+    expect(legacyProgressDealExternalId(lostAlias)).toBe(
+      legacyProgressDealExternalId(lostCanonical),
+    );
+  });
+
   it("builds canonical contact and deal associations", () => {
     expect(
       buildLegacyPrimaryAssociationData("org-1", {

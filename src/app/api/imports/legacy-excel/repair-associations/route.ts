@@ -19,15 +19,29 @@ const repairSchema = z.object({
 });
 
 const REPAIR_BATCH_SIZE = 25;
-const ASSOCIATION_REPAIR_VERSION = 2;
+const ASSOCIATION_REPAIR_VERSION = 3;
 
-const associationRepairTargets = {
+const progressRepairTargets = {
   masters: false,
   companiesContacts: true,
   deals: true,
-  dealLineItems: false,
+  dealLineItems: true,
   deliveryProjects: false,
   autoDeliveryProjects: false,
+  reviewDeliveryProjects: false,
+  unresolvedDeliveryProjects: false,
+  activities: false,
+  dailyMetrics: false,
+  kpiTargets: false,
+} satisfies LegacyExcelApplyTargets;
+
+const projectRepairTargets = {
+  masters: false,
+  companiesContacts: false,
+  deals: false,
+  dealLineItems: false,
+  deliveryProjects: true,
+  autoDeliveryProjects: true,
   reviewDeliveryProjects: false,
   unresolvedDeliveryProjects: false,
   activities: false,
@@ -39,7 +53,10 @@ export async function POST(request: Request) {
   try {
     const context = await getAuthContext();
     if (!context) {
-      return NextResponse.json({ message: "ログインが必要です。" }, { status: 401 });
+      return NextResponse.json(
+        { message: "ログインが必要です。" },
+        { status: 401 },
+      );
     }
     requirePermission(context.membership.role, Permission.IMPORT_DATA);
     if (!canUseLegacyProgressImport(context.membership.role)) {
@@ -67,7 +84,10 @@ export async function POST(request: Request) {
 
     const mapping = job.mapping as Prisma.JsonObject;
     const dryRun = mapping.dryRunSummary as LegacyExcelDryRunResult | undefined;
-    if (!dryRun?.workbookFingerprint || dryRun.provider !== "legacy_excel_workbook") {
+    if (
+      !dryRun?.workbookFingerprint ||
+      dryRun.provider !== "legacy_excel_workbook"
+    ) {
       return NextResponse.json(
         { message: "補修元のdry run結果が見つかりません。" },
         { status: 400 },
@@ -81,14 +101,32 @@ export async function POST(request: Request) {
     if (storedProgress.complete) {
       return NextResponse.json(storedProgress);
     }
-    const candidates = dryRun.progressCandidates.slice(
-      storedProgress.index,
-      storedProgress.index + REPAIR_BATCH_SIZE,
+    const repairingProgress =
+      storedProgress.index < dryRun.progressCandidates.length;
+    const autoProjectIds = new Set(
+      dryRun.crossFileMatches
+        .filter((match) => match.decision === "AUTO")
+        .map((match) => match.hpCandidateId),
     );
+    const autoProjects = dryRun.hpProjectCandidates.filter((candidate) =>
+      autoProjectIds.has(candidate.id),
+    );
+    const candidates = repairingProgress
+      ? dryRun.progressCandidates.slice(
+          storedProgress.index,
+          storedProgress.index + REPAIR_BATCH_SIZE,
+        )
+      : [];
+    const projectCandidates = repairingProgress
+      ? []
+      : autoProjects.slice(
+          storedProgress.projectIndex,
+          storedProgress.projectIndex + REPAIR_BATCH_SIZE,
+        );
     const batchDryRun: LegacyExcelDryRunResult = {
       ...dryRun,
       progressCandidates: candidates,
-      hpProjectCandidates: [],
+      hpProjectCandidates: projectCandidates,
       priceBookCandidates: [],
       dailyMetricCandidates: [],
       kpiTargetCandidates: [],
@@ -99,16 +137,25 @@ export async function POST(request: Request) {
       importJobId: job.id,
       dryRun: batchDryRun,
       referenceDryRun: dryRun,
-      applyTargets: associationRepairTargets,
+      applyTargets: repairingProgress
+        ? progressRepairTargets
+        : projectRepairTargets,
       updateImportJob: false,
+      progressConcurrency: repairingProgress ? 5 : 1,
     });
     const nextIndex = storedProgress.index + candidates.length;
-    const complete = nextIndex >= dryRun.progressCandidates.length;
+    const nextProjectIndex =
+      storedProgress.projectIndex + projectCandidates.length;
+    const complete =
+      nextIndex >= dryRun.progressCandidates.length &&
+      nextProjectIndex >= autoProjects.length;
     const nextProgress = {
       complete,
       index: nextIndex,
       total: dryRun.progressCandidates.length,
-      updated: storedProgress.updated + result.updated,
+      projectIndex: nextProjectIndex,
+      projectTotal: autoProjects.length,
+      updated: storedProgress.updated + result.created + result.updated,
       skipped: storedProgress.skipped + result.skipped,
       errors: [...storedProgress.errors, ...result.errors],
     };
@@ -151,13 +198,26 @@ export async function POST(request: Request) {
 
 function readRepairProgress(value: Prisma.JsonValue | undefined) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { complete: false, index: 0, total: 0, updated: 0, skipped: 0, errors: [] };
+    return {
+      complete: false,
+      index: 0,
+      total: 0,
+      projectIndex: 0,
+      projectTotal: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [],
+    };
   }
   const progress = value as Record<string, unknown>;
   return {
     complete: progress.complete === true,
     index: typeof progress.index === "number" ? progress.index : 0,
     total: typeof progress.total === "number" ? progress.total : 0,
+    projectIndex:
+      typeof progress.projectIndex === "number" ? progress.projectIndex : 0,
+    projectTotal:
+      typeof progress.projectTotal === "number" ? progress.projectTotal : 0,
     updated: typeof progress.updated === "number" ? progress.updated : 0,
     skipped: typeof progress.skipped === "number" ? progress.skipped : 0,
     errors: Array.isArray(progress.errors)
@@ -166,7 +226,9 @@ function readRepairProgress(value: Prisma.JsonValue | undefined) {
   };
 }
 
-function isRepairError(value: unknown): value is { row: string; message: string } {
+function isRepairError(
+  value: unknown,
+): value is { row: string; message: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const error = value as Record<string, unknown>;
   return typeof error.row === "string" && typeof error.message === "string";

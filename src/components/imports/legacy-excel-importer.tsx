@@ -110,6 +110,15 @@ type AssociationRepairResponse = {
   message?: string;
 };
 
+type DateRefreshResponse = {
+  complete: boolean;
+  deals: number;
+  lineItems: number;
+  projects: number;
+  skipped: number;
+  message?: string;
+};
+
 type CleanupPreview = {
   importJobId: string;
   planHash: string;
@@ -261,6 +270,7 @@ export function LegacyExcelImporter({
   const [pending, setPending] = useState(false);
   const [resumeJobId, setResumeJobId] = useState<string | null>(null);
   const [repairJobId, setRepairJobId] = useState<string | null>(null);
+  const [dateRefreshJobId, setDateRefreshJobId] = useState<string | null>(null);
   const [cleanupJobId, setCleanupJobId] = useState<string | null>(null);
   const [cleanupPreview, setCleanupPreview] = useState<CleanupPreview | null>(
     null,
@@ -418,6 +428,37 @@ export function LegacyExcelImporter({
     } finally {
       setPending(false);
       setResumeJobId(null);
+    }
+  }
+
+  async function refreshDates(importJobId: string) {
+    setPending(true);
+    setDateRefreshJobId(importJobId);
+    setError("");
+    setMessage("最新スプレッドシートの日付を再同期しています。");
+    try {
+      const response = await fetch("/api/imports/legacy-excel/refresh-dates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ importJobId, confirmText }),
+      });
+      const json = await readDateRefreshResponse(response);
+      if (!response.ok) {
+        throw new Error(json.message ?? "日付の再同期に失敗しました。");
+      }
+      setMessage(
+        `日付の再同期が完了しました。商談 ${json.deals}件、商品明細 ${json.lineItems}件、CS案件 ${json.projects}件、未一致 ${json.skipped}件`,
+      );
+      router.refresh();
+    } catch (refreshError) {
+      setError(
+        refreshError instanceof Error
+          ? refreshError.message
+          : "日付の再同期に失敗しました。",
+      );
+    } finally {
+      setPending(false);
+      setDateRefreshJobId(null);
     }
   }
 
@@ -1175,6 +1216,20 @@ export function LegacyExcelImporter({
                           {resumeJobId === item.id ? "再開中" : "本登録を再開"}
                         </button>
                       ) : null}
+                      {item.status === "PROCESSING" ||
+                      item.status === "FAILED" ||
+                      item.status === "COMPLETED" ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={pending}
+                          onClick={() => refreshDates(item.id)}
+                        >
+                          {dateRefreshJobId === item.id
+                            ? "同期中"
+                            : "日付を再同期"}
+                        </button>
+                      ) : null}
                       {item.status === "COMPLETED" &&
                       !item.associationRepairCompleted ? (
                         <button
@@ -1317,6 +1372,26 @@ async function readApiResponse(response: Response): Promise<ApplyResponse> {
         ? "本登録の応答を読み取れませんでした。移行履歴から再開してください。"
         : "本登録がサーバーで中断されました。移行履歴から安全に再開できます。",
     );
+  }
+}
+
+async function readDateRefreshResponse(
+  response: Response,
+): Promise<DateRefreshResponse> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as DateRefreshResponse;
+  } catch {
+    return {
+      complete: false,
+      deals: 0,
+      lineItems: 0,
+      projects: 0,
+      skipped: 0,
+      message: response.ok
+        ? "日付再同期の応答を読み取れませんでした。"
+        : "日付再同期がサーバーで中断されました。",
+    };
   }
 }
 

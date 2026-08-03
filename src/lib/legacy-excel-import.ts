@@ -2144,8 +2144,10 @@ export function parseLegacyDate(value: string | null | undefined) {
   const input = String(value).trim().normalize("NFKC");
   if (!input || isExcelBlankDate(input)) return null;
   const serial = Number(input);
-  if (Number.isFinite(serial) && serial > 20000 && serial < 80000) {
-    return excelSerialToDateString(serial);
+  if (Number.isFinite(serial)) {
+    return serial > 20000 && serial < 80000
+      ? excelSerialToDateString(serial)
+      : null;
   }
   const match = input.match(/(\d{4})[/-年.](\d{1,2})[/-月.](\d{1,2})/);
   if (match) {
@@ -2173,7 +2175,14 @@ function isExcelBlankDate(value: string) {
 }
 
 function isValidCalendarDate(year: number, month: number, day: number) {
-  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) {
+  if (
+    year < 1 ||
+    year > 9999 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
     return false;
   }
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -4096,6 +4105,7 @@ export function getLegacyDealLineItemWorkflow(
     status = "WON";
   else if (candidate.stage.status === "CANCELLED") status = "CANCELLED";
   else if (
+    /審査オチ/.test(progress) ||
     candidate.stage.status === "LOST" ||
     candidate.stage.status === "INVALID"
   )

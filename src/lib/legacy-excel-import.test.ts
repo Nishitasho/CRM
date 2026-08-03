@@ -172,6 +172,25 @@ describe("legacy Excel import", () => {
     });
   });
 
+  it("ignores negative date serials and keeps rejected products lost", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【HD】案件管理シート": [
+          ["案件名", "進捗", "獲得商材", "商談日", "課金日"],
+          ["株式会社テスト", "審査オチ", "AC", "2026/07/01", "-46181"],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    expect(
+      getLegacyDealLineItemWorkflow(result.progressCandidates[0]),
+    ).toMatchObject({
+      status: "LOST",
+      billingDate: null,
+    });
+  });
+
   it("auto links identical projects by high score", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
@@ -441,6 +460,7 @@ describe("legacy Excel import", () => {
     expect(parseLegacyDate("2026年6月5日")).toBe("2026-06-05");
     expect(parseLegacyDate("2026/13/01")).toBeNull();
     expect(parseLegacyDate("2026/02/30")).toBeNull();
+    expect(parseLegacyDate("-46181")).toBeNull();
     expect(parseLegacyDate("1899-12-30")).toBeNull();
     expect(parseMoney("¥120,000円")).toBe(120000);
   });

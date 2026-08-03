@@ -54,12 +54,22 @@ export async function POST(request: Request) {
         objectType: "LEGACY_EXCEL_WORKBOOK",
         status: "COMPLETED",
       },
-      select: { id: true, createdAt: true },
+      select: { id: true, createdAt: true, mapping: true },
     });
     if (!job) {
       return NextResponse.json(
         { message: "整理対象の完了済みImportJobが見つかりません。" },
         { status: 404 },
+      );
+    }
+    const jobMapping = job.mapping as Prisma.JsonObject;
+    if (jobMapping.dateRefreshLinksPersisted !== true) {
+      return NextResponse.json(
+        {
+          message:
+            "最新シートの保持対象がまだ確定していません。先に日付を再同期してください。",
+        },
+        { status: 409 },
       );
     }
     const latestCompletedJob = await prisma.importJob.findFirst({

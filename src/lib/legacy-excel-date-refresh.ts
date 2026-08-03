@@ -44,6 +44,7 @@ export type LegacyDateRefreshPlan = {
   deals: LegacyDealDateRefresh[];
   lineItems: LegacyLineItemDateRefresh[];
   projects: LegacyProjectDateRefresh[];
+  retainedLinks: LegacyDateLink[];
   unmatched: {
     deals: number;
     lineItems: number;
@@ -79,6 +80,33 @@ export function buildLegacyDateRefreshPlan(
 
   const dealCandidates = new Map<string, ProgressDealCandidate[]>();
   const lineItems = new Map<string, LegacyLineItemDateRefresh>();
+  const retainedLinks = new Map<string, LegacyDateLink>();
+  const retainLink = (
+    candidate: {
+      sheetName: string;
+      rowNumber: number;
+      rowFingerprint: string;
+    },
+    targetObjectType: string,
+    targetObjectId: string,
+  ) => {
+    const link = {
+      sheetName: candidate.sheetName,
+      rowNumber: candidate.rowNumber,
+      rowFingerprint: candidate.rowFingerprint,
+      targetObjectType,
+      targetObjectId,
+    };
+    retainedLinks.set(
+      linkKey(
+        link.sheetName,
+        link.rowNumber,
+        link.rowFingerprint,
+        link.targetObjectType,
+      ),
+      link,
+    );
+  };
   let unmatchedDeals = 0;
   let unmatchedLineItems = 0;
   for (const candidate of dryRun.progressCandidates) {
@@ -87,6 +115,7 @@ export function buildLegacyDateRefreshPlan(
       const candidates = dealCandidates.get(dealId) ?? [];
       candidates.push(candidate);
       dealCandidates.set(dealId, candidates);
+      retainLink(candidate, "DEAL", dealId);
     } else {
       unmatchedDeals += 1;
     }
@@ -99,17 +128,26 @@ export function buildLegacyDateRefreshPlan(
     );
     if (!lineItemId) {
       if (candidate.productName) unmatchedLineItems += 1;
-      continue;
+    } else {
+      const workflow = getLegacyDealLineItemWorkflow(candidate);
+      lineItems.set(lineItemId, {
+        id: lineItemId,
+        meetingAt: workflow.meetingDate,
+        contractedAt: workflow.contractedDate,
+        collectedAt: workflow.collectedDate,
+        billingStartedAt: workflow.billingDate,
+        cancelledAt: workflow.cancelledDate,
+      });
+      retainLink(candidate, "DEAL_LINE_ITEM", lineItemId);
     }
-    const workflow = getLegacyDealLineItemWorkflow(candidate);
-    lineItems.set(lineItemId, {
-      id: lineItemId,
-      meetingAt: workflow.meetingDate,
-      contractedAt: workflow.contractedDate,
-      collectedAt: workflow.collectedDate,
-      billingStartedAt: workflow.billingDate,
-      cancelledAt: workflow.cancelledDate,
-    });
+
+    const activityId = resolveTarget(
+      candidate,
+      "ACTIVITY",
+      exactLinks,
+      rowLinks,
+    );
+    if (activityId) retainLink(candidate, "ACTIVITY", activityId);
   }
 
   const deals = Array.from(dealCandidates, ([id, candidates]) => {
@@ -150,12 +188,21 @@ export function buildLegacyDateRefreshPlan(
       continue;
     }
     projects.set(projectId, projectDateRefresh(projectId, candidate));
+    retainLink(candidate, "DELIVERY_PROJECT", projectId);
+    const activityId = resolveTarget(
+      candidate,
+      "ACTIVITY",
+      exactLinks,
+      rowLinks,
+    );
+    if (activityId) retainLink(candidate, "ACTIVITY", activityId);
   }
 
   return {
     deals,
     lineItems: Array.from(lineItems.values()),
     projects: Array.from(projects.values()),
+    retainedLinks: Array.from(retainedLinks.values()),
     unmatched: {
       deals: unmatchedDeals,
       lineItems: unmatchedLineItems,

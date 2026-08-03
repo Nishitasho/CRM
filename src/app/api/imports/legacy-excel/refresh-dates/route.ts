@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
         organizationId: context.organization.id,
         provider: dryRun.provider,
         targetObjectType: {
-          in: ["DEAL", "DEAL_LINE_ITEM", "DELIVERY_PROJECT"],
+          in: ["DEAL", "DEAL_LINE_ITEM", "DELIVERY_PROJECT", "ACTIVITY"],
         },
       },
       orderBy: { importedAt: "desc" },
@@ -125,6 +126,15 @@ export async function POST(request: Request) {
       plan.projects,
     );
     const verification = await verifyDateRefresh(context.organization.id, plan);
+    const retainedLinkCount =
+      verification.mismatches === 0
+        ? await persistCurrentLinks({
+            organizationId: context.organization.id,
+            importJobId: job.id,
+            dryRun,
+            links: plan.retainedLinks,
+          })
+        : 0;
     const skipped =
       plan.unmatched.deals + plan.unmatched.lineItems + plan.unmatched.projects;
     const result = {
@@ -134,6 +144,7 @@ export async function POST(request: Request) {
       skipped,
       unmatched: plan.unmatched,
       verification,
+      retainedLinks: retainedLinkCount,
     };
     const completedAt = new Date().toISOString();
     await prisma.importJob.update({
@@ -154,6 +165,7 @@ export async function POST(request: Request) {
           ...mapping,
           dateRefreshCompletedAt: completedAt,
           dateRefreshSummary: result,
+          dateRefreshLinksPersisted: verification.mismatches === 0,
           applyCompletedAt: mapping.applyCompletedAt ?? completedAt,
         } as Prisma.InputJsonValue,
       },
@@ -198,7 +210,10 @@ async function filterExistingLinks(
   const projectIds = links
     .filter((link) => link.targetObjectType === "DELIVERY_PROJECT")
     .map((link) => link.targetObjectId);
-  const [deals, lineItems, projects] = await Promise.all([
+  const activityIds = links
+    .filter((link) => link.targetObjectType === "ACTIVITY")
+    .map((link) => link.targetObjectId);
+  const [deals, lineItems, projects, activities] = await Promise.all([
     prisma.deal.findMany({
       where: {
         organizationId,
@@ -219,16 +234,79 @@ async function filterExistingLinks(
       },
       select: { id: true },
     }),
+    prisma.activity.findMany({
+      where: {
+        organizationId,
+        id: { in: activityIds },
+        deletedAt: null,
+      },
+      select: { id: true },
+    }),
   ]);
   const validIds = {
     DEAL: new Set(deals.map((item) => item.id)),
     DEAL_LINE_ITEM: new Set(lineItems.map((item) => item.id)),
     DELIVERY_PROJECT: new Set(projects.map((item) => item.id)),
+    ACTIVITY: new Set(activities.map((item) => item.id)),
   };
   return links.filter((link) =>
     validIds[link.targetObjectType as keyof typeof validIds]?.has(
       link.targetObjectId,
     ),
+  );
+}
+
+async function persistCurrentLinks(input: {
+  organizationId: string;
+  importJobId: string;
+  dryRun: LegacyExcelDryRunResult;
+  links: SourceLink[];
+}) {
+  const targetTypes = [
+    "DEAL",
+    "DEAL_LINE_ITEM",
+    "DELIVERY_PROJECT",
+    "ACTIVITY",
+  ];
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.legacySourceLink.deleteMany({
+        where: {
+          organizationId: input.organizationId,
+          provider: input.dryRun.provider,
+          workbookFingerprint: input.dryRun.workbookFingerprint,
+          targetObjectType: { in: targetTypes },
+        },
+      });
+      let created = 0;
+      for (const batch of batches(input.links)) {
+        const result = await tx.legacySourceLink.createMany({
+          data: batch.map((link) => ({
+            id: randomUUID(),
+            organizationId: input.organizationId,
+            importJobId: input.importJobId,
+            provider: input.dryRun.provider,
+            workbookFingerprint: input.dryRun.workbookFingerprint,
+            sheetName: link.sheetName,
+            rowNumber: link.rowNumber,
+            rowFingerprint: link.rowFingerprint,
+            targetObjectType: link.targetObjectType,
+            targetObjectId: link.targetObjectId,
+            metadata: {
+              fileName: input.dryRun.sourceName,
+              fileHash: input.dryRun.workbookFingerprint,
+              sheetName: link.sheetName,
+              rowNumber: link.rowNumber,
+              stableSourceKey: `${link.sheetName}:${link.rowNumber}`,
+              dateRefreshRelinked: true,
+            },
+          })),
+        });
+        created += result.count;
+      }
+      return created;
+    },
+    { maxWait: 10_000, timeout: 60_000 },
   );
 }
 

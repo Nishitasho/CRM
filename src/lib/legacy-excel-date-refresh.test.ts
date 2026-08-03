@@ -69,6 +69,20 @@ describe("legacy Excel date refresh", () => {
         nextActionDate: "2026-07-05",
       },
     ]);
+    expect(result.retainedLinks).toEqual([
+      expect.objectContaining({
+        targetObjectType: "DEAL",
+        targetObjectId: "deal-1",
+      }),
+      expect.objectContaining({
+        targetObjectType: "DEAL_LINE_ITEM",
+        targetObjectId: "line-1",
+      }),
+      expect.objectContaining({
+        targetObjectType: "DELIVERY_PROJECT",
+        targetObjectId: "project-record-1",
+      }),
+    ]);
     expect(result.unmatched).toEqual({
       deals: 0,
       lineItems: 0,
@@ -92,6 +106,52 @@ describe("legacy Excel date refresh", () => {
 
     const result = buildLegacyDateRefreshPlan(dryRun, []);
     expect(result.projects).toEqual([]);
+    expect(result.retainedLinks).toEqual([]);
     expect(result.unmatched.projects).toBe(0);
+  });
+
+  it("retains only activities that belong to current progress or AUTO project rows", () => {
+    const progress = {
+      id: "progress-1",
+      sheetName: "progress.xlsx / 【HD】案件管理シート",
+      rowNumber: 20,
+      rowFingerprint: "progress-fingerprint",
+      productName: "",
+      stage: { stageName: "E商談" },
+      raw: {},
+    };
+    const reviewProject = {
+      id: "project-review",
+      sheetName: "hp.xlsx / 【新】HP管理シート",
+      rowNumber: 5,
+      rowFingerprint: "project-review-fingerprint",
+    };
+    const dryRun = {
+      progressCandidates: [progress],
+      hpProjectCandidates: [reviewProject],
+      crossFileMatches: [
+        { hpCandidateId: "project-review", decision: "REVIEW" },
+      ],
+    } as unknown as LegacyExcelDryRunResult;
+
+    const result = buildLegacyDateRefreshPlan(dryRun, [
+      {
+        ...progress,
+        targetObjectType: "ACTIVITY",
+        targetObjectId: "activity-progress",
+      },
+      {
+        ...reviewProject,
+        targetObjectType: "ACTIVITY",
+        targetObjectId: "activity-review",
+      },
+    ]);
+
+    expect(result.retainedLinks).toEqual([
+      expect.objectContaining({
+        targetObjectType: "ACTIVITY",
+        targetObjectId: "activity-progress",
+      }),
+    ]);
   });
 });

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { AppointmentCaptureLinkManager } from "@/components/appointments/appointment-capture-link-manager";
+import { appointmentCaptureLinkClientSelect } from "@/lib/appointment-capture-links";
 import { SettingsNav } from "@/components/settings/settings-nav";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
@@ -25,11 +26,18 @@ export default async function AppointmentCaptureLinksPage() {
         status: "ACTIVE",
         businessUnit: { status: "ACTIVE" },
       },
-      select: { businessUnitId: true, user: { select: { id: true, name: true } } },
-      orderBy: [{ businessUnit: { displayOrder: "asc" } }, { createdAt: "asc" }],
+      select: {
+        businessUnitId: true,
+        user: { select: { id: true, name: true } },
+      },
+      orderBy: [
+        { businessUnit: { displayOrder: "asc" } },
+        { createdAt: "asc" },
+      ],
     }),
     prisma.appointmentCaptureLink.findMany({
       where: { organizationId: context.organization.id },
+      select: appointmentCaptureLinkClientSelect,
       orderBy: { createdAt: "desc" },
     }),
   ]);
@@ -43,7 +51,10 @@ export default async function AppointmentCaptureLinksPage() {
       <SettingsNav />
       <AppointmentCaptureLinkManager
         businessUnits={businessUnits}
-        isUsers={isUsers.map((item) => ({ ...item.user, businessUnitId: item.businessUnitId }))}
+        isUsers={isUsers.map((item) => ({
+          ...item.user,
+          businessUnitId: item.businessUnitId,
+        }))}
         initialLinks={links}
       />
     </div>

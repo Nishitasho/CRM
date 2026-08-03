@@ -5,9 +5,14 @@ import {
   ensureInternalAppointmentFormConfig,
   getPublishedInternalAppointmentFormConfig,
 } from "@/lib/appointment-form-config";
+import { appointmentCaptureLinkClientSelect } from "@/lib/appointment-capture-links";
 import { getAuthContext } from "@/lib/auth";
 import { assertBusinessUnitAccess } from "@/lib/business-units";
-import { hasPermission, Permission, requirePermission } from "@/lib/permissions";
+import {
+  hasPermission,
+  Permission,
+  requirePermission,
+} from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { createOpaqueToken, hashToken } from "@/lib/security";
 
@@ -22,16 +27,28 @@ const schema = z.object({
 });
 
 function canManage(role: Parameters<typeof hasPermission>[0]) {
-  return hasPermission(role, Permission.MANAGE_ORGANIZATION) || hasPermission(role, Permission.MANAGE_KPI);
+  return (
+    hasPermission(role, Permission.MANAGE_ORGANIZATION) ||
+    hasPermission(role, Permission.MANAGE_KPI)
+  );
 }
 
 export async function GET() {
   try {
     const context = await getAuthContext();
-    if (!context) return NextResponse.json({ message: "ログインが必要です。" }, { status: 401 });
-    if (!canManage(context.membership.role)) requirePermission(context.membership.role, Permission.MANAGE_ORGANIZATION);
+    if (!context)
+      return NextResponse.json(
+        { message: "ログインが必要です。" },
+        { status: 401 },
+      );
+    if (!canManage(context.membership.role))
+      requirePermission(
+        context.membership.role,
+        Permission.MANAGE_ORGANIZATION,
+      );
     const items = await prisma.appointmentCaptureLink.findMany({
       where: { organizationId: context.organization.id },
+      select: appointmentCaptureLinkClientSelect,
       orderBy: { createdAt: "desc" },
     });
     return NextResponse.json({ items });
@@ -43,11 +60,22 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const context = await getAuthContext();
-    if (!context) return NextResponse.json({ message: "ログインが必要です。" }, { status: 401 });
-    if (!canManage(context.membership.role)) requirePermission(context.membership.role, Permission.MANAGE_ORGANIZATION);
+    if (!context)
+      return NextResponse.json(
+        { message: "ログインが必要です。" },
+        { status: 401 },
+      );
+    if (!canManage(context.membership.role))
+      requirePermission(
+        context.membership.role,
+        Permission.MANAGE_ORGANIZATION,
+      );
     const input = schema.parse(await request.json());
     if (!(await assertBusinessUnitAccess(context, input.businessUnitId))) {
-      return NextResponse.json({ message: "この事業部へアクセスできません。" }, { status: 403 });
+      return NextResponse.json(
+        { message: "この事業部へアクセスできません。" },
+        { status: 403 },
+      );
     }
     const setter = await prisma.businessUnitMembership.findFirst({
       where: {
@@ -59,7 +87,11 @@ export async function POST(request: Request) {
       },
       select: { userId: true },
     });
-    if (!setter) return NextResponse.json({ message: "対象事業部のACTIVEなIS担当者を選択してください。" }, { status: 400 });
+    if (!setter)
+      return NextResponse.json(
+        { message: "対象事業部のACTIVEなIS担当者を選択してください。" },
+        { status: 400 },
+      );
     await ensureInternalAppointmentFormConfig(prisma, {
       organizationId: context.organization.id,
       businessUnitId: input.businessUnitId,
@@ -85,8 +117,12 @@ export async function POST(request: Request) {
         maxSubmissions: input.maxSubmissions ?? null,
         createdByUserId: context.user.id,
       },
+      select: appointmentCaptureLinkClientSelect,
     });
-    return NextResponse.json({ item, token, url: `/a/${token}` }, { status: 201 });
+    return NextResponse.json(
+      { item, token, url: `/a/${token}` },
+      { status: 201 },
+    );
   } catch (error) {
     return apiError(error);
   }

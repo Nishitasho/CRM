@@ -11,6 +11,7 @@ import {
   buildDealQualityIssues,
   highestDealQualitySeverity,
 } from "@/lib/deal-quality";
+import { jstDateString } from "@/lib/jst-date";
 import { hasPermission, Permission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
 import { getAssociationOptions, getRelatedRecords } from "@/lib/record-data";
@@ -309,7 +310,7 @@ export default async function DealDetailPage({
                   productName: line.product?.name ?? null,
                   status: line.status,
                   billingStartedAt: line.billingStartedAt
-                    ? line.billingStartedAt.toISOString().slice(0, 10)
+                    ? jstDateString(line.billingStartedAt)
                     : null,
                 }))}
                 forecastCategories={forecastCategories.map((category) => ({
@@ -523,11 +524,21 @@ export default async function DealDetailPage({
                   line.expectedGrossProfitAmount,
                 ),
                 collectedAmount: decimalNumber(line.collectedAmount),
-                meetingAt: line.meetingAt?.toISOString() ?? null,
-                contractedAt: line.contractedAt?.toISOString() ?? null,
-                collectedAt: line.collectedAt?.toISOString() ?? null,
-                billingStartedAt: line.billingStartedAt?.toISOString() ?? null,
-                cancelledAt: line.cancelledAt?.toISOString() ?? null,
+                meetingAt: line.meetingAt
+                  ? jstDateString(line.meetingAt)
+                  : null,
+                contractedAt: line.contractedAt
+                  ? jstDateString(line.contractedAt)
+                  : null,
+                collectedAt: line.collectedAt
+                  ? jstDateString(line.collectedAt)
+                  : null,
+                billingStartedAt: line.billingStartedAt
+                  ? jstDateString(line.billingStartedAt)
+                  : null,
+                cancelledAt: line.cancelledAt
+                  ? jstDateString(line.cancelledAt)
+                  : null,
                 status: line.status,
                 lossReasonId: line.lossReasonId,
                 lossReasonNote: line.lossReasonNote,
@@ -561,7 +572,13 @@ export default async function DealDetailPage({
               }))}
               propertyScopes={propertyScopes}
               defaultBusinessUnitId={item.businessUnitId}
-              defaultDate={item.closeDate ?? item.expectedCloseDate}
+              defaultDate={
+                item.closeDate
+                  ? jstDateString(item.closeDate)
+                  : item.expectedCloseDate
+                    ? jstDateString(item.expectedCloseDate)
+                    : null
+              }
               canEdit={canEdit}
             />
             <DealTaskCard

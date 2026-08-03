@@ -19,6 +19,11 @@ export default async function ImportResultPage({
   const errors = Array.isArray(item.errorReport)
     ? (item.errorReport as Array<{ row: number; message: string }>)
     : [];
+  const mapping = asRecord(item.mapping);
+  const repairProgress = asRecord(mapping.associationRepairProgress);
+  const repairErrors = Array.isArray(repairProgress.errors)
+    ? repairProgress.errors.filter(isRepairError)
+    : [];
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeading
@@ -63,6 +68,37 @@ export default async function ImportResultPage({
           すべての行を正常に処理しました。
         </p>
       )}
+      {repairErrors.length ? (
+        <section className="card mt-6 overflow-hidden">
+          <div className="border-b border-line px-6 py-4 font-bold">
+            最新シートとの関連付け補修エラー（{repairErrors.length}件）
+          </div>
+          <div className="max-h-[32rem] divide-y divide-line overflow-y-auto">
+            {repairErrors.map((error, index) => (
+              <div key={index} className="flex gap-4 px-6 py-4 text-sm">
+                <span className="shrink-0 font-bold text-red-600">
+                  {error.row}
+                </span>
+                <span>{error.message}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function isRepairError(
+  value: unknown,
+): value is { row: string; message: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const error = value as Record<string, unknown>;
+  return typeof error.row === "string" && typeof error.message === "string";
 }

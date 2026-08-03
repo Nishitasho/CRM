@@ -4617,11 +4617,15 @@ function decimalToNumber(value: Prisma.Decimal | number | null | undefined) {
   return Number(value);
 }
 
-function dateOnly(value: string | null) {
+export function legacyDateOnly(value: string | null) {
   if (!value) return null;
-  const date = new Date(`${value}T00:00:00+09:00`);
+  // Prisma maps PostgreSQL DATE columns through UTC Date objects. Supplying a
+  // JST midnight would cross the UTC date boundary before PostgreSQL casts it.
+  const date = new Date(`${value}T00:00:00.000Z`);
   return Number.isNaN(date.getTime()) ? null : date;
 }
+
+const dateOnly = legacyDateOnly;
 
 function dateTime(value: string | null) {
   if (!value) return null;

@@ -13,6 +13,7 @@ import {
   getLegacyDealLineItemWorkflow,
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
+  legacyDateOnly,
   mapLegacyProgressStatus,
   normalizeDomain,
   normalizeLegacyName,
@@ -66,6 +67,13 @@ describe("legacy Excel import", () => {
     expect(cleanLegacyCellValue("https://example.com")).toBe(
       "https://example.com",
     );
+  });
+
+  it("preserves spreadsheet dates for PostgreSQL DATE columns", () => {
+    expect(legacyDateOnly("2026-06-22")?.toISOString()).toBe(
+      "2026-06-22T00:00:00.000Z",
+    );
+    expect(legacyDateOnly(null)).toBeNull();
   });
 
   it("generates deal and delivery project candidates from target sheets", () => {

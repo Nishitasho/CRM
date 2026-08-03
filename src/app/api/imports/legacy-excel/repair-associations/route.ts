@@ -18,7 +18,7 @@ const repairSchema = z.object({
   importJobId: z.string().uuid(),
 });
 
-const REPAIR_BATCH_SIZE = 25;
+const REPAIR_BATCH_SIZE = 100;
 const ASSOCIATION_REPAIR_VERSION = 3;
 
 const progressRepairTargets = {
@@ -141,7 +141,7 @@ export async function POST(request: Request) {
         ? progressRepairTargets
         : projectRepairTargets,
       updateImportJob: false,
-      progressConcurrency: repairingProgress ? 5 : 1,
+      progressConcurrency: repairingProgress ? 8 : 1,
     });
     const nextIndex = storedProgress.index + candidates.length;
     const nextProjectIndex =

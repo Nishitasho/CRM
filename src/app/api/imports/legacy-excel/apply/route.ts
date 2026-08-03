@@ -157,6 +157,10 @@ export async function POST(request: Request) {
       manualMatches,
       updateImportJob: false,
     });
+    const retriedRows = new Set(batch.retriedRows);
+    const retainedErrors = progress.errors.filter(
+      (error) => !retriedRows.has(error.row),
+    );
     const nextProgress: ApplyProgress = {
       setupComplete: true,
       progressIndex: batch.nextProgressIndex,
@@ -165,11 +169,16 @@ export async function POST(request: Request) {
       updated: progress.updated + result.updated,
       skipped: progress.skipped + result.skipped,
       warnings: [...progress.warnings, ...result.warnings],
-      errors: [...progress.errors, ...result.errors],
+      errors: [...retainedErrors, ...result.errors],
     };
-    const complete =
+    const normalApplyComplete =
       nextProgress.progressIndex >= dryRun.progressCandidates.length &&
       nextProgress.projectIndex >= dryRun.hpProjectCandidates.length;
+    const retryHasMore =
+      batch.retryMode &&
+      batch.retriedRows.length > 0 &&
+      nextProgress.errors.length > 0;
+    const complete = normalApplyComplete && !retryHasMore;
     const status = complete
       ? nextProgress.errors.length > 0
         ? "FAILED"
@@ -420,18 +429,39 @@ function buildApplyBatch(
   progress: ApplyProgress,
 ) {
   const hasProgress = progress.progressIndex < dryRun.progressCandidates.length;
-  const progressCandidates = hasProgress
-    ? dryRun.progressCandidates.slice(
-        progress.progressIndex,
-        progress.progressIndex + APPLY_BATCH_SIZE,
-      )
+  const normalApplyComplete =
+    !hasProgress && progress.projectIndex >= dryRun.hpProjectCandidates.length;
+  const retryErrorRows = normalApplyComplete
+    ? new Set(progress.errors.map((error) => error.row))
+    : new Set<string>();
+  const retryProgressCandidates = normalApplyComplete
+    ? dryRun.progressCandidates
+        .filter((candidate) => retryErrorRows.has(candidateErrorRow(candidate)))
+        .slice(0, APPLY_BATCH_SIZE)
     : [];
-  const hpProjectCandidates = hasProgress
-    ? []
-    : dryRun.hpProjectCandidates.slice(
-        progress.projectIndex,
-        progress.projectIndex + APPLY_BATCH_SIZE,
-      );
+  const retryProjectCandidates = normalApplyComplete
+    ? dryRun.hpProjectCandidates
+        .filter((candidate) => retryErrorRows.has(candidateErrorRow(candidate)))
+        .slice(0, APPLY_BATCH_SIZE - retryProgressCandidates.length)
+    : [];
+  const retryMode =
+    retryProgressCandidates.length > 0 || retryProjectCandidates.length > 0;
+  const progressCandidates = retryMode
+    ? retryProgressCandidates
+    : hasProgress
+      ? dryRun.progressCandidates.slice(
+          progress.progressIndex,
+          progress.progressIndex + APPLY_BATCH_SIZE,
+        )
+      : [];
+  const hpProjectCandidates = retryMode
+    ? retryProjectCandidates
+    : hasProgress
+      ? []
+      : dryRun.hpProjectCandidates.slice(
+          progress.projectIndex,
+          progress.projectIndex + APPLY_BATCH_SIZE,
+        );
   const includeSetup = !progress.setupComplete;
   return {
     dryRun: {
@@ -442,7 +472,19 @@ function buildApplyBatch(
       dailyMetricCandidates: includeSetup ? dryRun.dailyMetricCandidates : [],
       kpiTargetCandidates: includeSetup ? dryRun.kpiTargetCandidates : [],
     },
-    nextProgressIndex: progress.progressIndex + progressCandidates.length,
-    nextProjectIndex: progress.projectIndex + hpProjectCandidates.length,
+    nextProgressIndex: retryMode
+      ? progress.progressIndex
+      : progress.progressIndex + progressCandidates.length,
+    nextProjectIndex: retryMode
+      ? progress.projectIndex
+      : progress.projectIndex + hpProjectCandidates.length,
+    retryMode,
+    retriedRows: retryMode
+      ? [...progressCandidates, ...hpProjectCandidates].map(candidateErrorRow)
+      : [],
   };
+}
+
+function candidateErrorRow(candidate: { sheetName: string; rowNumber: number }) {
+  return `${candidate.sheetName}:${candidate.rowNumber}`;
 }

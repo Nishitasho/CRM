@@ -439,6 +439,8 @@ describe("legacy Excel import", () => {
     );
     expect(excelSerialToDateString(45658)).toBe("2025-01-01");
     expect(parseLegacyDate("2026年6月5日")).toBe("2026-06-05");
+    expect(parseLegacyDate("2026/13/01")).toBeNull();
+    expect(parseLegacyDate("2026/02/30")).toBeNull();
     expect(parseLegacyDate("1899-12-30")).toBeNull();
     expect(parseMoney("¥120,000円")).toBe(120000);
   });

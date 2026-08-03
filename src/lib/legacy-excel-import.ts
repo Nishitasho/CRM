@@ -2149,10 +2149,14 @@ export function parseLegacyDate(value: string | null | undefined) {
   }
   const match = input.match(/(\d{4})[/-年.](\d{1,2})[/-月.](\d{1,2})/);
   if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!isValidCalendarDate(year, month, day)) return null;
     return [
-      match[1],
-      match[2].padStart(2, "0"),
-      match[3].padStart(2, "0"),
+      String(year).padStart(4, "0"),
+      String(month).padStart(2, "0"),
+      String(day).padStart(2, "0"),
     ].join("-");
   }
   const date = new Date(input);
@@ -2166,6 +2170,18 @@ export function parseLegacyDate(value: string | null | undefined) {
 
 function isExcelBlankDate(value: string) {
   return /^(?:1899-12-30|1899-12-31|1900-01-00)$/.test(value.trim());
+}
+
+function isValidCalendarDate(year: number, month: number, day: number) {
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 function parseLegacyMonth(value: string | null | undefined) {
@@ -4593,12 +4609,14 @@ function decimalToNumber(value: Prisma.Decimal | number | null | undefined) {
 
 function dateOnly(value: string | null) {
   if (!value) return null;
-  return new Date(`${value}T00:00:00+09:00`);
+  const date = new Date(`${value}T00:00:00+09:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function dateTime(value: string | null) {
   if (!value) return null;
-  return new Date(`${value}T09:00:00+09:00`);
+  const date = new Date(`${value}T09:00:00+09:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function toDateString(value: Date | null | undefined) {

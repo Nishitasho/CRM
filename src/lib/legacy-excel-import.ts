@@ -14,6 +14,8 @@ import {
   canonicalSpreadsheetDeliveryStageName,
   dealStatusForSpreadsheetStage,
   deliveryProjectStatusForStageName,
+  firstDivisionSalesStages,
+  resolveSpreadsheetSalesStage,
   salesStagesForBusinessUnit,
   spreadsheetDeliveryStages,
   spreadsheetSalesStageByName,
@@ -991,6 +993,23 @@ export function normalizeProductName(value: string) {
 
 export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
   const value = progress.trim();
+  const compositeMappings = value
+    .split(/\s*(?:\/|／|\||｜|\n)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (compositeMappings.length > 1) {
+    const recognized = compositeMappings
+      .map(mapLegacyProgressStatus)
+      .filter((mapping) => mapping.label !== "不明");
+    if (recognized.length) {
+      return recognized.reduce((selected, candidate) =>
+        legacyStageMappingPriority(candidate) >
+        legacyStageMappingPriority(selected)
+          ? candidate
+          : selected,
+      );
+    }
+  }
   const spreadsheetStage = spreadsheetSalesStageByName(value);
   if (spreadsheetStage) {
     const status = dealStatusForSpreadsheetStage(
@@ -999,7 +1018,7 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     );
     return {
       label: value,
-      stageName: value,
+      stageName: spreadsheetStage.name,
       status,
       stageType: spreadsheetStage.stageType,
       probability: spreadsheetStage.probability,
@@ -1034,10 +1053,14 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     };
   }
   if (/^B本人確認|^B素材回収待ち|^B商談済み回答待ち/.test(value)) {
-    return openStage(value, value, 85);
+    return openStage(value, "B素材回収待ち", 85);
   }
   if (/^[BC]商談済み回答待ち/.test(value)) {
-    return openStage(value, value, value.startsWith("B") ? 85 : 70);
+    return openStage(
+      value,
+      value.startsWith("B") ? "B素材回収待ち" : "C申込書回収待ち",
+      value.startsWith("B") ? 85 : 70,
+    );
   }
   if (/^D商談済み回答待ち/.test(value)) {
     return openStage(value, value, 55);
@@ -1061,7 +1084,7 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     return openStage(value, value, 15);
   }
   if (/^長期追客リスト/.test(value)) {
-    return openStage(value, value, 20);
+    return openStage(value, "E商談", 30);
   }
   if (/^前確[（(].*NG[）)]|^前確[（(]営業失注[）)]|^無効商談/.test(value)) {
     return lostStage(value, value);
@@ -1099,6 +1122,25 @@ export function mapLegacyProgressStatus(progress: string): LegacyStageMapping {
     probability: 0,
     closeKind: null,
   };
+}
+
+function legacyStageMappingPriority(mapping: LegacyStageMapping) {
+  const name = mapping.stageName.normalize("NFKC");
+  if (name.startsWith("AA課金")) return 1_000;
+  if (/^A(?:受注|エントリー済み)/.test(name)) return 990;
+  if (/^B/.test(name)) return 980;
+  if (/^C/.test(name)) return 970;
+  if (/^D/.test(name)) return 960;
+  if (/^E2/.test(name)) return 950;
+  if (/^E/.test(name)) return 940;
+  if (/^F/.test(name)) return 930;
+  if (/^XAA/.test(name)) return 920;
+  if (/^XA/.test(name)) return 910;
+  if (/^XB/.test(name)) return 900;
+  if (/^XC/.test(name)) return 890;
+  if (mapping.status === DealStatus.INVALID) return 880;
+  if (/^前確/.test(name)) return 870;
+  return 0;
 }
 
 function openStage(
@@ -2703,6 +2745,19 @@ async function applyProgressCandidate(
       input.organizationId,
       candidate.fsOwnerName,
     );
+    const resolvedStatus = dealStatusForSpreadsheetStage(
+      stage.name,
+      stage.stageType,
+    );
+    const resolvedAt = dateTime(candidate.wonDate) ?? new Date();
+    const resolvedStatusDates = {
+      wonAt: resolvedStatus === DealStatus.WON ? resolvedAt : null,
+      lostAt: resolvedStatus === DealStatus.LOST ? resolvedAt : null,
+      cancelledAt:
+        resolvedStatus === DealStatus.CANCELLED ? resolvedAt : null,
+      invalidatedAt:
+        resolvedStatus === DealStatus.INVALID ? resolvedAt : null,
+    };
     deal = await tx.deal.upsert({
       where: {
         organizationId_externalId: {
@@ -2720,18 +2775,12 @@ async function applyProgressCandidate(
         amount: decimal(candidate.amount),
         expectedCloseDate: dateOnly(candidate.expectedCloseDate),
         closeDate: dateOnly(candidate.wonDate ?? candidate.expectedCloseDate),
-        probability: candidate.stage.probability,
-        status: candidate.stage.status,
+        probability: stage.probability,
+        status: resolvedStatus,
         source: "legacy_excel",
         externalId: candidate.sourceKey.slice(0, 160),
         legacyProgress: candidate.progress.slice(0, 160),
-        wonAt:
-          candidate.stage.closeKind === "won"
-            ? (dateTime(candidate.wonDate) ?? new Date())
-            : null,
-        lostAt: candidate.stage.closeKind === "lost" ? new Date() : null,
-        cancelledAt:
-          candidate.stage.closeKind === "cancelled" ? new Date() : null,
+        ...resolvedStatusDates,
         customFields: buildLegacyCustomFields(
           candidate.raw,
           "DEAL",
@@ -2741,8 +2790,9 @@ async function applyProgressCandidate(
         businessUnitId: businessUnit.id,
         pipelineId: stage.pipelineId,
         stageId: stage.id,
-        probability: candidate.stage.probability,
-        status: candidate.stage.status,
+        probability: stage.probability,
+        status: resolvedStatus,
+        ...resolvedStatusDates,
         legacyProgress: candidate.progress.slice(0, 160),
         customFields: mergeLegacyCustomFields(
           {},
@@ -3266,6 +3316,16 @@ export async function ensurePipelineStage(
   const businessUnit = await tx.businessUnit.findFirst({
     where: { id: businessUnitId, organizationId },
   });
+  const definitions = businessUnit
+    ? salesStagesForBusinessUnit(businessUnit)
+    : firstDivisionSalesStages;
+  const definition =
+    (businessUnit
+      ? resolveSpreadsheetSalesStage(stageMapping.stageName, businessUnit) ??
+        resolveSpreadsheetSalesStage(stageMapping.label, businessUnit)
+      : null) ??
+    definitions.find((stage) => stage.name === "E商談") ??
+    definitions[0];
   const pipelineName = `${businessUnit?.name ?? "レガシー"} 営業パイプライン`;
   const pipeline =
     (await tx.pipeline.findFirst({
@@ -3284,16 +3344,10 @@ export async function ensurePipelineStage(
     where: {
       organizationId,
       pipelineId: pipeline.id,
-      name: stageMapping.stageName,
+      name: definition.name,
     },
   });
-  const definition = businessUnit
-    ? salesStagesForBusinessUnit(businessUnit).find(
-        (stage) => stage.name === stageMapping.stageName,
-      )
-    : null;
   if (existingStage) {
-    if (!definition) return { ...existingStage, pipelineId: pipeline.id };
     const updated = await tx.pipelineStage.update({
       where: { id: existingStage.id },
       data: {
@@ -3313,12 +3367,12 @@ export async function ensurePipelineStage(
     data: {
       organizationId,
       pipelineId: pipeline.id,
-      name: stageMapping.stageName,
+      name: definition.name,
       sortOrder: (lastStage?.sortOrder ?? 0) + 10,
-      probability: stageMapping.probability,
-      stageType: stageMapping.stageType,
-      requiredFields: definition ? [...definition.requiredFields] : [],
-      staleDays: definition?.staleDays ?? null,
+      probability: definition.probability,
+      stageType: definition.stageType,
+      requiredFields: [...definition.requiredFields],
+      staleDays: definition.staleDays,
     },
   });
 }

@@ -163,6 +163,16 @@ const genericSalesStageNames = new Set([
   "アポ失注",
   "プレゼン失注",
   "受注キャンセル",
+  "A受注",
+  "B本人確認",
+  "B商談済み回答待ち",
+  "C商談済み回答待ち",
+  "長期追客",
+  "長期追客リスト",
+  "前確(物理NG)",
+  "前確(条件NG)",
+  "前確(付き合いNG)",
+  "前確(営業失注)",
 ]);
 
 function migratedSalesStageName(
@@ -176,20 +186,29 @@ function migratedSalesStageName(
     アポ獲得: "E商談",
     商談予定: "E商談",
     提案中: "D商談済み回答待ち",
-    契約確認: "C商談済み回答待ち",
-    契約確認中: "C商談済み回答待ち",
-    受注: isHd ? "Aエントリー済み" : "A受注",
+    契約確認: "C申込書回収待ち",
+    契約確認中: "C申込書回収待ち",
+    受注: "Aエントリー済み",
     失注: "XCアポ失注",
     課金済み: "AA課金",
-    本人確認: isHd ? "B素材回収待ち" : "B商談済み回答待ち",
-    回答待ち: "C商談済み回答待ち",
+    本人確認: "B素材回収待ち",
+    回答待ち: "C申込書回収待ち",
     回答待ち低: "D商談済み回答待ち",
     日程変更中: "F日程変更中",
     アポ失注: "XCアポ失注",
     プレゼン失注: "XAプレゼン失注(決裁者)",
     受注キャンセル: "XAA受注キャンセル",
-    A受注: isHd ? "Aエントリー済み" : "A受注",
-    Aエントリー済み: isHd ? "Aエントリー済み" : "A受注",
+    A受注: "Aエントリー済み",
+    Aエントリー済み: "Aエントリー済み",
+    B本人確認: "B素材回収待ち",
+    B商談済み回答待ち: "B素材回収待ち",
+    C商談済み回答待ち: "C申込書回収待ち",
+    長期追客: "E商談",
+    長期追客リスト: "E商談",
+    "前確(物理NG)": isHd ? "前確（物理NG）" : "無効商談",
+    "前確(条件NG)": isHd ? "前確（条件NG）" : "無効商談",
+    "前確(付き合いNG)": isHd ? "前確（付き合いNG）" : "無効商談",
+    "前確(営業失注)": isHd ? "前確（営業失注）" : "無効商談",
     E2商談: isHd ? "E2前確通過商談" : "E2商談",
     E2前確通過商談: isHd ? "E2前確通過商談" : "E2商談",
   }[currentName];
@@ -288,6 +307,14 @@ async function reconcileSalesPipelineStages(
           target.stageType,
         ),
       },
+    });
+    await db.form.updateMany({
+      where: { organizationId, pipelineId: pipeline.id, stageId: oldStage.id },
+      data: { stageId: target.id },
+    });
+    await db.dealAlertRule.updateMany({
+      where: { organizationId, pipelineId: pipeline.id, stageId: oldStage.id },
+      data: { stageId: target.id },
     });
     await db.pipelineStage.deleteMany({
       where: { id: oldStage.id, organizationId, pipelineId: pipeline.id },

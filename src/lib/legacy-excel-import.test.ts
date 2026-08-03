@@ -377,9 +377,24 @@ describe("legacy Excel import", () => {
       "B素材回収待ち",
     );
     expect(mapLegacyProgressStatus("長期追客リスト")).toMatchObject({
-      stageName: "長期追客リスト",
+      stageName: "E商談",
       status: "OPEN",
     });
+    expect(
+      mapLegacyProgressStatus(
+        "AA課金 / XAA受注キャンセル / XAプレゼン失注(決裁者)",
+      ).stageName,
+    ).toBe("AA課金");
+    expect(
+      mapLegacyProgressStatus(
+        "XAA受注キャンセル / XAプレゼン失注(決裁者)",
+      ).stageName,
+    ).toBe("XAA受注キャンセル");
+    expect(
+      mapLegacyProgressStatus(
+        "XAプレゼン失注(決裁者) / D商談済み回答待ち / B商談済み回答待ち",
+      ).stageName,
+    ).toBe("B素材回収待ち");
     expect(mapLegacyProgressStatus("無効商談").status).toBe("INVALID");
     expect(mapLegacyProgressStatus("前確(条件NG)").status).toBe("LOST");
     expect(mapLegacyProgressStatus("XCアポ失注").status).toBe("LOST");

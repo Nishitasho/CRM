@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { PipelineManager } from "@/components/settings/pipeline-manager";
+import { StageNormalizationPanel } from "@/components/settings/stage-normalization-panel";
 import { SettingsNav } from "@/components/settings/settings-nav";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
@@ -20,7 +21,9 @@ export default async function PipelinesPage() {
     },
     include: {
       stages: {
-        include: { _count: { select: { deals: true } } },
+        include: {
+          _count: { select: { deals: { where: { deletedAt: null } } } },
+        },
         orderBy: { sortOrder: "asc" },
       },
     },
@@ -35,6 +38,12 @@ export default async function PipelinesPage() {
         description={`${businessUnitSelection.selectedBusinessUnitName}の営業プロセスに合わせてステージを編集できます。`}
       />
       <SettingsNav />
+      {hasPermission(
+        context.membership.role,
+        Permission.MANAGE_PIPELINES,
+      ) ? (
+        <StageNormalizationPanel />
+      ) : null}
       <PipelineManager
         pipelines={pipelines}
         canManage={hasPermission(

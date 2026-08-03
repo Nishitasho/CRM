@@ -81,27 +81,23 @@ function lostStage(name: string): SpreadsheetSalesStage {
  * They are kept separate from HD because the meaning of B, E2 and A differs.
  */
 export const firstDivisionSalesStages = [
+  wonStage("AA課金", billedFields),
+  wonStage("Aエントリー済み", wonFields),
+  openStage("B素材回収待ち", 85, [...responseWaitingFields, "expected_amount"]),
+  openStage("C申込書回収待ち", 70, responseWaitingFields),
+  openStage("D商談済み回答待ち", 55, responseWaitingFields),
+  openStage("E2商談", 40, appointmentFields, 3),
+  openStage("E商談", 30, appointmentFields, 3),
   openStage(
     "F日程変更中",
     15,
     ["appointment_acquired_date", "next_action", "next_action_date"],
     3,
   ),
-  openStage("E商談", 30, appointmentFields, 3),
-  openStage("E2商談", 40, appointmentFields, 3),
-  openStage("D商談済み回答待ち", 55, responseWaitingFields),
-  openStage("C商談済み回答待ち", 70, responseWaitingFields),
-  openStage("B商談済み回答待ち", 85, [
-    ...responseWaitingFields,
-    "expected_amount",
-  ]),
-  wonStage("A受注", wonFields),
-  wonStage("AA課金", billedFields),
-  openStage("長期追客リスト", 20, ["next_action", "next_action_date"], 30),
-  lostStage("XCアポ失注"),
+  lostStage("XAA受注キャンセル"),
   lostStage("XAプレゼン失注(決裁者)"),
   lostStage("XBプレゼン失注(非決裁者)"),
-  lostStage("XAA受注キャンセル"),
+  lostStage("XCアポ失注"),
   lostStage("無効商談"),
 ] as const satisfies readonly SpreadsheetSalesStage[];
 
@@ -109,29 +105,28 @@ export const firstDivisionSalesStages = [
  * The labels intentionally match the HD Division progress spreadsheet.
  */
 export const hdDivisionSalesStages = [
+  wonStage("AA課金", billedFields),
+  wonStage("Aエントリー済み", wonFields),
+  openStage("B素材回収待ち", 85, [...responseWaitingFields, "expected_amount"]),
+  openStage("C申込書回収待ち", 70, responseWaitingFields),
+  openStage("D商談済み回答待ち", 55, responseWaitingFields),
+  openStage("E2前確通過商談", 40, appointmentFields, 3),
+  openStage("E商談", 30, appointmentFields, 3),
   openStage(
     "F日程変更中",
     15,
     ["appointment_acquired_date", "next_action", "next_action_date"],
     3,
   ),
-  openStage("E商談", 30, appointmentFields, 3),
-  openStage("E2前確通過商談", 40, appointmentFields, 3),
-  openStage("D商談済み回答待ち", 55, responseWaitingFields),
-  openStage("C商談済み回答待ち", 70, responseWaitingFields),
-  openStage("B素材回収待ち", 85, [...responseWaitingFields, "expected_amount"]),
-  wonStage("Aエントリー済み", wonFields),
-  wonStage("AA課金", billedFields),
-  openStage("長期追客リスト", 20, ["next_action", "next_action_date"], 30),
-  lostStage("前確(付き合いNG)"),
-  lostStage("前確(営業失注)"),
-  lostStage("前確(条件NG)"),
-  lostStage("前確(物理NG)"),
-  lostStage("XCアポ失注"),
+  lostStage("XAA受注キャンセル"),
   lostStage("XAプレゼン失注(決裁者)"),
   lostStage("XBプレゼン失注(非決裁者)"),
-  lostStage("XAA受注キャンセル"),
+  lostStage("XCアポ失注"),
   lostStage("無効商談"),
+  lostStage("前確（物理NG）"),
+  lostStage("前確（条件NG）"),
+  lostStage("前確（付き合いNG）"),
+  lostStage("前確（営業失注）"),
 ] as const satisfies readonly SpreadsheetSalesStage[];
 
 export function salesStagesForBusinessUnit(input: {
@@ -144,15 +139,122 @@ export function salesStagesForBusinessUnit(input: {
   return key.includes("hd") ? hdDivisionSalesStages : firstDivisionSalesStages;
 }
 
+const genericSalesStageAliases: Record<string, string> = {
+  新規: "E商談",
+  新規リード: "E商談",
+  アポ獲得: "E商談",
+  商談予定: "E商談",
+  提案中: "D商談済み回答待ち",
+  契約確認: "C申込書回収待ち",
+  契約確認中: "C申込書回収待ち",
+  受注: "Aエントリー済み",
+  失注: "XCアポ失注",
+  課金済み: "AA課金",
+  本人確認: "B素材回収待ち",
+  回答待ち: "C申込書回収待ち",
+  回答待ち低: "D商談済み回答待ち",
+  日程変更中: "F日程変更中",
+  アポ失注: "XCアポ失注",
+  プレゼン失注: "XAプレゼン失注(決裁者)",
+  受注キャンセル: "XAA受注キャンセル",
+  長期追客: "E商談",
+  長期追客リスト: "E商談",
+  素材回収待ち: "B素材回収待ち",
+  A受注: "Aエントリー済み",
+  B本人確認: "B素材回収待ち",
+  B商談済み回答待ち: "B素材回収待ち",
+  C商談済み回答待ち: "C申込書回収待ち",
+  前確通過商談: "E2前確通過商談",
+  審査オチ: "XAプレゼン失注(決裁者)",
+  XAプレゼン失注: "XAプレゼン失注(決裁者)",
+};
+
+export function splitLegacySalesStageValues(value: string) {
+  return value
+    .normalize("NFKC")
+    .split(/\s*(?:\/|／|\||｜|\n)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function resolveSpreadsheetSalesStage(
+  value: string,
+  businessUnit: { name: string; slug?: string | null },
+) {
+  const desiredStages = salesStagesForBusinessUnit(businessUnit);
+  const candidates = splitLegacySalesStageValues(value)
+    .map((token) => canonicalStageToken(token, desiredStages))
+    .filter((stage): stage is SpreadsheetSalesStage => Boolean(stage));
+  if (!candidates.length) return null;
+  return candidates.reduce((selected, candidate) =>
+    salesStagePriority(candidate, desiredStages) <
+    salesStagePriority(selected, desiredStages)
+      ? candidate
+      : selected,
+  );
+}
+
+export function isLegacyImportedSalesStageName(
+  value: string,
+  businessUnit: { name: string; slug?: string | null },
+) {
+  const desiredNames = new Set(
+    salesStagesForBusinessUnit(businessUnit).map((stage) => stage.name),
+  );
+  if (desiredNames.has(value.trim())) return false;
+  return Boolean(resolveSpreadsheetSalesStage(value, businessUnit));
+}
+
+function canonicalStageToken(
+  token: string,
+  desiredStages: readonly SpreadsheetSalesStage[],
+) {
+  const normalizedToken = normalizeSalesStageName(token);
+  const exact = desiredStages.find(
+    (stage) => normalizeSalesStageName(stage.name) === normalizedToken,
+  );
+  if (exact) return exact;
+
+  let targetName = genericSalesStageAliases[normalizedToken] ?? token;
+  if (/^E商談[①1]$/.test(targetName)) targetName = "E商談";
+  if (/^前確\((?:物理NG|条件NG|付き合いNG|営業失注)\)$/.test(normalizedToken)) {
+    targetName = desiredStages.some((stage) =>
+      normalizeSalesStageName(stage.name) === normalizedToken
+    )
+      ? token
+      : "無効商談";
+  }
+  if (targetName === "E2商談" || targetName === "E2前確通過商談") {
+    targetName = desiredStages.some((stage) => stage.name === "E2前確通過商談")
+      ? "E2前確通過商談"
+      : "E2商談";
+  }
+  return desiredStages.find(
+    (stage) =>
+      normalizeSalesStageName(stage.name) === normalizeSalesStageName(targetName),
+  ) ?? null;
+}
+
+function salesStagePriority(
+  stage: SpreadsheetSalesStage,
+  desiredStages: readonly SpreadsheetSalesStage[],
+) {
+  return desiredStages.findIndex((item) => item.name === stage.name);
+}
+
+function normalizeSalesStageName(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, "").trim();
+}
+
 const salesStagesByName = new Map(
   [...firstDivisionSalesStages, ...hdDivisionSalesStages].map((stage) => [
-    stage.name,
+    normalizeSalesStageName(stage.name),
     stage,
   ]),
 );
 
 export function spreadsheetSalesStageByName(name: string) {
-  return salesStagesByName.get(name.trim()) ?? null;
+  return salesStagesByName.get(normalizeSalesStageName(name)) ?? null;
 }
 
 export function isInvalidDealStageName(name: string) {

@@ -1178,7 +1178,7 @@ function buildImportReadyDealRows(deals: MasterDeal[]): SimpleXlsxCell[][] {
           "",
           "",
           "",
-          Array.from(row.legacyProgress).join(" / ") || row.stage,
+          row.stage,
           row.isUser,
           row.fsUser,
           representative?.normalized.normalizedCompanyName ?? "",

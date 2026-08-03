@@ -18,8 +18,8 @@ const repairSchema = z.object({
   importJobId: z.string().uuid(),
 });
 
-const REPAIR_BATCH_SIZE = 100;
-const ASSOCIATION_REPAIR_VERSION = 3;
+const REPAIR_BATCH_SIZE = 25;
+const ASSOCIATION_REPAIR_VERSION = 4;
 
 const progressRepairTargets = {
   masters: false,
@@ -94,25 +94,36 @@ export async function POST(request: Request) {
       );
     }
 
-    const storedProgress =
-      mapping.associationRepairVersion === ASSOCIATION_REPAIR_VERSION
-        ? readRepairProgress(mapping.associationRepairProgress)
-        : readRepairProgress(undefined);
-    if (storedProgress.complete) {
+    const previousProgress = readRepairProgress(
+      mapping.associationRepairProgress,
+    );
+    const storedProgress = initializeRepairProgress(
+      mapping.associationRepairVersion,
+      previousProgress,
+    );
+    if (storedProgress.complete && storedProgress.errors.length === 0) {
       return NextResponse.json(storedProgress);
     }
+    const retryRowSet = new Set(storedProgress.retryRows);
+    const progressCandidates = retryRowSet.size
+      ? dryRun.progressCandidates.filter((candidate) =>
+          retryRowSet.has(candidateRowKey(candidate)),
+        )
+      : dryRun.progressCandidates;
     const repairingProgress =
-      storedProgress.index < dryRun.progressCandidates.length;
+      storedProgress.index < progressCandidates.length;
     const autoProjectIds = new Set(
       dryRun.crossFileMatches
         .filter((match) => match.decision === "AUTO")
         .map((match) => match.hpCandidateId),
     );
-    const autoProjects = dryRun.hpProjectCandidates.filter((candidate) =>
-      autoProjectIds.has(candidate.id),
+    const autoProjects = dryRun.hpProjectCandidates.filter(
+      (candidate) =>
+        autoProjectIds.has(candidate.id) &&
+        (!retryRowSet.size || retryRowSet.has(candidateRowKey(candidate))),
     );
     const candidates = repairingProgress
-      ? dryRun.progressCandidates.slice(
+      ? progressCandidates.slice(
           storedProgress.index,
           storedProgress.index + REPAIR_BATCH_SIZE,
         )
@@ -141,33 +152,38 @@ export async function POST(request: Request) {
         ? progressRepairTargets
         : projectRepairTargets,
       updateImportJob: false,
-      progressConcurrency: repairingProgress ? 8 : 1,
+      progressConcurrency: 1,
+      transactionMaxWaitMs: 15_000,
+      transactionTimeoutMs: 15_000,
     });
     const nextIndex = storedProgress.index + candidates.length;
     const nextProjectIndex =
       storedProgress.projectIndex + projectCandidates.length;
     const complete =
-      nextIndex >= dryRun.progressCandidates.length &&
+      nextIndex >= progressCandidates.length &&
       nextProjectIndex >= autoProjects.length;
     const nextProgress = {
       complete,
       index: nextIndex,
-      total: dryRun.progressCandidates.length,
+      total: progressCandidates.length,
       projectIndex: nextProjectIndex,
       projectTotal: autoProjects.length,
       updated: storedProgress.updated + result.created + result.updated,
       skipped: storedProgress.skipped + result.skipped,
       errors: [...storedProgress.errors, ...result.errors],
+      retryRows: storedProgress.retryRows,
     };
     const nextMapping: Prisma.JsonObject = {
       ...mapping,
       associationRepairVersion: ASSOCIATION_REPAIR_VERSION,
       associationRepairProgress: nextProgress,
-      ...(complete
+      ...(complete && nextProgress.errors.length === 0
         ? { associationRepairCompletedAt: new Date().toISOString() }
         : {}),
     };
-    if (!complete) delete nextMapping.associationRepairCompletedAt;
+    if (!complete || nextProgress.errors.length > 0) {
+      delete nextMapping.associationRepairCompletedAt;
+    }
     await prisma.importJob.update({
       where: { id: job.id, organizationId: context.organization.id },
       data: {
@@ -207,6 +223,7 @@ function readRepairProgress(value: Prisma.JsonValue | undefined) {
       updated: 0,
       skipped: 0,
       errors: [],
+      retryRows: [],
     };
   }
   const progress = value as Record<string, unknown>;
@@ -223,7 +240,36 @@ function readRepairProgress(value: Prisma.JsonValue | undefined) {
     errors: Array.isArray(progress.errors)
       ? progress.errors.filter(isRepairError)
       : [],
+    retryRows: Array.isArray(progress.retryRows)
+      ? progress.retryRows.filter(
+          (row): row is string => typeof row === "string",
+        )
+      : [],
   };
+}
+
+function initializeRepairProgress(
+  version: unknown,
+  previous: ReturnType<typeof readRepairProgress>,
+) {
+  if (
+    version === ASSOCIATION_REPAIR_VERSION &&
+    !(previous.complete && previous.errors.length > 0)
+  ) {
+    return previous;
+  }
+  const retryRows = previous.errors.map((error) => error.row);
+  return {
+    ...readRepairProgress(undefined),
+    retryRows,
+  };
+}
+
+function candidateRowKey(candidate: {
+  sheetName: string;
+  rowNumber: number;
+}) {
+  return `${candidate.sheetName}:${candidate.rowNumber}`;
 }
 
 function isRepairError(

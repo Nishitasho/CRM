@@ -1526,6 +1526,8 @@ export async function applyLegacyExcelImport(input: {
   manualMatches?: LegacyExcelApplyInput["manualMatches"];
   updateImportJob?: boolean;
   progressConcurrency?: number;
+  transactionMaxWaitMs?: number;
+  transactionTimeoutMs?: number;
 }) {
   const applyTargets = normalizeApplyTargets(input.applyTargets);
   const progressResults = new Map<string, AppliedProgressResult>();
@@ -1622,6 +1624,10 @@ export async function applyLegacyExcelImport(input: {
           try {
             const result = await prisma.$transaction(async (tx) =>
               applyProgressCandidate(tx, input, candidate, applyTargets),
+              {
+                maxWait: input.transactionMaxWaitMs ?? 2_000,
+                timeout: input.transactionTimeoutMs ?? 5_000,
+              },
             );
             results.push({ candidate, result });
           } catch (error) {

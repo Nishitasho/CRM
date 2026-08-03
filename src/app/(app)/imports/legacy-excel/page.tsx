@@ -24,6 +24,7 @@ export default async function LegacyExcelImportPage() {
       dryRunSummary?: { sourceName?: string };
       associationRepairCompletedAt?: string;
       associationRepairVersion?: number;
+      associationRepairProgress?: { errors?: unknown[] };
     };
     return {
       id: job.id,
@@ -38,7 +39,8 @@ export default async function LegacyExcelImportPage() {
       sourceName: mapping.dryRunSummary?.sourceName ?? "",
       associationRepairCompleted:
         Boolean(mapping.associationRepairCompletedAt) &&
-        mapping.associationRepairVersion === 2,
+        mapping.associationRepairVersion === 4 &&
+        (mapping.associationRepairProgress?.errors?.length ?? 0) === 0,
     };
   });
 

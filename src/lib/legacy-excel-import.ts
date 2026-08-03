@@ -398,6 +398,10 @@ type AnalyzeOptions = {
 type Tx = Prisma.TransactionClient;
 
 const PROGRESS_SHEET_PATTERN = /案件管理シート/;
+const AUTHORITATIVE_PROGRESS_SHEETS = new Set([
+  "【第一】案件管理シート",
+  "【HD】案件管理シート",
+]);
 const HP_SHEET_PATTERN =
   /HP管理シート|全案件|FSからの共有|制作定義|HP制作|制作管理/;
 const AUTHORITATIVE_HP_SHEETS = new Set(["【新】HP管理シート", "2025年"]);
@@ -531,6 +535,9 @@ function analyzeLegacyExcelParsedWorkbooks(
   let skippedRows = 0;
 
   for (const workbook of workbooks) {
+    const hasAuthoritativeProgressSheets = workbook.sheets.some((sheet) =>
+      AUTHORITATIVE_PROGRESS_SHEETS.has(sourceSheetTitle(sheet.sheetName)),
+    );
     const hasAuthoritativeHpSheets = workbook.sheets.some((sheet) =>
       AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(sheet.sheetName)),
     );
@@ -546,10 +553,18 @@ function analyzeLegacyExcelParsedWorkbooks(
             }
           : rawSheet;
       const detectedType = detectLegacySheetType(rawSheet.sheetName);
-      const type =
+      const isNonAuthoritativeProgressSheet =
+        hasAuthoritativeProgressSheets &&
+        detectedType === "progress_deals" &&
+        !AUTHORITATIVE_PROGRESS_SHEETS.has(
+          sourceSheetTitle(rawSheet.sheetName),
+        );
+      const isNonAuthoritativeHpSheet =
         hasAuthoritativeHpSheets &&
         detectedType === "hp_delivery_projects" &&
-        !AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(rawSheet.sheetName))
+        !AUTHORITATIVE_HP_SHEETS.has(sourceSheetTitle(rawSheet.sheetName));
+      const type =
+        isNonAuthoritativeProgressSheet || isNonAuthoritativeHpSheet
           ? "ignored"
           : detectedType;
       const selected = selectedSheets
@@ -1579,10 +1594,6 @@ export async function applyLegacyExcelImport(input: {
         applyTargets,
         input.manualMatches,
       );
-      if (!match) {
-        skipped += 1;
-        continue;
-      }
       const linkedProgress = match?.progressCandidateId
         ? progressResults.get(match.progressCandidateId)
         : undefined;
@@ -2369,6 +2380,7 @@ async function applyPriceBookCandidate(
     actorUserId: string;
     importJobId: string;
     dryRun: LegacyExcelDryRunResult;
+    referenceDryRun?: LegacyExcelDryRunResult;
   },
   candidate: LegacyPriceBookCandidate,
 ) {
@@ -2679,128 +2691,153 @@ async function applyProgressCandidate(
     candidate,
     "DEAL",
   );
-  if (existingDealLink) {
-    const deal = await tx.deal.findFirst({
-      where: { id: existingDealLink, organizationId: input.organizationId },
-    });
-    const companyId = deal
-      ? await resolveAssociatedId(
-          tx,
-          input.organizationId,
-          "DEAL",
-          deal.id,
-          "COMPANY",
-        )
-      : null;
-    const contactId = deal
-      ? await resolveAssociatedId(
-          tx,
-          input.organizationId,
-          "DEAL",
-          deal.id,
-          "CONTACT",
-        )
-      : null;
-    const repairedAssociations = deal
-      ? await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
-          companyId,
-          contactId,
-          dealId: deal.id,
-        })
-      : 0;
-    return {
-      companyId: companyId ?? "",
-      contactId,
-      dealId: existingDealLink,
-      productId: null,
-      lineItemId: null,
-      created: 0,
-      updated: repairedAssociations > 0 ? 1 : 0,
-      skipped: repairedAssociations > 0 ? 0 : 1,
-    };
-  }
+  const existingDeal = existingDealLink
+    ? await tx.deal.findFirst({
+        where: {
+          id: existingDealLink,
+          organizationId: input.organizationId,
+          deletedAt: null,
+        },
+      })
+    : null;
+  const dealCandidate = existingDeal
+    ? await aggregateCurrentProgressForDeal(
+        tx,
+        input,
+        existingDeal.id,
+        candidate,
+      )
+    : candidate;
   const businessUnit = await ensureBusinessUnit(
     tx,
     input.organizationId,
-    candidate.businessUnitName,
+    dealCandidate.businessUnitName,
   );
+  const associatedCompanyId = existingDeal
+    ? await resolveAssociatedId(
+        tx,
+        input.organizationId,
+        "DEAL",
+        existingDeal.id,
+        "COMPANY",
+      )
+    : null;
+  const associatedContactId = existingDeal
+    ? await resolveAssociatedId(
+        tx,
+        input.organizationId,
+        "DEAL",
+        existingDeal.id,
+        "CONTACT",
+      )
+    : null;
   const company =
     applyTargets.companiesContacts || applyTargets.deals
-      ? await findOrCreateCompany(tx, input, candidate)
+      ? ((associatedCompanyId
+          ? await tx.company.findFirst({
+              where: {
+                id: associatedCompanyId,
+                organizationId: input.organizationId,
+                deletedAt: null,
+              },
+            })
+          : null) ?? (await findOrCreateCompany(tx, input, candidate)))
       : null;
   const contact =
     company && (applyTargets.companiesContacts || applyTargets.deals)
-      ? await findOrCreateContact(tx, input, candidate, company.id)
+      ? ((associatedContactId
+          ? await tx.contact.findFirst({
+              where: {
+                id: associatedContactId,
+                organizationId: input.organizationId,
+                deletedAt: null,
+              },
+            })
+          : null) ??
+        (await findOrCreateContact(tx, input, candidate, company.id)))
       : null;
-  let deal: Awaited<ReturnType<typeof tx.deal.upsert>> | null = null;
+  let deal = existingDeal;
   if (applyTargets.deals && company) {
     const stage = await ensurePipelineStage(
       tx,
       input.organizationId,
       businessUnit.id,
-      candidate.stage,
+      dealCandidate.stage,
     );
     const owner = await findUserByName(
       tx,
       input.organizationId,
-      candidate.fsOwnerName,
+      dealCandidate.fsOwnerName,
     );
     const resolvedStatus = dealStatusForSpreadsheetStage(
       stage.name,
       stage.stageType,
     );
-    const resolvedAt = dateTime(candidate.wonDate) ?? new Date();
+    const resolvedAt = dateTime(dealCandidate.wonDate) ?? new Date();
+    const nextAction = getValue(dealCandidate.raw, [
+      "次回アクション内容",
+      "次回アクション",
+      "ネクストアクション",
+      "対応内容",
+    ]);
+    const nextActionDate = parseLegacyDate(
+      getValue(dealCandidate.raw, [
+        "次回アクション日",
+        "ネクストアクション日",
+        "次回対応日",
+        "対応期限",
+      ]),
+    );
     const resolvedStatusDates = {
       wonAt: resolvedStatus === DealStatus.WON ? resolvedAt : null,
       lostAt: resolvedStatus === DealStatus.LOST ? resolvedAt : null,
-      cancelledAt:
-        resolvedStatus === DealStatus.CANCELLED ? resolvedAt : null,
-      invalidatedAt:
-        resolvedStatus === DealStatus.INVALID ? resolvedAt : null,
+      cancelledAt: resolvedStatus === DealStatus.CANCELLED ? resolvedAt : null,
+      invalidatedAt: resolvedStatus === DealStatus.INVALID ? resolvedAt : null,
     };
-    deal = await tx.deal.upsert({
-      where: {
-        organizationId_externalId: {
-          organizationId: input.organizationId,
-          externalId: candidate.sourceKey.slice(0, 160),
-        },
-      },
-      create: {
-        organizationId: input.organizationId,
-        businessUnitId: businessUnit.id,
-        ownerUserId: owner?.id ?? null,
-        pipelineId: stage.pipelineId,
-        stageId: stage.id,
-        name: candidate.dealName.slice(0, 200),
-        amount: decimal(candidate.amount),
-        expectedCloseDate: dateOnly(candidate.expectedCloseDate),
-        closeDate: dateOnly(candidate.wonDate ?? candidate.expectedCloseDate),
-        probability: stage.probability,
-        status: resolvedStatus,
-        source: "legacy_excel",
-        externalId: candidate.sourceKey.slice(0, 160),
-        legacyProgress: candidate.progress.slice(0, 160),
-        ...resolvedStatusDates,
-        customFields: buildLegacyCustomFields(
-          candidate.raw,
-          "DEAL",
-        ) as Prisma.InputJsonValue,
-      },
-      update: {
-        businessUnitId: businessUnit.id,
-        pipelineId: stage.pipelineId,
-        stageId: stage.id,
-        probability: stage.probability,
-        status: resolvedStatus,
-        ...resolvedStatusDates,
-        legacyProgress: candidate.progress.slice(0, 160),
-        customFields: mergeLegacyCustomFields(
-          {},
-          candidate.raw,
-          "DEAL",
-        ) as Prisma.InputJsonValue,
-      },
-    });
+    const dealData = {
+      businessUnitId: businessUnit.id,
+      ownerUserId: owner?.id ?? existingDeal?.ownerUserId ?? null,
+      pipelineId: stage.pipelineId,
+      stageId: stage.id,
+      name: dealCandidate.dealName.slice(0, 200),
+      amount: decimal(dealCandidate.amount),
+      expectedCloseDate: dateOnly(dealCandidate.expectedCloseDate),
+      closeDate: dateOnly(
+        dealCandidate.wonDate ?? dealCandidate.expectedCloseDate,
+      ),
+      probability: stage.probability,
+      status: resolvedStatus,
+      legacyProgress: dealCandidate.progress.slice(0, 160),
+      nextAction: nextAction.slice(0, 240) || null,
+      nextActionDate: dateOnly(nextActionDate),
+      nextActionOwnerId: owner?.id ?? existingDeal?.nextActionOwnerId ?? null,
+      ...resolvedStatusDates,
+      customFields: mergeLegacyCustomFields(
+        jsonObject(existingDeal?.customFields),
+        dealCandidate.raw,
+        "DEAL",
+      ) as Prisma.InputJsonValue,
+    };
+    deal = existingDeal
+      ? await tx.deal.update({
+          where: { id: existingDeal.id },
+          data: dealData,
+        })
+      : await tx.deal.upsert({
+          where: {
+            organizationId_externalId: {
+              organizationId: input.organizationId,
+              externalId: candidate.sourceKey.slice(0, 160),
+            },
+          },
+          create: {
+            organizationId: input.organizationId,
+            source: "legacy_excel",
+            externalId: candidate.sourceKey.slice(0, 160),
+            ...dealData,
+          },
+          update: dealData,
+        });
     await ensureLegacyPrimaryAssociations(tx, input.organizationId, {
       companyId: company.id,
       contactId: contact?.id ?? null,
@@ -2880,10 +2917,96 @@ async function applyProgressCandidate(
     dealId: deal?.id ?? null,
     productId: product?.id ?? null,
     lineItemId: lineItem?.id ?? null,
-    created: 1,
-    updated: 0,
+    created: existingDeal ? 0 : 1,
+    updated: existingDeal ? 1 : 0,
     skipped: 0,
   };
+}
+
+async function aggregateCurrentProgressForDeal(
+  tx: Tx,
+  input: {
+    organizationId: string;
+    dryRun: LegacyExcelDryRunResult;
+    referenceDryRun?: LegacyExcelDryRunResult;
+  },
+  dealId: string,
+  fallback: ProgressDealCandidate,
+) {
+  const links = await tx.legacySourceLink.findMany({
+    where: {
+      organizationId: input.organizationId,
+      provider: input.dryRun.provider,
+      targetObjectType: "DEAL",
+      targetObjectId: dealId,
+    },
+    select: { sheetName: true, rowNumber: true },
+  });
+  const sourceRows = new Set(
+    links.map((link) => `${link.sheetName}\u0000${link.rowNumber}`),
+  );
+  sourceRows.add(`${fallback.sheetName}\u0000${fallback.rowNumber}`);
+  const candidates = (input.referenceDryRun ?? input.dryRun).progressCandidates
+    .filter((item) =>
+      sourceRows.has(`${item.sheetName}\u0000${item.rowNumber}`),
+    )
+    .sort(
+      (left, right) =>
+        legacyDealProgressRank(right) - legacyDealProgressRank(left),
+    );
+  if (candidates.length === 0) return fallback;
+
+  const selected = candidates[0];
+  const amounts = candidates
+    .map((item) => item.amount)
+    .filter((value): value is number => value !== null);
+  return {
+    ...selected,
+    amount:
+      amounts.length > 0
+        ? amounts.reduce((total, value) => total + value, 0)
+        : null,
+    appointmentAcquiredAt: candidates.reduce(
+      (value, item) => earliestLegacyDate(value, item.appointmentAcquiredAt),
+      null as string | null,
+    ),
+    meetingDate: candidates.reduce(
+      (value, item) => earliestLegacyDate(value, item.meetingDate),
+      null as string | null,
+    ),
+    expectedCloseDate:
+      candidates.find((item) => item.expectedCloseDate)?.expectedCloseDate ??
+      null,
+    wonDate: candidates.find((item) => item.wonDate)?.wonDate ?? null,
+  };
+}
+
+function earliestLegacyDate(current: string | null, next: string | null) {
+  if (!current) return next;
+  if (!next) return current;
+  return current < next ? current : next;
+}
+
+function legacyDealProgressRank(candidate: ProgressDealCandidate) {
+  const name = candidate.stage.stageName;
+  if (/^AA課金/.test(name)) return 1000;
+  if (/^A(?:エントリー済み|受注)/.test(name)) return 900;
+  if (/^B素材回収待ち/.test(name)) return 800;
+  if (/^C申込書回収待ち/.test(name)) return 700;
+  if (/^D商談済み回答待ち/.test(name)) return 600;
+  if (/^E2/.test(name)) return 500;
+  if (/^E商談/.test(name)) return 400;
+  if (/^F日程変更中/.test(name)) return 300;
+  if (/^XAA受注キャンセル/.test(name)) return 240;
+  if (/^XAプレゼン失注/.test(name)) return 230;
+  if (/^XBプレゼン失注/.test(name)) return 220;
+  if (/^XCアポ失注/.test(name)) return 210;
+  if (/無効商談|前確/.test(name)) return 200;
+  if (candidate.stage.status === DealStatus.WON) return 850;
+  if (candidate.stage.status === DealStatus.OPEN) return 350;
+  if (candidate.stage.status === DealStatus.CANCELLED) return 240;
+  if (candidate.stage.status === DealStatus.LOST) return 210;
+  return 100;
 }
 
 async function applyHpProjectCandidate(
@@ -2906,8 +3029,115 @@ async function applyHpProjectCandidate(
     candidate,
     "DELIVERY_PROJECT",
   );
-  if (existingProjectLink)
+  if (existingProjectLink) {
+    const existingProject = await tx.deliveryProject.findFirst({
+      where: {
+        id: existingProjectLink,
+        organizationId: input.organizationId,
+        deletedAt: null,
+      },
+    });
+    if (existingProject) {
+      const businessUnit = await ensureBusinessUnit(
+        tx,
+        input.organizationId,
+        candidate.businessUnitName,
+      );
+      const deliveryStage = await ensureDeliveryPipelineStage(
+        tx,
+        input.organizationId,
+        businessUnit.id,
+        businessUnit.name,
+        candidate.progress,
+      );
+      const owner = await findUserByName(
+        tx,
+        input.organizationId,
+        candidate.csOwnerName,
+      );
+      const persistedLinkedProgress =
+        linkedProgress ?? (await findPersistedProgressResult(tx, input, match));
+      const companyId =
+        persistedLinkedProgress?.companyId ?? existingProject.companyId ?? null;
+      const contactId =
+        persistedLinkedProgress?.contactId ??
+        existingProject.primaryContactId ??
+        null;
+      const sourceDealId =
+        persistedLinkedProgress?.dealId ?? existingProject.sourceDealId ?? null;
+      const status = deliveryProjectStatusForStageName(candidate.progress);
+      const project = await tx.deliveryProject.update({
+        where: { id: existingProject.id },
+        data: {
+          businessUnitId: businessUnit.id,
+          pipelineId: deliveryStage.pipeline.id,
+          stageId: deliveryStage.stage.id,
+          companyId,
+          primaryContactId: contactId,
+          sourceDealId,
+          name: candidate.projectName.slice(0, 200),
+          status,
+          ownerUserId: owner?.id ?? existingProject.ownerUserId,
+          expectedStartDate: dateOnly(candidate.hearingDate),
+          expectedPublishDate: dateOnly(candidate.expectedPublishDate),
+          actualPublishDate: dateOnly(candidate.actualPublishDate),
+          completedAt:
+            status === "COMPLETED"
+              ? (dateTime(candidate.actualPublishDate) ??
+                existingProject.completedAt ??
+                new Date())
+              : null,
+          nextAction: candidate.nextAction.slice(0, 240) || null,
+          nextActionDate: dateOnly(candidate.nextActionDate),
+          scopeSnapshot: {
+            ...jsonObject(existingProject.scopeSnapshot),
+            source: "legacy_excel",
+            sourceDealUnresolved: !sourceDealId,
+            match: matchMetadata(match),
+            legacyCustomFields: buildLegacyCustomFields(
+              candidate.raw,
+              "DELIVERY_PROJECT",
+            ),
+            raw: candidate.raw,
+          } as Prisma.InputJsonValue,
+          lastActivityAt: new Date(),
+        },
+      });
+      await updateProjectTaskFromLegacyCandidate(
+        tx,
+        input,
+        candidate,
+        project.id,
+        owner?.id ?? existingProject.ownerUserId ?? input.actorUserId,
+      );
+      await createLegacyLink(
+        tx,
+        input,
+        candidate,
+        "DELIVERY_PROJECT",
+        project.id,
+        {
+          ...matchMetadata(match),
+          matchedCompanyId: companyId,
+          matchedDealId: sourceDealId,
+          matchedContactId: contactId,
+        },
+      );
+      return {
+        created: 0,
+        updated: 1,
+        skipped: 0,
+        warnings: sourceDealId
+          ? []
+          : [
+              `${candidate.sheetName}:${candidate.rowNumber} は既存CS案件を更新しましたが、元商談が未紐付けです。`,
+            ],
+      };
+    }
+  }
+  if (!match) {
     return { created: 0, updated: 0, skipped: 1, warnings: [] };
+  }
   const businessUnit = await ensureBusinessUnit(
     tx,
     input.organizationId,
@@ -3321,8 +3551,8 @@ export async function ensurePipelineStage(
     : firstDivisionSalesStages;
   const definition =
     (businessUnit
-      ? resolveSpreadsheetSalesStage(stageMapping.stageName, businessUnit) ??
-        resolveSpreadsheetSalesStage(stageMapping.label, businessUnit)
+      ? (resolveSpreadsheetSalesStage(stageMapping.stageName, businessUnit) ??
+        resolveSpreadsheetSalesStage(stageMapping.label, businessUnit))
       : null) ??
     definitions.find((stage) => stage.name === "E商談") ??
     definitions[0];
@@ -3733,16 +3963,58 @@ async function createDealLineItemIfNeeded(
   productId: string | null,
   businessUnitId: string,
 ) {
+  const workflow = getLegacyDealLineItemWorkflow(candidate);
+  const workflowDates = {
+    meetingAt: dateOnly(workflow.meetingDate),
+    contractedAt: dateOnly(workflow.contractedDate),
+    collectedAt: dateOnly(workflow.collectedDate),
+    billingStartedAt: dateOnly(workflow.billingDate),
+    cancelledAt: dateOnly(workflow.cancelledDate),
+    lostAt:
+      workflow.status === "LOST"
+        ? dateTime(candidate.expectedCloseDate ?? candidate.meetingDate)
+        : null,
+  };
   const existing = await findLegacyLinkTarget(
     tx,
     input,
     candidate,
     "DEAL_LINE_ITEM",
+    { parentDealId: dealId },
   );
   if (existing) {
-    return tx.dealLineItem.findFirst({
+    const lineItem = await tx.dealLineItem.findFirst({
       where: { id: existing, organizationId: input.organizationId },
     });
+    if (lineItem) {
+      return tx.dealLineItem.update({
+        where: { id: lineItem.id },
+        data: {
+          dealId,
+          productId,
+          businessUnitId,
+          name: (candidate.productName || candidate.dealName).slice(0, 180),
+          revenueAmount: decimal(candidate.amount),
+          grossProfitAmount: decimal(candidate.grossProfitAmount),
+          expectedRevenueAmount: decimal(candidate.amount),
+          expectedGrossProfitAmount: decimal(candidate.grossProfitAmount),
+          collectedAmount: decimal(workflow.collectedAmount),
+          initialFee: decimal(candidate.initialFee),
+          recurringFee: decimal(candidate.recurringFee),
+          status: workflow.status,
+          ...workflowDates,
+          customFields: mergeLegacyCustomFields(
+            jsonObject(lineItem.customFields),
+            candidate.raw,
+            "DEAL_LINE_ITEM",
+          ) as Prisma.InputJsonValue,
+          metadata: {
+            ...jsonObject(lineItem.metadata),
+            sourceKey: candidate.sourceKey,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    }
   }
   if (
     !candidate.productName &&
@@ -3762,17 +4034,11 @@ async function createDealLineItemIfNeeded(
       grossProfitAmount: decimal(candidate.grossProfitAmount),
       expectedRevenueAmount: decimal(candidate.amount),
       expectedGrossProfitAmount: decimal(candidate.grossProfitAmount),
+      collectedAmount: decimal(workflow.collectedAmount),
       initialFee: decimal(candidate.initialFee),
       recurringFee: decimal(candidate.recurringFee),
-      contractedAt: dateOnly(candidate.wonDate),
-      status:
-        candidate.stage.status === "WON"
-          ? "WON"
-          : candidate.stage.status === "LOST"
-            ? "LOST"
-            : candidate.stage.status === "CANCELLED"
-              ? "CANCELLED"
-              : "PROPOSED",
+      status: workflow.status,
+      ...workflowDates,
       source: "legacy_excel",
       customFields: buildLegacyCustomFields(
         candidate.raw,
@@ -3781,6 +4047,54 @@ async function createDealLineItemIfNeeded(
       metadata: { sourceKey: candidate.sourceKey },
     },
   });
+}
+
+export function getLegacyDealLineItemWorkflow(
+  candidate: ProgressDealCandidate,
+) {
+  const collectedDate = parseLegacyDate(
+    getValue(candidate.raw, ["回収日", "入金日"]),
+  );
+  const billingDate = parseLegacyDate(
+    getValue(candidate.raw, ["課金日", "課金開始日"]),
+  );
+  const cancelledDate = parseLegacyDate(
+    getValue(candidate.raw, ["キャンセル日", "解約日"]),
+  );
+  const collectedAmount = parseMoney(
+    getValue(candidate.raw, ["回収金額", "入金額"]),
+  );
+  const progress = candidate.stage.stageName.normalize("NFKC").trim();
+  let status:
+    | "PLANNED"
+    | "CONSIDERING"
+    | "PROPOSED"
+    | "WON"
+    | "BILLED"
+    | "LOST"
+    | "CANCELLED" = "PLANNED";
+  if (billingDate || /^AA課金/.test(progress)) status = "BILLED";
+  else if (
+    /^(?:A(?:受注|エントリー済み)|B素材回収待ち|C申込書回収待ち)/.test(progress)
+  )
+    status = "WON";
+  else if (candidate.stage.status === "CANCELLED") status = "CANCELLED";
+  else if (
+    candidate.stage.status === "LOST" ||
+    candidate.stage.status === "INVALID"
+  )
+    status = "LOST";
+  else if (/^D商談済み回答待ち/.test(progress)) status = "CONSIDERING";
+  else if (/^E2|^E商談/.test(progress)) status = "PROPOSED";
+  return {
+    status,
+    meetingDate: candidate.meetingDate,
+    contractedDate: candidate.wonDate,
+    collectedDate,
+    billingDate,
+    cancelledDate,
+    collectedAmount,
+  };
 }
 
 async function ensureDealParticipant(
@@ -3847,12 +4161,7 @@ async function createLegacyActivityIfNeeded(
   targetId: string,
   activity: { title: string; body?: string; deliveryProjectId?: string },
 ) {
-  const existing = await findLegacyLinkTarget(
-    tx,
-    input,
-    candidate,
-    `ACTIVITY_${targetType}`,
-  );
+  const existing = await findLegacyLinkTarget(tx, input, candidate, "ACTIVITY");
   if (existing) return null;
   return tx.activity.create({
     data: {
@@ -3911,6 +4220,46 @@ async function createProjectTaskIfNeeded(
   });
 }
 
+async function updateProjectTaskFromLegacyCandidate(
+  tx: Tx,
+  input: { organizationId: string; actorUserId: string },
+  candidate: HpDeliveryProjectCandidate,
+  projectId: string,
+  ownerUserId: string,
+) {
+  if (!candidate.nextAction && !candidate.nextActionDate) return;
+  const task = await tx.task.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      deliveryProjectId: projectId,
+      autoTaskKey: { startsWith: "legacy-excel:" },
+      status: { in: [TaskStatus.TODO, TaskStatus.IN_PROGRESS] },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  if (!task) {
+    await createProjectTaskIfNeeded(
+      tx,
+      input,
+      candidate,
+      projectId,
+      ownerUserId,
+    );
+    return;
+  }
+  await tx.task.update({
+    where: { id: task.id },
+    data: {
+      ownerUserId,
+      title: (
+        candidate.nextAction || `${candidate.projectName} 次回対応`
+      ).slice(0, 200),
+      description: candidate.memo || null,
+      dueDate: dateTime(candidate.nextActionDate),
+    },
+  });
+}
+
 async function createLegacyLink(
   tx: Tx,
   input: {
@@ -3952,6 +4301,14 @@ async function createLegacyLink(
         sheetName: candidate.sheetName,
         rowNumber: candidate.rowNumber,
         sourceKey: candidate.sourceKey,
+        stableSourceKey: `${candidate.sheetName}:${candidate.rowNumber}`,
+        normalizedCompanyName:
+          candidate.normalized.normalizedCompanyName || null,
+        normalizedDealName: candidate.normalized.normalizedDealName || null,
+        normalizedProjectName:
+          candidate.normalized.normalizedProjectName || null,
+        normalizedProductName:
+          candidate.normalized.normalizedProductName || null,
         ...metadata,
       } as Prisma.InputJsonValue,
     },
@@ -3964,6 +4321,14 @@ async function createLegacyLink(
         sheetName: candidate.sheetName,
         rowNumber: candidate.rowNumber,
         sourceKey: candidate.sourceKey,
+        stableSourceKey: `${candidate.sheetName}:${candidate.rowNumber}`,
+        normalizedCompanyName:
+          candidate.normalized.normalizedCompanyName || null,
+        normalizedDealName: candidate.normalized.normalizedDealName || null,
+        normalizedProjectName:
+          candidate.normalized.normalizedProjectName || null,
+        normalizedProductName:
+          candidate.normalized.normalizedProductName || null,
         ...metadata,
       } as Prisma.InputJsonValue,
     },
@@ -3978,6 +4343,7 @@ async function findLegacyLinkTarget(
   },
   candidate: LegacyRowCandidateBase,
   targetObjectType: string,
+  options: { parentDealId?: string } = {},
 ) {
   const link = await tx.legacySourceLink.findUnique({
     where: {
@@ -3993,7 +4359,143 @@ async function findLegacyLinkTarget(
         },
     },
   });
-  return link?.targetObjectId ?? null;
+  if (link) return link.targetObjectId;
+
+  // The workbook fingerprint and row fingerprint change whenever the source
+  // spreadsheet is edited. Reuse the previously imported object only when the
+  // same source row still points to a compatible CRM record.
+  const historicalLinks = await tx.legacySourceLink.findMany({
+    where: {
+      organizationId: input.organizationId,
+      provider: input.dryRun.provider,
+      sheetName: candidate.sheetName,
+      targetObjectType,
+      OR: [
+        { rowNumber: candidate.rowNumber },
+        { rowFingerprint: candidate.rowFingerprint },
+      ],
+    },
+    orderBy: { importedAt: "desc" },
+    take: 20,
+  });
+  for (const historicalLink of historicalLinks) {
+    if (
+      await isCompatibleHistoricalLegacyLink(
+        tx,
+        input.organizationId,
+        candidate,
+        targetObjectType,
+        historicalLink,
+        options,
+      )
+    ) {
+      return historicalLink.targetObjectId;
+    }
+  }
+  return null;
+}
+
+async function isCompatibleHistoricalLegacyLink(
+  tx: Tx,
+  organizationId: string,
+  candidate: LegacyRowCandidateBase,
+  targetObjectType: string,
+  link: {
+    targetObjectId: string;
+    rowNumber: number;
+    rowFingerprint: string;
+  },
+  options: { parentDealId?: string },
+) {
+  const exactRowContent = link.rowFingerprint === candidate.rowFingerprint;
+  if (targetObjectType === "DEAL") {
+    const deal = await tx.deal.findFirst({
+      where: {
+        id: link.targetObjectId,
+        organizationId,
+        deletedAt: null,
+      },
+      select: { id: true, name: true },
+    });
+    if (!deal) return false;
+    if (exactRowContent) return true;
+    const companyId = await resolveAssociatedId(
+      tx,
+      organizationId,
+      "DEAL",
+      deal.id,
+      "COMPANY",
+    );
+    const company = companyId
+      ? await tx.company.findFirst({
+          where: { id: companyId, organizationId, deletedAt: null },
+          select: { name: true },
+        })
+      : null;
+    const candidateCompany = candidate.normalized.normalizedCompanyName;
+    const candidateDeal = candidate.normalized.normalizedDealName;
+    return Boolean(
+      (candidateCompany &&
+        company &&
+        normalizeLegacyName(company.name) === candidateCompany) ||
+        (candidateDeal && normalizeLegacyName(deal.name) === candidateDeal),
+    );
+  }
+  if (targetObjectType === "DEAL_LINE_ITEM") {
+    const lineItem = await tx.dealLineItem.findFirst({
+      where: { id: link.targetObjectId, organizationId },
+      select: { dealId: true, name: true },
+    });
+    if (!lineItem) return false;
+    if (options.parentDealId) return lineItem.dealId === options.parentDealId;
+    return (
+      exactRowContent ||
+      Boolean(
+        candidate.normalized.normalizedProductName &&
+          normalizeLegacyName(lineItem.name) ===
+            candidate.normalized.normalizedProductName,
+      )
+    );
+  }
+  if (targetObjectType === "DELIVERY_PROJECT") {
+    const project = await tx.deliveryProject.findFirst({
+      where: {
+        id: link.targetObjectId,
+        organizationId,
+        deletedAt: null,
+      },
+      select: { name: true, companyId: true },
+    });
+    if (!project) return false;
+    if (
+      exactRowContent ||
+      (candidate.normalized.normalizedProjectName &&
+        normalizeLegacyName(project.name) ===
+          candidate.normalized.normalizedProjectName)
+    ) {
+      return true;
+    }
+    if (!project.companyId) return false;
+    const company = await tx.company.findFirst({
+      where: { id: project.companyId, organizationId, deletedAt: null },
+      select: { name: true },
+    });
+    return Boolean(
+      company &&
+        candidate.normalized.normalizedCompanyName &&
+        normalizeLegacyName(company.name) ===
+          candidate.normalized.normalizedCompanyName,
+    );
+  }
+  if (targetObjectType === "ACTIVITY") {
+    return Boolean(
+      await tx.activity.findFirst({
+        where: { id: link.targetObjectId, organizationId },
+        select: { id: true },
+      }),
+    );
+  }
+  return exactRowContent;
 }
 
 async function resolveAssociatedId(
@@ -4057,6 +4559,14 @@ function mergeLegacyCustomFields(
   objectType: LegacyCustomPropertyPlan["objectType"],
 ) {
   return { ...existing, ...buildLegacyCustomFields(row, objectType) };
+}
+
+function jsonObject(
+  value: Prisma.JsonValue | null | undefined,
+): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function matchMetadata(

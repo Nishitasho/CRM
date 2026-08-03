@@ -10,6 +10,7 @@ import {
   ensureProduct,
   excelSerialToDateString,
   findUserByName,
+  getLegacyDealLineItemWorkflow,
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
   mapLegacyProgressStatus,
@@ -126,6 +127,49 @@ describe("legacy Excel import", () => {
     expect(result.totals.hpDeliveryProjectCandidates).toBe(1);
     expect(result.progressCandidates[0].stage.status).toBe("WON");
     expect(result.hpProjectCandidates[0].projectName).toBe("テスト HP制作");
+  });
+
+  it("maps the current spreadsheet workflow dates and product status", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【HD】案件管理シート": [
+          [
+            "案件名",
+            "進捗",
+            "獲得商材",
+            "商談日",
+            "受注日",
+            "回収日",
+            "課金日",
+            "回収金額",
+          ],
+          [
+            "株式会社テスト",
+            "AA課金",
+            "HP制作",
+            "2026/07/01",
+            "2026/07/05",
+            "2026/07/10",
+            "2026/08/01",
+            "120,000",
+          ],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    const workflow = getLegacyDealLineItemWorkflow(
+      result.progressCandidates[0],
+    );
+    expect(workflow).toEqual({
+      status: "BILLED",
+      meetingDate: "2026-07-01",
+      contractedDate: "2026-07-05",
+      collectedDate: "2026-07-10",
+      billingDate: "2026-08-01",
+      cancelledDate: null,
+      collectedAmount: 120000,
+    });
   });
 
   it("auto links identical projects by high score", () => {
@@ -290,6 +334,44 @@ describe("legacy Excel import", () => {
     ).toEqual(["2025年", "【新】HP管理シート"].sort());
   });
 
+  it("uses only the authoritative First and HD progress tabs", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【第一】案件管理シート": [
+          ["案件名", "進捗", "商材"],
+          ["第一の現行案件", "E商談", "HP"],
+        ],
+        "【HD】案件管理シート": [
+          ["案件名", "進捗", "商材"],
+          ["HDの現行案件", "B素材回収待ち", "menu"],
+        ],
+        "【全体案件管理シート】（旧）": [
+          ["案件名", "進捗", "商材"],
+          ["旧シート案件", "AA課金", "HP"],
+        ],
+        "【個人案件管理シート】前川": [
+          ["案件名", "進捗", "商材"],
+          ["個人シート案件", "AA課金", "HP"],
+        ],
+      }),
+      "【新】進捗管理シート.xlsx",
+    );
+
+    expect(
+      result.progressCandidates.map((row) => row.companyName).sort(),
+    ).toEqual(["HDの現行案件", "第一の現行案件"].sort());
+    expect(
+      result.sheets
+        .filter((sheet) => sheet.type === "ignored")
+        .map((sheet) => sheet.sheetName),
+    ).toEqual(
+      expect.arrayContaining([
+        "【全体案件管理シート】（旧）",
+        "【個人案件管理シート】前川",
+      ]),
+    );
+  });
+
   it("keeps company-name-only matches in review range", () => {
     const result = analyzeLegacyExcelWorkbook(
       makeWorkbook({
@@ -386,9 +468,8 @@ describe("legacy Excel import", () => {
       ).stageName,
     ).toBe("AA課金");
     expect(
-      mapLegacyProgressStatus(
-        "XAA受注キャンセル / XAプレゼン失注(決裁者)",
-      ).stageName,
+      mapLegacyProgressStatus("XAA受注キャンセル / XAプレゼン失注(決裁者)")
+        .stageName,
     ).toBe("XAA受注キャンセル");
     expect(
       mapLegacyProgressStatus(

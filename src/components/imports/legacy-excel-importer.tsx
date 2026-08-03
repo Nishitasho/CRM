@@ -116,6 +116,10 @@ type DateRefreshResponse = {
   lineItems: number;
   projects: number;
   skipped: number;
+  verification?: {
+    checked: number;
+    mismatches: number;
+  };
   message?: string;
 };
 
@@ -447,7 +451,7 @@ export function LegacyExcelImporter({
         throw new Error(json.message ?? "日付の再同期に失敗しました。");
       }
       setMessage(
-        `日付の再同期が完了しました。商談 ${json.deals}件、商品明細 ${json.lineItems}件、CS案件 ${json.projects}件、未一致 ${json.skipped}件`,
+        `日付の再同期が完了しました。商談 ${json.deals}件、商品明細 ${json.lineItems}件、CS案件 ${json.projects}件、未一致 ${json.skipped}件、保存値の不一致 ${json.verification?.mismatches ?? 0}件`,
       );
       router.refresh();
     } catch (refreshError) {

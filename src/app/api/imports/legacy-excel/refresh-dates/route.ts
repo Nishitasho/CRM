@@ -111,6 +111,7 @@ export async function POST(request: Request) {
       context.organization.id,
       plan.projects,
     );
+    const verification = await verifyDateRefresh(context.organization.id, plan);
     const skipped =
       plan.unmatched.deals + plan.unmatched.lineItems + plan.unmatched.projects;
     const result = {
@@ -119,6 +120,7 @@ export async function POST(request: Request) {
       projects: projectCount,
       skipped,
       unmatched: plan.unmatched,
+      verification,
     };
     const completedAt = new Date().toISOString();
     await prisma.importJob.update({
@@ -127,11 +129,14 @@ export async function POST(request: Request) {
         organizationId: context.organization.id,
       },
       data: {
-        status: "COMPLETED",
+        status: verification.mismatches > 0 ? "FAILED" : "COMPLETED",
         successCount: dealCount + lineItemCount + projectCount,
         skippedCount: skipped,
-        errorCount: 0,
-        errorReport: [] as Prisma.InputJsonValue,
+        errorCount: verification.mismatches,
+        errorReport: verification.samples.map((sample) => ({
+          row: sample.id,
+          message: `${sample.type}.${sample.field}: ${sample.actual ?? "null"}（期待値 ${sample.expected ?? "null"}）`,
+        })) as Prisma.InputJsonValue,
         mapping: {
           ...mapping,
           dateRefreshCompletedAt: completedAt,
@@ -157,6 +162,156 @@ export async function POST(request: Request) {
   } catch (error) {
     return apiError(error);
   }
+}
+
+type DateRefreshPlan = ReturnType<typeof buildLegacyDateRefreshPlan>;
+type DateMismatch = {
+  type: "DEAL" | "DEAL_LINE_ITEM" | "DELIVERY_PROJECT";
+  id: string;
+  field: string;
+  expected: string | null;
+  actual: string | null;
+};
+
+async function verifyDateRefresh(
+  organizationId: string,
+  plan: DateRefreshPlan,
+) {
+  const mismatches = [
+    ...(await verifyDeals(organizationId, plan.deals)),
+    ...(await verifyLineItems(organizationId, plan.lineItems)),
+    ...(await verifyProjects(organizationId, plan.projects)),
+  ];
+  return {
+    checked: plan.deals.length + plan.lineItems.length + plan.projects.length,
+    mismatches: mismatches.length,
+    samples: mismatches.slice(0, 20),
+  };
+}
+
+async function verifyDeals(
+  organizationId: string,
+  expected: LegacyDealDateRefresh[],
+) {
+  const actual: LegacyDealDateRefresh[] = [];
+  for (const batch of batches(expected)) {
+    const ids = Prisma.join(batch.map((row) => Prisma.sql`${row.id}::uuid`));
+    actual.push(
+      ...(await prisma.$queryRaw<LegacyDealDateRefresh[]>(Prisma.sql`
+        SELECT
+          "id"::text AS "id",
+          "expected_close_date"::text AS "expectedCloseDate",
+          "close_date"::text AS "closeDate",
+          "next_action_date"::text AS "nextActionDate"
+        FROM "deals"
+        WHERE "organization_id" = ${organizationId}::uuid
+          AND "id" IN (${ids})
+          AND "deleted_at" IS NULL
+      `)),
+    );
+  }
+  return compareDateRows("DEAL", expected, actual, [
+    "expectedCloseDate",
+    "closeDate",
+    "nextActionDate",
+  ]);
+}
+
+async function verifyLineItems(
+  organizationId: string,
+  expected: LegacyLineItemDateRefresh[],
+) {
+  const actual: LegacyLineItemDateRefresh[] = [];
+  for (const batch of batches(expected)) {
+    const ids = Prisma.join(batch.map((row) => Prisma.sql`${row.id}::uuid`));
+    actual.push(
+      ...(await prisma.$queryRaw<LegacyLineItemDateRefresh[]>(Prisma.sql`
+        SELECT
+          "id"::text AS "id",
+          "meeting_at"::text AS "meetingAt",
+          "contracted_at"::text AS "contractedAt",
+          "collected_at"::text AS "collectedAt",
+          "billing_started_at"::text AS "billingStartedAt",
+          "cancelled_at"::text AS "cancelledAt"
+        FROM "deal_line_items"
+        WHERE "organization_id" = ${organizationId}::uuid
+          AND "id" IN (${ids})
+      `)),
+    );
+  }
+  return compareDateRows("DEAL_LINE_ITEM", expected, actual, [
+    "meetingAt",
+    "contractedAt",
+    "collectedAt",
+    "billingStartedAt",
+    "cancelledAt",
+  ]);
+}
+
+async function verifyProjects(
+  organizationId: string,
+  expected: LegacyProjectDateRefresh[],
+) {
+  const actual: LegacyProjectDateRefresh[] = [];
+  for (const batch of batches(expected)) {
+    const ids = Prisma.join(batch.map((row) => Prisma.sql`${row.id}::uuid`));
+    actual.push(
+      ...(await prisma.$queryRaw<LegacyProjectDateRefresh[]>(Prisma.sql`
+        SELECT
+          "id"::text AS "id",
+          "expected_start_date"::text AS "expectedStartDate",
+          "expected_publish_date"::text AS "expectedPublishDate",
+          "actual_publish_date"::text AS "actualPublishDate",
+          "next_action_date"::text AS "nextActionDate"
+        FROM "delivery_projects"
+        WHERE "organization_id" = ${organizationId}::uuid
+          AND "id" IN (${ids})
+          AND "deleted_at" IS NULL
+      `)),
+    );
+  }
+  return compareDateRows("DELIVERY_PROJECT", expected, actual, [
+    "expectedStartDate",
+    "expectedPublishDate",
+    "actualPublishDate",
+    "nextActionDate",
+  ]);
+}
+
+function compareDateRows<T extends { id: string }>(
+  type: DateMismatch["type"],
+  expected: T[],
+  actual: T[],
+  fields: Array<Exclude<keyof T, "id">>,
+) {
+  const actualById = new Map(actual.map((row) => [row.id, row]));
+  const mismatches: DateMismatch[] = [];
+  for (const expectedRow of expected) {
+    const actualRow = actualById.get(expectedRow.id);
+    if (!actualRow) {
+      mismatches.push({
+        type,
+        id: expectedRow.id,
+        field: "record",
+        expected: "exists",
+        actual: null,
+      });
+      continue;
+    }
+    for (const field of fields) {
+      const expectedValue = (expectedRow[field] ?? null) as string | null;
+      const actualValue = (actualRow[field] ?? null) as string | null;
+      if (expectedValue === actualValue) continue;
+      mismatches.push({
+        type,
+        id: expectedRow.id,
+        field: String(field),
+        expected: expectedValue,
+        actual: actualValue,
+      });
+    }
+  }
+  return mismatches;
 }
 
 async function refreshDeals(

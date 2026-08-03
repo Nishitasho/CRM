@@ -1528,6 +1528,7 @@ export async function applyLegacyExcelImport(input: {
   progressConcurrency?: number;
   transactionMaxWaitMs?: number;
   transactionTimeoutMs?: number;
+  forceCreateDealLineItems?: boolean;
 }) {
   const applyTargets = normalizeApplyTargets(input.applyTargets);
   const progressResults = new Map<string, AppliedProgressResult>();
@@ -2801,6 +2802,7 @@ async function applyProgressCandidate(
     actorUserId: string;
     importJobId: string;
     dryRun: LegacyExcelDryRunResult;
+    forceCreateDealLineItems?: boolean;
   },
   candidate: ProgressDealCandidate,
   applyTargets: LegacyExcelApplyTargets,
@@ -4072,6 +4074,7 @@ async function createDealLineItemIfNeeded(
     organizationId: string;
     importJobId: string;
     dryRun: LegacyExcelDryRunResult;
+    forceCreateDealLineItems?: boolean;
   },
   candidate: ProgressDealCandidate,
   dealId: string,
@@ -4090,13 +4093,15 @@ async function createDealLineItemIfNeeded(
         ? dateTime(candidate.expectedCloseDate ?? candidate.meetingDate)
         : null,
   };
-  const existing = await findLegacyLinkTarget(
-    tx,
-    input,
-    candidate,
-    "DEAL_LINE_ITEM",
-    { parentDealId: dealId },
-  );
+  const existing = input.forceCreateDealLineItems
+    ? null
+    : await findLegacyLinkTarget(
+        tx,
+        input,
+        candidate,
+        "DEAL_LINE_ITEM",
+        { parentDealId: dealId },
+      );
   if (existing) {
     const lineItem = await tx.dealLineItem.findFirst({
       where: { id: existing, organizationId: input.organizationId },

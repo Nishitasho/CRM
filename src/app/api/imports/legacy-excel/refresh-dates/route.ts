@@ -265,16 +265,62 @@ async function repairMissingLineItems(input: {
       organizationId: input.organizationId,
       id: { in: currentLinks.map((link) => link.targetObjectId) },
     },
-    select: { id: true, dealId: true },
+    select: {
+      id: true,
+      dealId: true,
+      name: true,
+      product: { select: { name: true } },
+    },
   });
-  const existingDealByItemId = new Map(
-    existingItems.map((item) => [item.id, item.dealId]),
+  const existingItemById = new Map(
+    existingItems.map((item) => [item.id, item]),
   );
+  const candidatesByTarget = new Map<string, ProgressDealCandidate[]>();
+  for (const candidate of expected) {
+    const targetId = currentTargetByRow.get(legacyLineItemRowKey(candidate));
+    if (!targetId) continue;
+    const candidates = candidatesByTarget.get(targetId) ?? [];
+    candidates.push(candidate);
+    candidatesByTarget.set(targetId, candidates);
+  }
+  const retainedRowByTarget = new Map<string, string>();
+  for (const [targetId, candidates] of candidatesByTarget) {
+    if (candidates.length < 2) continue;
+    const item = existingItemById.get(targetId);
+    const retained =
+      candidates.find((candidate) => {
+        const dealId = dealByExternalId.get(
+          legacyProgressDealExternalId(candidate),
+        );
+        if (!item || !dealId || item.dealId !== dealId) return false;
+        const expectedName = normalizeLegacyName(
+          candidate.productName || candidate.dealName,
+        );
+        return [item.name, item.product?.name]
+          .filter((name): name is string => Boolean(name))
+          .map(normalizeLegacyName)
+          .includes(expectedName);
+      }) ??
+      candidates.find((candidate) => {
+        const dealId = dealByExternalId.get(
+          legacyProgressDealExternalId(candidate),
+        );
+        return Boolean(item && dealId && item.dealId === dealId);
+      });
+    if (retained) {
+      retainedRowByTarget.set(targetId, legacyLineItemRowKey(retained));
+    }
+  }
   const missing = expected.filter((candidate) => {
     const dealId = dealByExternalId.get(legacyProgressDealExternalId(candidate));
     if (!dealId) return false;
-    const targetId = currentTargetByRow.get(legacyLineItemRowKey(candidate));
-    return !targetId || existingDealByItemId.get(targetId) !== dealId;
+    const rowKey = legacyLineItemRowKey(candidate);
+    const targetId = currentTargetByRow.get(rowKey);
+    if (!targetId) return true;
+    const item = existingItemById.get(targetId);
+    if (!item || item.dealId !== dealId) return true;
+    const retainedRow = retainedRowByTarget.get(targetId);
+    return Boolean(retainedRow && retainedRow !== rowKey);
   });
   if (missing.length === 0) return 0;
 
@@ -296,6 +342,7 @@ async function repairMissingLineItems(input: {
     progressConcurrency: 1,
     transactionMaxWaitMs: 15_000,
     transactionTimeoutMs: 15_000,
+    forceCreateDealLineItems: true,
   });
   if (result.errors.length > 0) {
     throw new Error(

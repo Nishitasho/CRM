@@ -36,6 +36,13 @@ export type LegacyDealRedirect = {
   toDealId: string;
 };
 
+export type LegacyDealAssociation = {
+  sourceObjectType: string;
+  sourceObjectId: string;
+  targetObjectType: string;
+  targetObjectId: string;
+};
+
 export function findSupersededLegacyTargets(
   currentLinks: LegacyCleanupLink[],
   historicalLinks: LegacyCleanupLink[],
@@ -134,6 +141,64 @@ export function findEmptyLegacyDealDuplicateRedirects(
   return redirects.sort((left, right) =>
     left.fromDealId.localeCompare(right.fromDealId),
   );
+}
+
+export function findDealRedirectsWithUnsafeAssociations(
+  redirects: LegacyDealRedirect[],
+  associations: LegacyDealAssociation[],
+) {
+  const redirectDealIds = new Set(
+    redirects.flatMap((redirect) => [redirect.fromDealId, redirect.toDealId]),
+  );
+  const relatedKeysByDeal = new Map<string, Set<string>>();
+  const addRelatedKey = (
+    dealId: string,
+    objectType: string,
+    objectId: string,
+  ) => {
+    const keys = relatedKeysByDeal.get(dealId) ?? new Set<string>();
+    keys.add(`${objectType}\u0000${objectId}`);
+    relatedKeysByDeal.set(dealId, keys);
+  };
+
+  for (const association of associations) {
+    if (
+      association.sourceObjectType === "DEAL" &&
+      redirectDealIds.has(association.sourceObjectId)
+    ) {
+      addRelatedKey(
+        association.sourceObjectId,
+        association.targetObjectType,
+        association.targetObjectId,
+      );
+    }
+    if (
+      association.targetObjectType === "DEAL" &&
+      redirectDealIds.has(association.targetObjectId)
+    ) {
+      addRelatedKey(
+        association.targetObjectId,
+        association.sourceObjectType,
+        association.sourceObjectId,
+      );
+    }
+  }
+
+  return redirects
+    .filter((redirect) => {
+      const duplicateKeys = relatedKeysByDeal.get(redirect.fromDealId);
+      const canonicalKeys = relatedKeysByDeal.get(redirect.toDealId);
+      if (!duplicateKeys) return false;
+
+      return [...duplicateKeys].some((key) => {
+        const objectType = key.slice(0, key.indexOf("\u0000"));
+        if (objectType === "COMPANY") return false;
+        if (objectType === "CONTACT" && canonicalKeys?.has(key)) return false;
+        return true;
+      });
+    })
+    .map((redirect) => redirect.fromDealId)
+    .sort();
 }
 
 export function legacyCleanupPlanHash(input: {

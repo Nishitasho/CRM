@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findDealRedirectsWithUnsafeAssociations,
   findEmptyLegacyDealDuplicateRedirects,
   findHistoricalLegacyTargetsNotRetained,
   findSupersededLegacyTargets,
@@ -163,5 +164,45 @@ describe("legacy import deduplication", () => {
         },
       ]),
     ).toEqual([]);
+  });
+
+  it("正しい商談にも同じコンタクトがあれば安全な関連付けとして扱う", () => {
+    const redirects = [{ fromDealId: "duplicate", toDealId: "canonical" }];
+    const sharedContact = {
+      sourceObjectType: "DEAL",
+      targetObjectType: "CONTACT",
+      targetObjectId: "contact-1",
+    };
+
+    expect(
+      findDealRedirectsWithUnsafeAssociations(redirects, [
+        { ...sharedContact, sourceObjectId: "duplicate" },
+        { ...sharedContact, sourceObjectId: "canonical" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("正しい商談にないコンタクトや活動があれば自動整理しない", () => {
+    const redirects = [
+      { fromDealId: "contact-duplicate", toDealId: "canonical" },
+      { fromDealId: "activity-duplicate", toDealId: "canonical" },
+    ];
+
+    expect(
+      findDealRedirectsWithUnsafeAssociations(redirects, [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: "contact-duplicate",
+          targetObjectType: "CONTACT",
+          targetObjectId: "contact-only-on-duplicate",
+        },
+        {
+          sourceObjectType: "ACTIVITY",
+          sourceObjectId: "activity-1",
+          targetObjectType: "DEAL",
+          targetObjectId: "activity-duplicate",
+        },
+      ]),
+    ).toEqual(["activity-duplicate", "contact-duplicate"]);
   });
 });

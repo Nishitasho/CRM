@@ -21,6 +21,21 @@ export type LegacyCleanupLink = {
 
 export type SupersededLegacyTargets = Record<LegacyCleanupTargetType, string[]>;
 
+export type LegacyDealDuplicateCandidate = {
+  id: string;
+  name: string;
+  companyId: string | null;
+  businessUnitId: string | null;
+  pipelineId: string;
+  stageId: string;
+  lineItemCount: number;
+};
+
+export type LegacyDealRedirect = {
+  fromDealId: string;
+  toDealId: string;
+};
+
 export function findSupersededLegacyTargets(
   currentLinks: LegacyCleanupLink[],
   historicalLinks: LegacyCleanupLink[],
@@ -83,6 +98,44 @@ export function findHistoricalLegacyTargetsNotRetained(
   return result;
 }
 
+export function findEmptyLegacyDealDuplicateRedirects(
+  candidates: LegacyDealDuplicateCandidate[],
+): LegacyDealRedirect[] {
+  const groups = new Map<string, LegacyDealDuplicateCandidate[]>();
+  for (const candidate of candidates) {
+    if (!candidate.companyId) continue;
+    const key = [
+      candidate.companyId,
+      normalizedDealName(candidate.name),
+      candidate.businessUnitId ?? "",
+      candidate.pipelineId,
+      candidate.stageId,
+    ].join("\u0000");
+    const group = groups.get(key) ?? [];
+    group.push(candidate);
+    groups.set(key, group);
+  }
+
+  const redirects: LegacyDealRedirect[] = [];
+  for (const group of groups.values()) {
+    const populated = group.filter((candidate) => candidate.lineItemCount > 0);
+    if (populated.length !== 1) continue;
+    const canonical = populated[0];
+    for (const duplicate of group) {
+      if (duplicate.id === canonical.id || duplicate.lineItemCount > 0)
+        continue;
+      redirects.push({
+        fromDealId: duplicate.id,
+        toDealId: canonical.id,
+      });
+    }
+  }
+
+  return redirects.sort((left, right) =>
+    left.fromDealId.localeCompare(right.fromDealId),
+  );
+}
+
 export function legacyCleanupPlanHash(input: {
   importJobId: string;
   dealIds: string[];
@@ -90,6 +143,7 @@ export function legacyCleanupPlanHash(input: {
   deliveryProjectIds: string[];
   activityIds: string[];
   taskIds: string[];
+  dealRedirects?: LegacyDealRedirect[];
 }) {
   return createHash("sha256")
     .update(
@@ -100,9 +154,16 @@ export function legacyCleanupPlanHash(input: {
         deliveryProjectIds: [...input.deliveryProjectIds].sort(),
         activityIds: [...input.activityIds].sort(),
         taskIds: [...input.taskIds].sort(),
+        dealRedirects: [...(input.dealRedirects ?? [])].sort((left, right) =>
+          left.fromDealId.localeCompare(right.fromDealId),
+        ),
       }),
     )
     .digest("hex");
+}
+
+function normalizedDealName(value: string) {
+  return value.normalize("NFKC").trim().replace(/\s+/g, "").toLowerCase();
 }
 
 function sourceIdentity(link: LegacyCleanupLink) {

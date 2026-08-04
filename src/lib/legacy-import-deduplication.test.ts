@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findEmptyLegacyDealDuplicateRedirects,
   findHistoricalLegacyTargetsNotRetained,
   findSupersededLegacyTargets,
   legacyCleanupPlanHash,
@@ -98,5 +99,69 @@ describe("legacy import deduplication", () => {
         ACTIVITY: [],
       },
     );
+  });
+
+  it("同じ会社・ステージの商品なし商談を商品あり商談へ寄せる", () => {
+    const base = {
+      name: "麺'sれすとらんYABU",
+      companyId: "company-yabu",
+      businessUnitId: "unit-hd",
+      pipelineId: "pipeline-hd",
+      stageId: "stage-b",
+    };
+
+    expect(
+      findEmptyLegacyDealDuplicateRedirects([
+        { ...base, id: "deal-main", lineItemCount: 2 },
+        { ...base, id: "deal-empty-2", lineItemCount: 0 },
+        { ...base, id: "deal-empty-1", lineItemCount: 0 },
+      ]),
+    ).toEqual([
+      { fromDealId: "deal-empty-1", toDealId: "deal-main" },
+      { fromDealId: "deal-empty-2", toDealId: "deal-main" },
+    ]);
+  });
+
+  it("商品あり商談が複数ある場合は自動で統合しない", () => {
+    const base = {
+      name: "同名案件",
+      companyId: "company-1",
+      businessUnitId: "unit-1",
+      pipelineId: "pipeline-1",
+      stageId: "stage-1",
+    };
+
+    expect(
+      findEmptyLegacyDealDuplicateRedirects([
+        { ...base, id: "deal-1", lineItemCount: 1 },
+        { ...base, id: "deal-2", lineItemCount: 1 },
+        { ...base, id: "deal-empty", lineItemCount: 0 },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("会社またはステージが違う商談は重複扱いしない", () => {
+    expect(
+      findEmptyLegacyDealDuplicateRedirects([
+        {
+          id: "deal-main",
+          name: "同名案件",
+          companyId: "company-1",
+          businessUnitId: "unit-1",
+          pipelineId: "pipeline-1",
+          stageId: "stage-a",
+          lineItemCount: 1,
+        },
+        {
+          id: "deal-empty",
+          name: "同名案件",
+          companyId: "company-1",
+          businessUnitId: "unit-1",
+          pipelineId: "pipeline-1",
+          stageId: "stage-b",
+          lineItemCount: 0,
+        },
+      ]),
+    ).toEqual([]);
   });
 });

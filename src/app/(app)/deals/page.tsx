@@ -12,6 +12,11 @@ import { getBusinessUnitSelection } from "@/lib/business-units";
 import { ownerScope } from "@/lib/crm";
 import { getStandardDealViews } from "@/lib/deal-saved-views";
 import { analyzeDealQuality } from "@/lib/deal-quality";
+import {
+  compareDealListRows,
+  getJstMonthKey,
+  isDealInMonth,
+} from "@/lib/deal-list-order";
 import { prisma } from "@/lib/prisma";
 
 export default async function DealsPage({
@@ -172,32 +177,64 @@ export default async function DealsPage({
     quality,
     dealType: selectedDealType,
   });
-  const [items, total] = await Promise.all([
-    prisma.deal.findMany({
-      where,
-      include: {
-        owner: { select: { name: true } },
-        stage: true,
-        pipeline: true,
-        lineItems: {
-          select: {
-            id: true,
-            status: true,
-            expectedRevenueAmount: true,
-            expectedGrossProfitAmount: true,
-          },
-        },
-        participants: {
-          where: { role: "CLOSER", status: "ACTIVE" },
-          select: { id: true },
+  const currentMonthKey = getJstMonthKey();
+  const orderRows = await prisma.deal.findMany({
+    where,
+    select: {
+      id: true,
+      source: true,
+      wonAt: true,
+      closeDate: true,
+      expectedCloseDate: true,
+      createdAt: true,
+      updatedAt: true,
+      lineItems: {
+        select: {
+          meetingAt: true,
+          contractedAt: true,
+          collectedAt: true,
+          billingStartedAt: true,
+          cancelledAt: true,
         },
       },
-      orderBy: { updatedAt: "desc" },
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    }),
-    prisma.deal.count({ where }),
-  ]);
+    },
+  });
+  orderRows.sort((left, right) =>
+    compareDealListRows(left, right, currentMonthKey),
+  );
+  const total = orderRows.length;
+  const pageIds = orderRows
+    .slice((page - 1) * pageSize, page * pageSize)
+    .map((item) => item.id);
+  const unorderedItems =
+    pageIds.length > 0
+      ? await prisma.deal.findMany({
+          where: { AND: [where, { id: { in: pageIds } }] },
+          include: {
+            owner: { select: { name: true } },
+            stage: true,
+            pipeline: true,
+            lineItems: {
+              select: {
+                id: true,
+                status: true,
+                expectedRevenueAmount: true,
+                expectedGrossProfitAmount: true,
+              },
+            },
+            participants: {
+              where: { role: "CLOSER", status: "ACTIVE" },
+              select: { id: true },
+            },
+          },
+        })
+      : [];
+  const itemById = new Map(unorderedItems.map((item) => [item.id, item]));
+  const items = pageIds.flatMap((id) => {
+    const item = itemById.get(id);
+    return item ? [item] : [];
+  });
+  const orderRowById = new Map(orderRows.map((item) => [item.id, item]));
   const links = await prisma.objectAssociation.findMany({
     where: {
       organizationId: context.organization.id,
@@ -294,6 +331,10 @@ export default async function DealsPage({
     });
     return {
       ...item,
+      isCurrentMonth: isDealInMonth(
+        orderRowById.get(item.id)!,
+        currentMonthKey,
+      ),
       companyName: dealCompanies.get(item.id) ?? null,
       lastActivityAt: lastActivityByDeal.get(item.id) ?? null,
       qualityIssues: qualityAnalysis.alerts,
@@ -442,6 +483,7 @@ export default async function DealsPage({
         </form>
         <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3 text-xs text-slate-500">
           <span className="font-bold text-slate-700">{total}件</span>
+          <span>今月の案件を優先・日付の新しい順</span>
           {q ? <FilterPill label={`検索: ${q}`} /> : null}
           {selectedPipelineId ? (
             <FilterPill
@@ -489,7 +531,14 @@ export default async function DealsPage({
             label: "商談",
             render: (item) => (
               <div>
-                <p>{item.name}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p>{item.name}</p>
+                  {item.isCurrentMonth ? (
+                    <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[11px] font-bold text-orange-700">
+                      今月
+                    </span>
+                  ) : null}
+                </div>
                 <p className="mt-1 text-xs font-medium text-slate-400">
                   {item.companyName ?? "会社未設定"} / {item.pipeline.name}
                 </p>

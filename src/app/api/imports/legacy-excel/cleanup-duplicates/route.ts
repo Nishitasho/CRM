@@ -5,6 +5,7 @@ import { apiError, getRequestMetadata } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
+  findEmptyLegacyDealDuplicateRedirects,
   findHistoricalLegacyTargetsNotRetained,
   LEGACY_CLEANUP_TARGET_TYPES,
   legacyCleanupPlanHash,
@@ -118,6 +119,18 @@ export async function POST(request: Request) {
     const metadata = getRequestMetadata(request);
     const result = await prisma.$transaction(
       async (tx) => {
+        let relinkedLegacySources = 0;
+        for (const redirect of plan.dealRedirects) {
+          const relinked = await tx.legacySourceLink.updateMany({
+            where: {
+              organizationId: context.organization.id,
+              targetObjectType: "DEAL",
+              targetObjectId: redirect.fromDealId,
+            },
+            data: { targetObjectId: redirect.toDealId },
+          });
+          relinkedLegacySources += relinked.count;
+        }
         const reminders = await tx.taskReminder.updateMany({
           where: {
             organizationId: context.organization.id,
@@ -209,6 +222,7 @@ export async function POST(request: Request) {
               taskReminders: reminders.count,
               performanceEvents: performanceEvents.count,
               associations: associations.count,
+              relinkedLegacySources,
             },
             ...metadata,
           },
@@ -222,6 +236,7 @@ export async function POST(request: Request) {
           taskReminders: reminders.count,
           performanceEvents: performanceEvents.count,
           associations: associations.count,
+          relinkedLegacySources,
         };
       },
       { maxWait: 10_000, timeout: 60_000 },
@@ -261,7 +276,76 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     historicalLinks,
   );
 
-  const [deals, projects, activities] = await Promise.all([
+  const activeLegacyDeals = await prisma.deal.findMany({
+    where: {
+      organizationId,
+      source: "legacy_excel",
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      name: true,
+      businessUnitId: true,
+      pipelineId: true,
+      stageId: true,
+      lineItems: { select: { id: true } },
+    },
+  });
+  const activeLegacyDealIds = activeLegacyDeals.map((deal) => deal.id);
+  const companyLinks = await prisma.objectAssociation.findMany({
+    where: {
+      organizationId,
+      isPrimary: true,
+      OR: [
+        {
+          sourceObjectType: "DEAL",
+          sourceObjectId: { in: activeLegacyDealIds },
+          targetObjectType: "COMPANY",
+        },
+        {
+          sourceObjectType: "COMPANY",
+          targetObjectType: "DEAL",
+          targetObjectId: { in: activeLegacyDealIds },
+        },
+      ],
+    },
+    select: {
+      sourceObjectType: true,
+      sourceObjectId: true,
+      targetObjectType: true,
+      targetObjectId: true,
+    },
+  });
+  const companyIdByDeal = new Map(
+    companyLinks.map((link) =>
+      link.sourceObjectType === "DEAL"
+        ? [link.sourceObjectId, link.targetObjectId]
+        : [link.targetObjectId, link.sourceObjectId],
+    ),
+  );
+  const duplicateRedirects = findEmptyLegacyDealDuplicateRedirects(
+    activeLegacyDeals.map((deal) => ({
+      id: deal.id,
+      name: deal.name,
+      companyId: companyIdByDeal.get(deal.id) ?? null,
+      businessUnitId: deal.businessUnitId,
+      pipelineId: deal.pipelineId,
+      stageId: deal.stageId,
+      lineItemCount: deal.lineItems.length,
+    })),
+  );
+  const protectedDuplicateIds = await findProtectedDealIds(
+    organizationId,
+    duplicateRedirects.map((redirect) => redirect.fromDealId),
+  );
+  const dealRedirects = duplicateRedirects.filter(
+    (redirect) => !protectedDuplicateIds.has(redirect.fromDealId),
+  );
+  const duplicateDealIds = new Set(
+    dealRedirects.map((redirect) => redirect.fromDealId),
+  );
+
+  const [supersededDeals, projects, activities] = await Promise.all([
     prisma.deal.findMany({
       where: {
         organizationId,
@@ -289,6 +373,19 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
       select: { id: true, title: true, metadata: true },
     }),
   ]);
+  const dealById = new Map(
+    activeLegacyDeals.map((deal) => [
+      deal.id,
+      { id: deal.id, name: deal.name },
+    ]),
+  );
+  for (const deal of supersededDeals) dealById.set(deal.id, deal);
+  const deals = Array.from(
+    new Set([...superseded.DEAL, ...duplicateDealIds]),
+  ).flatMap((id) => {
+    const deal = dealById.get(id);
+    return deal ? [deal] : [];
+  });
   const dealIds = deals.map((item) => item.id).sort();
   const deliveryProjectIds = projects.map((item) => item.id).sort();
   const activityIds = activities
@@ -366,6 +463,7 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     deliveryProjectIds,
     activityIds,
     taskIds,
+    dealRedirects,
   });
 
   return {
@@ -376,6 +474,7 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     deliveryProjectIds,
     activityIds,
     taskIds,
+    dealRedirects,
     performanceEventIds,
     taskReminderCount,
     associationCount,
@@ -385,6 +484,114 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
       activities: activities.slice(0, 10).map((item) => item.title),
     },
   };
+}
+
+async function findProtectedDealIds(organizationId: string, dealIds: string[]) {
+  const protectedIds = new Set<string>();
+  if (dealIds.length === 0) return protectedIds;
+
+  const [
+    associations,
+    projects,
+    originDeals,
+    performanceEvents,
+    participants,
+    bookings,
+    submissions,
+    referrals,
+    fieldVisits,
+  ] =
+    await Promise.all([
+      prisma.objectAssociation.findMany({
+        where: {
+          organizationId,
+          OR: [
+            { sourceObjectType: "DEAL", sourceObjectId: { in: dealIds } },
+            { targetObjectType: "DEAL", targetObjectId: { in: dealIds } },
+          ],
+        },
+        select: {
+          sourceObjectType: true,
+          sourceObjectId: true,
+          targetObjectType: true,
+          targetObjectId: true,
+        },
+      }),
+      prisma.deliveryProject.findMany({
+        where: {
+          organizationId,
+          sourceDealId: { in: dealIds },
+          deletedAt: null,
+        },
+        select: { sourceDealId: true },
+      }),
+      prisma.deal.findMany({
+        where: {
+          organizationId,
+          originDealId: { in: dealIds },
+          deletedAt: null,
+        },
+        select: { originDealId: true },
+      }),
+      prisma.salesPerformanceEvent.findMany({
+        where: {
+          organizationId,
+          dealId: { in: dealIds },
+          cancelledAt: null,
+        },
+        select: { dealId: true },
+      }),
+      prisma.dealParticipant.findMany({
+        where: { organizationId, dealId: { in: dealIds } },
+        select: { dealId: true },
+      }),
+      prisma.meetingBooking.findMany({
+        where: { organizationId, dealId: { in: dealIds } },
+        select: { dealId: true },
+      }),
+      prisma.formSubmission.findMany({
+        where: { organizationId, dealId: { in: dealIds } },
+        select: { dealId: true },
+      }),
+      prisma.referral.findMany({
+        where: { organizationId, dealId: { in: dealIds } },
+        select: { dealId: true },
+      }),
+      prisma.fieldVisit.findMany({
+        where: { organizationId, dealId: { in: dealIds } },
+        select: { dealId: true },
+      }),
+    ]);
+
+  for (const association of associations) {
+    const dealIsSource = association.sourceObjectType === "DEAL";
+    const otherType = dealIsSource
+      ? association.targetObjectType
+      : association.sourceObjectType;
+    if (otherType === "COMPANY") continue;
+    protectedIds.add(
+      dealIsSource ? association.sourceObjectId : association.targetObjectId,
+    );
+  }
+  for (const project of projects) {
+    if (project.sourceDealId) protectedIds.add(project.sourceDealId);
+  }
+  for (const deal of originDeals) {
+    if (deal.originDealId) protectedIds.add(deal.originDealId);
+  }
+  for (const event of performanceEvents) {
+    if (event.dealId) protectedIds.add(event.dealId);
+  }
+  for (const record of [
+    ...participants,
+    ...bookings,
+    ...submissions,
+    ...referrals,
+    ...fieldVisits,
+  ]) {
+    if (record.dealId) protectedIds.add(record.dealId);
+  }
+  return protectedIds;
 }
 
 function publicPlan(plan: Awaited<ReturnType<typeof buildCleanupPlan>>) {

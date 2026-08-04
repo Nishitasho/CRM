@@ -6,6 +6,7 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   findDealRedirectsWithUnsafeAssociations,
+  findDealRedirectsWithUnsafeParticipants,
   findEmptyLegacyDealDuplicateRedirects,
   findHistoricalLegacyTargetsNotRetained,
   LEGACY_CLEANUP_TARGET_TYPES,
@@ -503,7 +504,6 @@ async function findProtectedDealIds(
     associations,
     projects,
     originDeals,
-    performanceEvents,
     participants,
     bookings,
     submissions,
@@ -547,17 +547,18 @@ async function findProtectedDealIds(
       },
       select: { originDealId: true },
     }),
-    prisma.salesPerformanceEvent.findMany({
-      where: {
-        organizationId,
-        dealId: { in: dealIds },
-        cancelledAt: null,
-      },
-      select: { dealId: true },
-    }),
     prisma.dealParticipant.findMany({
-      where: { organizationId, dealId: { in: dealIds } },
-      select: { dealId: true },
+      where: { organizationId, dealId: { in: redirectDealIds } },
+      select: {
+        dealId: true,
+        userId: true,
+        workFunction: true,
+        role: true,
+        status: true,
+        contributionWeight: true,
+        creditShare: true,
+        snapshotUserName: true,
+      },
     }),
     prisma.meetingBooking.findMany({
       where: { organizationId, dealId: { in: dealIds } },
@@ -580,17 +581,23 @@ async function findProtectedDealIds(
   const protectedIds = new Set(
     findDealRedirectsWithUnsafeAssociations(redirects, associations),
   );
+  for (const dealId of findDealRedirectsWithUnsafeParticipants(
+    redirects,
+    participants.map((participant) => ({
+      ...participant,
+      contributionWeight: participant.contributionWeight.toString(),
+      creditShare: participant.creditShare?.toString() ?? null,
+    })),
+  )) {
+    protectedIds.add(dealId);
+  }
   for (const project of projects) {
     if (project.sourceDealId) protectedIds.add(project.sourceDealId);
   }
   for (const deal of originDeals) {
     if (deal.originDealId) protectedIds.add(deal.originDealId);
   }
-  for (const event of performanceEvents) {
-    if (event.dealId) protectedIds.add(event.dealId);
-  }
   for (const record of [
-    ...participants,
     ...bookings,
     ...submissions,
     ...referrals,

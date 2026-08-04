@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findDealRedirectsWithUnsafeAssociations,
+  findDealRedirectsWithUnsafeParticipants,
   findEmptyLegacyDealDuplicateRedirects,
   findHistoricalLegacyTargetsNotRetained,
   findSupersededLegacyTargets,
@@ -204,5 +205,45 @@ describe("legacy import deduplication", () => {
         },
       ]),
     ).toEqual(["activity-duplicate", "contact-duplicate"]);
+  });
+
+  it("正しい商談にも同じ営業参加者がいれば安全と扱う", () => {
+    const redirects = [{ fromDealId: "duplicate", toDealId: "canonical" }];
+    const participant = {
+      userId: "user-1",
+      workFunction: "FS",
+      role: "CLOSER",
+      status: "ACTIVE",
+      contributionWeight: "1",
+      creditShare: "0.5",
+      snapshotUserName: "営業担当",
+    };
+
+    expect(
+      findDealRedirectsWithUnsafeParticipants(redirects, [
+        { ...participant, dealId: "duplicate" },
+        { ...participant, dealId: "canonical" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("正しい商談にない営業参加者がいれば自動整理しない", () => {
+    expect(
+      findDealRedirectsWithUnsafeParticipants(
+        [{ fromDealId: "duplicate", toDealId: "canonical" }],
+        [
+          {
+            dealId: "duplicate",
+            userId: "user-only-on-duplicate",
+            workFunction: "IS",
+            role: "APPOINTMENT_SETTER",
+            status: "ACTIVE",
+            contributionWeight: "1",
+            creditShare: null,
+            snapshotUserName: "IS担当",
+          },
+        ],
+      ),
+    ).toEqual(["duplicate"]);
   });
 });

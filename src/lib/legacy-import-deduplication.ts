@@ -43,6 +43,17 @@ export type LegacyDealAssociation = {
   targetObjectId: string;
 };
 
+export type LegacyDealParticipantReference = {
+  dealId: string;
+  userId: string | null;
+  workFunction: string | null;
+  role: string;
+  status: string;
+  contributionWeight: string;
+  creditShare: string | null;
+  snapshotUserName: string | null;
+};
+
 export function findSupersededLegacyTargets(
   currentLinks: LegacyCleanupLink[],
   historicalLinks: LegacyCleanupLink[],
@@ -196,6 +207,40 @@ export function findDealRedirectsWithUnsafeAssociations(
         if (objectType === "CONTACT" && canonicalKeys?.has(key)) return false;
         return true;
       });
+    })
+    .map((redirect) => redirect.fromDealId)
+    .sort();
+}
+
+export function findDealRedirectsWithUnsafeParticipants(
+  redirects: LegacyDealRedirect[],
+  participants: LegacyDealParticipantReference[],
+) {
+  const participantKeysByDeal = new Map<string, Set<string>>();
+  for (const participant of participants) {
+    const keys = participantKeysByDeal.get(participant.dealId) ?? new Set();
+    keys.add(
+      [
+        participant.userId ?? "",
+        participant.workFunction ?? "",
+        participant.role,
+        participant.status,
+        participant.contributionWeight,
+        participant.creditShare ?? "",
+        participant.snapshotUserName ?? "",
+      ].join("\u0000"),
+    );
+    participantKeysByDeal.set(participant.dealId, keys);
+  }
+
+  return redirects
+    .filter((redirect) => {
+      const duplicateKeys = participantKeysByDeal.get(redirect.fromDealId);
+      const canonicalKeys = participantKeysByDeal.get(redirect.toDealId);
+      return Boolean(
+        duplicateKeys &&
+          [...duplicateKeys].some((key) => !canonicalKeys?.has(key)),
+      );
     })
     .map((redirect) => redirect.fromDealId)
     .sort();

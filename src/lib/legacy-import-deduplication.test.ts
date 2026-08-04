@@ -75,6 +75,27 @@ describe("legacy import deduplication", () => {
     );
   });
 
+  it("関連データがプレビュー後に変われば計画ハッシュが変わる", () => {
+    const base = {
+      importJobId: "job-new",
+      dealIds: ["deal-empty"],
+      dealLineItemIds: [],
+      deliveryProjectIds: [],
+      activityIds: [],
+      taskIds: [],
+      performanceEventIds: ["event-1"],
+      participantIds: ["participant-1"],
+      associationIds: ["association-1"],
+    };
+
+    expect(legacyCleanupPlanHash(base)).not.toBe(
+      legacyCleanupPlanHash({
+        ...base,
+        associationIds: ["association-created-after-preview"],
+      }),
+    );
+  });
+
   it("過去ImportJobのターゲットから今回再利用されたIDを除外する", () => {
     const current = [
       link({ importJobId: "job-new", targetObjectId: "deal-retained" }),

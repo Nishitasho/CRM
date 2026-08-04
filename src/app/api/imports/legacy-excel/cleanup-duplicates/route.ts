@@ -17,7 +17,7 @@ import { prisma } from "@/lib/prisma";
 
 export const maxDuration = 300;
 
-const CLEANUP_CONFIRMATION = "旧移行データを整理する";
+const CLEANUP_CONFIRMATION = "空の重複商談を削除する";
 
 const requestSchema = z.discriminatedUnion("action", [
   z.object({
@@ -160,6 +160,12 @@ export async function POST(request: Request) {
           },
           data: { cancelledAt: now },
         });
+        const participants = await tx.dealParticipant.deleteMany({
+          where: {
+            organizationId: context.organization.id,
+            id: { in: plan.participantIds },
+          },
+        });
         const activities = await tx.activity.updateMany({
           where: {
             organizationId: context.organization.id,
@@ -171,16 +177,7 @@ export async function POST(request: Request) {
         const associations = await tx.objectAssociation.deleteMany({
           where: {
             organizationId: context.organization.id,
-            OR: [
-              {
-                sourceObjectType: "DEAL",
-                sourceObjectId: { in: plan.dealIds },
-              },
-              {
-                targetObjectType: "DEAL",
-                targetObjectId: { in: plan.dealIds },
-              },
-            ],
+            id: { in: plan.associationIds },
           },
         });
         const lineItems = await tx.dealLineItem.deleteMany({
@@ -223,6 +220,7 @@ export async function POST(request: Request) {
               tasks: tasks.count,
               taskReminders: reminders.count,
               performanceEvents: performanceEvents.count,
+              participants: participants.count,
               associations: associations.count,
               relinkedLegacySources,
             },
@@ -237,6 +235,7 @@ export async function POST(request: Request) {
           tasks: tasks.count,
           taskReminders: reminders.count,
           performanceEvents: performanceEvents.count,
+          participants: participants.count,
           associations: associations.count,
           relinkedLegacySources,
         };
@@ -290,6 +289,7 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
       businessUnitId: true,
       pipelineId: true,
       stageId: true,
+      stage: { select: { name: true } },
       lineItems: { select: { id: true } },
     },
   });
@@ -347,117 +347,75 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     dealRedirects.map((redirect) => redirect.fromDealId),
   );
 
-  const [supersededDeals, projects, activities] = await Promise.all([
-    prisma.deal.findMany({
-      where: {
-        organizationId,
-        id: { in: superseded.DEAL },
-        source: "legacy_excel",
-        deletedAt: null,
-      },
-      select: { id: true, name: true },
-    }),
-    prisma.deliveryProject.findMany({
-      where: {
-        organizationId,
-        id: { in: superseded.DELIVERY_PROJECT },
-        idempotencyKey: { startsWith: "hp:" },
-        deletedAt: null,
-      },
-      select: { id: true, name: true },
-    }),
-    prisma.activity.findMany({
-      where: {
-        organizationId,
-        id: { in: superseded.ACTIVITY },
-        deletedAt: null,
-      },
-      select: { id: true, title: true, metadata: true },
-    }),
-  ]);
-  const dealById = new Map(
-    activeLegacyDeals.map((deal) => [
-      deal.id,
-      { id: deal.id, name: deal.name },
-    ]),
-  );
-  for (const deal of supersededDeals) dealById.set(deal.id, deal);
-  const deals = Array.from(
-    new Set([...superseded.DEAL, ...duplicateDealIds]),
-  ).flatMap((id) => {
+  const dealById = new Map(activeLegacyDeals.map((deal) => [deal.id, deal]));
+  const deals = Array.from(duplicateDealIds).flatMap((id) => {
     const deal = dealById.get(id);
     return deal ? [deal] : [];
   });
   const dealIds = deals.map((item) => item.id).sort();
-  const deliveryProjectIds = projects.map((item) => item.id).sort();
-  const activityIds = activities
-    .filter((item) => asRecord(item.metadata).source === "legacy_excel")
-    .map((item) => item.id)
-    .sort();
-  const lineItemFilters: Prisma.DealLineItemWhereInput[] = [];
-  if (superseded.DEAL_LINE_ITEM.length > 0) {
-    lineItemFilters.push({ id: { in: superseded.DEAL_LINE_ITEM } });
-  }
-  if (dealIds.length > 0) lineItemFilters.push({ dealId: { in: dealIds } });
-  const dealLineItems =
-    lineItemFilters.length > 0
-      ? await prisma.dealLineItem.findMany({
-          where: {
-            organizationId,
-            source: "legacy_excel",
-            OR: lineItemFilters,
-          },
-          select: { id: true },
-        })
-      : [];
-  const dealLineItemIds = dealLineItems.map((item) => item.id).sort();
-  const tasks =
-    deliveryProjectIds.length > 0
-      ? await prisma.task.findMany({
-          where: {
-            organizationId,
-            deliveryProjectId: { in: deliveryProjectIds },
-            autoTaskKey: { startsWith: "legacy-excel:" },
-          },
-          select: { id: true },
-        })
-      : [];
-  const taskIds = tasks.map((item) => item.id).sort();
+  const dealLineItemIds: string[] = [];
+  const deliveryProjectIds: string[] = [];
+  const activityIds: string[] = [];
+  const taskIds: string[] = [];
+  const duplicatePairs = dealRedirects.flatMap((redirect) => {
+    const duplicate = dealById.get(redirect.fromDealId);
+    const canonical = dealById.get(redirect.toDealId);
+    if (!duplicate || !canonical) return [];
+    return [
+      {
+        duplicateDealId: duplicate.id,
+        canonicalDealId: canonical.id,
+        name: duplicate.name,
+        stageName: duplicate.stage.name,
+        canonicalLineItemCount: canonical.lineItems.length,
+      },
+    ];
+  });
   const performanceEvents =
-    dealIds.length > 0 || dealLineItemIds.length > 0
+    dealIds.length > 0
       ? await prisma.salesPerformanceEvent.findMany({
           where: {
             organizationId,
             cancelledAt: null,
-            OR: [
-              ...(dealIds.length > 0 ? [{ dealId: { in: dealIds } }] : []),
-              ...(dealLineItemIds.length > 0
-                ? [{ dealLineItemId: { in: dealLineItemIds } }]
-                : []),
-            ],
+            dealId: { in: dealIds },
           },
           select: { id: true },
         })
       : [];
   const performanceEventIds = performanceEvents.map((item) => item.id).sort();
-  const [taskReminderCount, associationCount] = await Promise.all([
-    taskIds.length > 0
-      ? prisma.taskReminder.count({
-          where: { organizationId, taskId: { in: taskIds }, status: "PENDING" },
-        })
-      : 0,
-    dealIds.length > 0
-      ? prisma.objectAssociation.count({
-          where: {
-            organizationId,
-            OR: [
-              { sourceObjectType: "DEAL", sourceObjectId: { in: dealIds } },
-              { targetObjectType: "DEAL", targetObjectId: { in: dealIds } },
-            ],
-          },
-        })
-      : 0,
-  ]);
+  const [associations, participants, historicalDealsExcluded] =
+    await Promise.all([
+      dealIds.length > 0
+        ? prisma.objectAssociation.findMany({
+            where: {
+              organizationId,
+              OR: [
+                { sourceObjectType: "DEAL", sourceObjectId: { in: dealIds } },
+                { targetObjectType: "DEAL", targetObjectId: { in: dealIds } },
+              ],
+            },
+            select: { id: true },
+          })
+        : [],
+      dealIds.length > 0
+        ? prisma.dealParticipant.findMany({
+            where: { organizationId, dealId: { in: dealIds } },
+            select: { id: true },
+          })
+        : [],
+      superseded.DEAL.length > 0
+        ? prisma.deal.count({
+            where: {
+              organizationId,
+              id: { in: superseded.DEAL },
+              source: "legacy_excel",
+              deletedAt: null,
+            },
+          })
+        : 0,
+    ]);
+  const associationIds = associations.map((item) => item.id).sort();
+  const participantIds = participants.map((item) => item.id).sort();
   const planHash = legacyCleanupPlanHash({
     importJobId,
     dealIds,
@@ -466,6 +424,9 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     activityIds,
     taskIds,
     dealRedirects,
+    performanceEventIds,
+    participantIds,
+    associationIds,
   });
 
   return {
@@ -478,12 +439,25 @@ async function buildCleanupPlan(organizationId: string, importJobId: string) {
     taskIds,
     dealRedirects,
     performanceEventIds,
-    taskReminderCount,
-    associationCount,
+    participantIds,
+    associationIds,
+    taskReminderCount: 0,
+    associationCount: associationIds.length,
+    participantCount: participantIds.length,
+    duplicatePairs,
+    audit: {
+      detectedEmptyDuplicates: duplicateRedirects.length,
+      protectedEmptyDuplicates: protectedDuplicateIds.size,
+      deletableEmptyDuplicates: dealRedirects.length,
+      canonicalDeals: new Set(
+        dealRedirects.map((redirect) => redirect.toDealId),
+      ).size,
+      historicalDealsExcluded,
+    },
     samples: {
       deals: deals.slice(0, 10).map((item) => item.name),
-      deliveryProjects: projects.slice(0, 10).map((item) => item.name),
-      activities: activities.slice(0, 10).map((item) => item.title),
+      deliveryProjects: [],
+      activities: [],
     },
   };
 }
@@ -620,16 +594,13 @@ function publicPlan(plan: Awaited<ReturnType<typeof buildCleanupPlan>>) {
       tasks: plan.taskIds.length,
       taskReminders: plan.taskReminderCount,
       performanceEvents: plan.performanceEventIds.length,
+      participants: plan.participantCount,
       associations: plan.associationCount,
     },
+    audit: plan.audit,
+    duplicatePairs: plan.duplicatePairs,
     samples: plan.samples,
   };
-}
-
-function asRecord(value: Prisma.JsonValue): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 const linkSelect = {

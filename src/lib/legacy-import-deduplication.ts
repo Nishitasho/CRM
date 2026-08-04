@@ -254,6 +254,9 @@ export function legacyCleanupPlanHash(input: {
   activityIds: string[];
   taskIds: string[];
   dealRedirects?: LegacyDealRedirect[];
+  performanceEventIds?: string[];
+  participantIds?: string[];
+  associationIds?: string[];
 }) {
   return createHash("sha256")
     .update(
@@ -264,6 +267,9 @@ export function legacyCleanupPlanHash(input: {
         deliveryProjectIds: [...input.deliveryProjectIds].sort(),
         activityIds: [...input.activityIds].sort(),
         taskIds: [...input.taskIds].sort(),
+        performanceEventIds: [...(input.performanceEventIds ?? [])].sort(),
+        participantIds: [...(input.participantIds ?? [])].sort(),
+        associationIds: [...(input.associationIds ?? [])].sort(),
         dealRedirects: [...(input.dealRedirects ?? [])].sort((left, right) =>
           left.fromDealId.localeCompare(right.fromDealId),
         ),

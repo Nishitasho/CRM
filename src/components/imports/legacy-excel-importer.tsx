@@ -138,8 +138,23 @@ type CleanupPreview = {
     tasks: number;
     taskReminders: number;
     performanceEvents: number;
+    participants: number;
     associations: number;
   };
+  audit: {
+    detectedEmptyDuplicates: number;
+    protectedEmptyDuplicates: number;
+    deletableEmptyDuplicates: number;
+    canonicalDeals: number;
+    historicalDealsExcluded: number;
+  };
+  duplicatePairs: Array<{
+    duplicateDealId: string;
+    canonicalDealId: string;
+    name: string;
+    stageName: string;
+    canonicalLineItemCount: number;
+  }>;
   samples: {
     deals: string[];
     deliveryProjects: string[];
@@ -545,7 +560,7 @@ export function LegacyExcelImporter({
     setCleanupPreview(null);
     setCleanupConfirmInput("");
     setError("");
-    setMessage("旧移行データとの重複を確認しています。");
+    setMessage("商品がない空の重複商談を確認しています。");
     try {
       const response = await fetch(
         "/api/imports/legacy-excel/cleanup-duplicates",
@@ -560,7 +575,9 @@ export function LegacyExcelImporter({
         throw new Error(json.message ?? "重複確認に失敗しました。");
       }
       setCleanupPreview(json);
-      setMessage("重複候補を確認しました。件数とサンプルを確認してください。");
+      setMessage(
+        "空の重複候補を確認しました。削除対象の全件一覧を確認してください。",
+      );
     } catch (cleanupError) {
       setError(
         cleanupError instanceof Error
@@ -578,7 +595,7 @@ export function LegacyExcelImporter({
     setPending(true);
     setCleanupJobId(cleanupPreview.importJobId);
     setError("");
-    setMessage("旧移行分の重複だけを整理しています。");
+    setMessage("確認済みの空の重複商談だけを整理しています。");
     try {
       const response = await fetch(
         "/api/imports/legacy-excel/cleanup-duplicates",
@@ -598,7 +615,7 @@ export function LegacyExcelImporter({
         throw new Error(json.message ?? "旧移行データの整理に失敗しました。");
       }
       setMessage(
-        `旧移行分を整理しました。商談 ${json.result.deals}件、商品明細 ${json.result.dealLineItems}件、CS案件 ${json.result.deliveryProjects}件、自動タスク ${json.result.tasks}件`,
+        `空の重複商談を ${json.result.deals}件整理しました。正しい商談・商品・CS案件は変更していません。`,
       );
       setCleanupPreview(null);
       setCleanupConfirmInput("");
@@ -1259,7 +1276,7 @@ export function LegacyExcelImporter({
                           disabled={pending}
                           onClick={() => previewDuplicateCleanup(item.id)}
                         >
-                          {cleanupJobId === item.id ? "確認中" : "旧重複を確認"}
+                          {cleanupJobId === item.id ? "確認中" : "空重複を確認"}
                         </button>
                       ) : null}
                     </div>
@@ -1283,46 +1300,41 @@ export function LegacyExcelImporter({
 
       {cleanupPreview ? (
         <section className="card border-amber-300 p-6">
-          <h2 className="font-bold">旧移行データの重複整理</h2>
+          <h2 className="font-bold">空の重複商談を整理</h2>
           <p className="mt-2 text-sm text-slate-600">
-            過去の完了済みExcel移行で作成され、今回の移行で再利用されていない旧データだけが対象です。会社・担当者・手入力データは変更しません。
+            商品明細が0件で、同じ会社・同名・同ステージに商品ありの正しい商談が1件だけ存在するものが対象です。担当者・予約・CS案件・手入力履歴などが重複側にしかない商談は自動で除外します。
           </p>
           <div className="mt-4 grid gap-2 text-sm md:grid-cols-4">
             <ApplyPreviewCount
-              label="旧商談"
+              label="今回削除する空商談"
               value={cleanupPreview.counts.deals}
             />
             <ApplyPreviewCount
-              label="旧商品明細"
-              value={cleanupPreview.counts.dealLineItems}
+              label="残す正しい商談"
+              value={cleanupPreview.audit.canonicalDeals}
             />
             <ApplyPreviewCount
-              label="旧CS案件"
-              value={cleanupPreview.counts.deliveryProjects}
+              label="安全条件により除外"
+              value={cleanupPreview.audit.protectedEmptyDuplicates}
             />
             <ApplyPreviewCount
-              label="旧自動タスク"
-              value={cleanupPreview.counts.tasks}
+              label="旧履歴（削除しない）"
+              value={cleanupPreview.audit.historicalDealsExcluded}
             />
             <ApplyPreviewCount
-              label="旧Activity"
-              value={cleanupPreview.counts.activities}
+              label="取消する重複集計"
+              value={cleanupPreview.counts.performanceEvents}
             />
             <ApplyPreviewCount
-              label="関連付け"
+              label="削除する重複関連付け"
               value={cleanupPreview.counts.associations}
             />
-          </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <CleanupSamples
-              label="旧商談サンプル"
-              values={cleanupPreview.samples.deals}
-            />
-            <CleanupSamples
-              label="旧CS案件サンプル"
-              values={cleanupPreview.samples.deliveryProjects}
+            <ApplyPreviewCount
+              label="削除する重複担当者"
+              value={cleanupPreview.counts.participants}
             />
           </div>
+          <CleanupDuplicatePairs pairs={cleanupPreview.duplicatePairs} />
           <div className="mt-5 grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
             <label>
               <span className="field-label">整理の確認入力</span>
@@ -1345,7 +1357,7 @@ export function LegacyExcelImporter({
               }
               onClick={executeDuplicateCleanup}
             >
-              旧重複だけを整理
+              空の重複商談だけを整理
             </button>
           </div>
         </section>
@@ -1354,19 +1366,57 @@ export function LegacyExcelImporter({
   );
 }
 
-function CleanupSamples({
-  label,
-  values,
+function CleanupDuplicatePairs({
+  pairs,
 }: {
-  label: string;
-  values: string[];
+  pairs: CleanupPreview["duplicatePairs"];
 }) {
   return (
-    <div className="rounded-lg border border-line bg-slate-50 p-3">
-      <p className="text-xs font-bold text-slate-500">{label}</p>
-      <p className="mt-2 text-sm">
-        {values.length > 0 ? values.join(" / ") : "対象なし"}
-      </p>
+    <div className="mt-4 overflow-hidden rounded-lg border border-line">
+      <div className="border-b border-line bg-slate-50 px-4 py-3">
+        <p className="text-sm font-bold">削除対象の全件一覧</p>
+        <p className="mt-1 text-xs text-slate-500">
+          左の空商談を削除し、右の商品あり商談を残します。
+        </p>
+      </div>
+      {pairs.length > 0 ? (
+        <div className="max-h-80 overflow-auto">
+          <table className="data-table text-sm">
+            <thead>
+              <tr>
+                <th>空商談</th>
+                <th>ステージ</th>
+                <th>残す商談</th>
+                <th>商品数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pairs.map((pair) => (
+                <tr key={pair.duplicateDealId}>
+                  <td>
+                    <span className="font-semibold">{pair.name}</span>
+                    <span className="mt-1 block text-xs text-slate-400">
+                      {pair.duplicateDealId.slice(-8)}
+                    </span>
+                  </td>
+                  <td>{pair.stageName}</td>
+                  <td>
+                    <span className="font-semibold">{pair.name}</span>
+                    <span className="mt-1 block text-xs text-slate-400">
+                      {pair.canonicalDealId.slice(-8)}
+                    </span>
+                  </td>
+                  <td>{pair.canonicalLineItemCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="px-4 py-5 text-sm text-slate-500">
+          安全に自動整理できる空商談はありません。
+        </p>
+      )}
     </div>
   );
 }

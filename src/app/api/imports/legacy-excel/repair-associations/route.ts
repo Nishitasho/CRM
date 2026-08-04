@@ -342,10 +342,10 @@ async function repairLegacySalesAssignments(input: {
     participantsByDealRole.set(key, group);
   }
 
-  for (let index = 0; index < assignmentEntries.length; index += 10) {
+  for (let index = 0; index < assignmentEntries.length; index += 5) {
     const outcomes = await Promise.all(
       assignmentEntries
-        .slice(index, index + 10)
+        .slice(index, index + 5)
         .map(async ([dealId, assignment]) => {
           try {
             await prisma.$transaction(async (tx) => {

@@ -1256,8 +1256,7 @@ export function LegacyExcelImporter({
                             : "日付を再同期"}
                         </button>
                       ) : null}
-                      {item.status === "COMPLETED" &&
-                      !item.associationRepairCompleted ? (
+                      {item.status === "COMPLETED" ? (
                         <button
                           type="button"
                           className="secondary-button"
@@ -1266,7 +1265,9 @@ export function LegacyExcelImporter({
                         >
                           {repairJobId === item.id
                             ? "補修中"
-                            : "関連付け・IS/FSを補修"}
+                            : item.associationRepairCompleted
+                              ? "IS・FSを再補修"
+                              : "関連付け・IS/FSを補修"}
                         </button>
                       ) : null}
                       {item.id === latestCompletedJobId ? (

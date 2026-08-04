@@ -72,7 +72,11 @@ export function DealSalesAssigneeInlineEditor({
         disabled={pending}
         onChange={(event) => void update(event.target.value)}
       >
-        <option value="">未設定</option>
+        <option value="">
+          {!currentUserId && currentUserName
+            ? `${currentUserName}（スプシ担当）`
+            : "未設定"}
+        </option>
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -83,7 +87,7 @@ export function DealSalesAssigneeInlineEditor({
         {pending
           ? "保存中..."
           : !currentUserId && currentUserName
-            ? `現在: ${currentUserName}（ユーザー未紐付け）`
+            ? "ログイン不要の担当者として設定済み"
             : "帰属売上 50%"}
       </p>
       {error ? <p className="text-xs font-bold text-red-600">{error}</p> : null}

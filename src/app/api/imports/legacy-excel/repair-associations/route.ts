@@ -6,6 +6,7 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   applyLegacyExcelImport,
+  refreshLegacyProgressCandidatePeople,
   type LegacyExcelApplyTargets,
   type LegacyExcelDryRunResult,
 } from "@/lib/legacy-excel-import";
@@ -19,7 +20,7 @@ const repairSchema = z.object({
 });
 
 const REPAIR_BATCH_SIZE = 25;
-const ASSOCIATION_REPAIR_VERSION = 4;
+const ASSOCIATION_REPAIR_VERSION = 5;
 
 const progressRepairTargets = {
   masters: false,
@@ -83,16 +84,24 @@ export async function POST(request: Request) {
     }
 
     const mapping = job.mapping as Prisma.JsonObject;
-    const dryRun = mapping.dryRunSummary as LegacyExcelDryRunResult | undefined;
+    const storedDryRun = mapping.dryRunSummary as
+      | LegacyExcelDryRunResult
+      | undefined;
     if (
-      !dryRun?.workbookFingerprint ||
-      dryRun.provider !== "legacy_excel_workbook"
+      !storedDryRun?.workbookFingerprint ||
+      storedDryRun.provider !== "legacy_excel_workbook"
     ) {
       return NextResponse.json(
         { message: "補修元のdry run結果が見つかりません。" },
         { status: 400 },
       );
     }
+    const dryRun: LegacyExcelDryRunResult = {
+      ...storedDryRun,
+      progressCandidates: storedDryRun.progressCandidates.map(
+        refreshLegacyProgressCandidatePeople,
+      ),
+    };
 
     const previousProgress = readRepairProgress(
       mapping.associationRepairProgress,
@@ -110,8 +119,7 @@ export async function POST(request: Request) {
           retryRowSet.has(candidateRowKey(candidate)),
         )
       : dryRun.progressCandidates;
-    const repairingProgress =
-      storedProgress.index < progressCandidates.length;
+    const repairingProgress = storedProgress.index < progressCandidates.length;
     const autoProjectIds = new Set(
       dryRun.crossFileMatches
         .filter((match) => match.decision === "AUTO")
@@ -197,7 +205,7 @@ export async function POST(request: Request) {
         data: {
           organizationId: context.organization.id,
           actorUserId: context.user.id,
-          action: "legacy_excel.repair_associations",
+          action: "legacy_excel.repair_associations_and_sales_assignments",
           targetType: "import_job",
           targetId: job.id,
           after: nextProgress as Prisma.InputJsonValue,
@@ -252,10 +260,10 @@ function initializeRepairProgress(
   version: unknown,
   previous: ReturnType<typeof readRepairProgress>,
 ) {
-  if (
-    version === ASSOCIATION_REPAIR_VERSION &&
-    !(previous.complete && previous.errors.length > 0)
-  ) {
+  if (version !== ASSOCIATION_REPAIR_VERSION) {
+    return readRepairProgress(undefined);
+  }
+  if (!(previous.complete && previous.errors.length > 0)) {
     return previous;
   }
   const retryRows = previous.errors.map((error) => error.row);
@@ -265,10 +273,7 @@ function initializeRepairProgress(
   };
 }
 
-function candidateRowKey(candidate: {
-  sheetName: string;
-  rowNumber: number;
-}) {
+function candidateRowKey(candidate: { sheetName: string; rowNumber: number }) {
   return `${candidate.sheetName}:${candidate.rowNumber}`;
 }
 

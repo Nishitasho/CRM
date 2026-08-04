@@ -8,7 +8,8 @@ import { prisma } from "@/lib/prisma";
 export default async function LegacyExcelImportPage() {
   const context = await getAuthContext();
   if (!context) redirect("/login");
-  if (!canUseLegacyProgressImport(context.membership.role)) redirect("/imports");
+  if (!canUseLegacyProgressImport(context.membership.role))
+    redirect("/imports");
 
   const jobs = await prisma.importJob.findMany({
     where: {
@@ -39,7 +40,7 @@ export default async function LegacyExcelImportPage() {
       sourceName: mapping.dryRunSummary?.sourceName ?? "",
       associationRepairCompleted:
         Boolean(mapping.associationRepairCompletedAt) &&
-        mapping.associationRepairVersion === 4 &&
+        mapping.associationRepairVersion === 5 &&
         (mapping.associationRepairProgress?.errors?.length ?? 0) === 0,
     };
   });

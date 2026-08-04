@@ -43,6 +43,7 @@ export type SalesProgressRow = {
   label: string;
   businessUnitId: string | null;
   userId: string | null;
+  assigneeKey: string | null;
   productId: string | null;
   amountBasis: AmountMetricBasis;
   dateBasis: ConfirmedAmountDateBasis;
@@ -201,6 +202,8 @@ export type SalesRoleParticipant = {
   userId: string | null;
   workFunction: "IS" | "FS";
   creditShare?: number | null;
+  assigneeKey?: string | null;
+  snapshotUserName?: string | null;
 };
 
 export function allocateAmountBySalesRoles(
@@ -222,13 +225,28 @@ export function allocateAmountBySalesRoles(
         },
       ];
     }
-    return allocateAmountByClosers(roleAmount, roleParticipants).map(
-      (allocation) => ({
-        ...allocation,
-        workFunction,
-        share: allocation.share * salesAttributionShare(workFunction),
-      }),
+    const explicitShareSum = roleParticipants.reduce(
+      (sum, participant) => sum + (participant.creditShare ?? 0),
+      0,
     );
+    return roleParticipants.map((participant) => {
+      const roleShare =
+        explicitShareSum > 0
+          ? (participant.creditShare ?? 0) / explicitShareSum
+          : 1 / roleParticipants.length;
+      return {
+        userId: participant.userId,
+        workFunction,
+        share: roleShare * salesAttributionShare(workFunction),
+        amount: roleAmount * roleShare,
+        ...(participant.assigneeKey
+          ? { assigneeKey: participant.assigneeKey }
+          : {}),
+        ...(participant.snapshotUserName
+          ? { snapshotUserName: participant.snapshotUserName }
+          : {}),
+      };
+    });
   });
 }
 
@@ -266,6 +284,11 @@ function reportSalesParticipants(
             ? null
             : numberValue(participant.creditShare),
         snapshotUserName: participant.snapshotUserName,
+        assigneeKey: salesAssigneeKey({
+          userId: participant.userId,
+          workFunction,
+          snapshotUserName: participant.snapshotUserName,
+        }),
       },
     ];
   });
@@ -278,6 +301,11 @@ function reportSalesParticipants(
       workFunction: WorkFunction.FS,
       creditShare: null,
       snapshotUserName: owner.name,
+      assigneeKey: salesAssigneeKey({
+        userId: owner.userId,
+        workFunction: WorkFunction.FS,
+        snapshotUserName: owner.name,
+      }),
     });
   }
   if (!result.length) {
@@ -286,9 +314,26 @@ function reportSalesParticipants(
       workFunction: WorkFunction.FS,
       creditShare: null,
       snapshotUserName: "担当者未設定",
+      assigneeKey: "unassigned:FS",
     });
   }
   return result;
+}
+
+function salesAssigneeKey(input: {
+  userId: string | null;
+  workFunction: "IS" | "FS";
+  snapshotUserName: string | null;
+}) {
+  if (input.userId) return `user:${input.userId}`;
+  const normalizedName = input.snapshotUserName
+    ?.normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .trim();
+  return normalizedName
+    ? `name:${input.workFunction}:${normalizedName}`
+    : `unassigned:${input.workFunction}`;
 }
 
 function startOfDay(date: Date) {
@@ -627,6 +672,7 @@ function emptyProgressRow(input: {
   label: string;
   businessUnitId?: string | null;
   userId?: string | null;
+  assigneeKey?: string | null;
   productId?: string | null;
   amountBasis: AmountMetricBasis;
   dateBasis: ConfirmedAmountDateBasis;
@@ -637,6 +683,7 @@ function emptyProgressRow(input: {
     label: input.label,
     businessUnitId: input.businessUnitId ?? null,
     userId: input.userId ?? null,
+    assigneeKey: input.assigneeKey ?? null,
     productId: input.productId ?? null,
     amountBasis: input.amountBasis,
     dateBasis: input.dateBasis,
@@ -825,8 +872,15 @@ export async function getSalesProgressReport(
         (!filter.userId || allocation.userId === filter.userId),
     );
     for (const allocation of allocations) {
-      const userId = allocation.userId ?? "unassigned";
-      const userKey = `${unitId ?? "none"}:${userId}`;
+      const owner = participants.find(
+        (participant) =>
+          participant.assigneeKey === allocation.assigneeKey &&
+          participant.workFunction === allocation.workFunction,
+      );
+      const assigneeKey =
+        allocation.assigneeKey ??
+        (allocation.userId ? `user:${allocation.userId}` : "unassigned");
+      const userKey = `${unitId ?? "none"}:${assigneeKey}`;
       if (!userRows.has(userKey)) {
         userRows.set(
           userKey,
@@ -834,11 +888,13 @@ export async function getSalesProgressReport(
             id: `user:${userKey}`,
             level: "user",
             label:
-              allocation.userId === null
-                ? "担当者未設定"
-                : (userName.get(allocation.userId) ?? "担当者"),
+              owner?.snapshotUserName ??
+              (allocation.userId
+                ? (userName.get(allocation.userId) ?? "担当者")
+                : "担当者未設定"),
             businessUnitId: unitId ?? null,
             userId: allocation.userId,
+            assigneeKey,
             amountBasis,
             dateBasis,
           }),
@@ -861,6 +917,7 @@ export async function getSalesProgressReport(
               label: line.product?.name ?? line.name,
               businessUnitId: unitId ?? null,
               userId: allocation.userId,
+              assigneeKey,
               productId: line.productId,
               amountBasis,
               dateBasis,
@@ -1479,9 +1536,13 @@ export async function getSalespersonComparisonReport(
     businessUnitId: string | null;
     label?: string | null;
     workFunction?: WorkFunction | null;
+    assigneeKey?: string | null;
   }) {
     if (filter.userId && input.userId !== filter.userId) return null;
-    const key = `${input.businessUnitId ?? "none"}:${input.userId ?? "unassigned"}`;
+    const assigneeKey =
+      input.assigneeKey ??
+      (input.userId ? `user:${input.userId}` : "unassigned");
+    const key = `${input.businessUnitId ?? "none"}:${assigneeKey}`;
     if (!rows.has(key)) {
       const base = progressRows.get(key);
       rows.set(key, {
@@ -1495,6 +1556,7 @@ export async function getSalespersonComparisonReport(
                 : (input.label ?? userName.get(input.userId) ?? "担当者"),
             businessUnitId: input.businessUnitId,
             userId: input.userId,
+            assigneeKey,
             amountBasis:
               (input.businessUnitId
                 ? businessUnitById.get(input.businessUnitId)?.amountBasis
@@ -1592,9 +1654,10 @@ export async function getSalespersonComparisonReport(
         businessUnitId: deal.businessUnitId,
         label: owner.snapshotUserName,
         workFunction: owner.workFunction,
+        assigneeKey: owner.assigneeKey,
       });
       if (!row) continue;
-      const rowKey = `${row.businessUnitId ?? "none"}:${row.userId ?? "unassigned"}`;
+      const rowKey = `${row.businessUnitId ?? "none"}:${row.assigneeKey ?? (row.userId ? `user:${row.userId}` : "unassigned")}`;
       if (inRange(deal.createdAt, filter.periodStart, filter.periodEnd)) {
         addDistinct(`${rowKey}:created`, deal.id, () => {
           row.opportunityCount += 1;
@@ -1658,7 +1721,7 @@ export async function getSalespersonComparisonReport(
     for (const allocation of revenueAllocations) {
       const owner = owners.find(
         (item) =>
-          item.userId === allocation.userId &&
+          item.assigneeKey === allocation.assigneeKey &&
           item.workFunction === allocation.workFunction,
       );
       const row = ensureRow({
@@ -1666,6 +1729,7 @@ export async function getSalespersonComparisonReport(
         businessUnitId: unitId ?? null,
         label: owner?.snapshotUserName,
         workFunction: allocation.workFunction,
+        assigneeKey: allocation.assigneeKey,
       });
       if (!row) continue;
       row.revenueAmount += allocation.amount;
@@ -1682,7 +1746,7 @@ export async function getSalespersonComparisonReport(
     for (const allocation of grossProfitAllocations) {
       const owner = owners.find(
         (item) =>
-          item.userId === allocation.userId &&
+          item.assigneeKey === allocation.assigneeKey &&
           item.workFunction === allocation.workFunction,
       );
       const row = ensureRow({
@@ -1690,6 +1754,7 @@ export async function getSalespersonComparisonReport(
         businessUnitId: unitId ?? null,
         label: owner?.snapshotUserName,
         workFunction: allocation.workFunction,
+        assigneeKey: allocation.assigneeKey,
       });
       if (!row) continue;
       row.grossProfitAmount += allocation.amount;

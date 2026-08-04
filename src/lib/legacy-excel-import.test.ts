@@ -10,6 +10,7 @@ import {
   ensureProduct,
   excelSerialToDateString,
   findUserByName,
+  getLegacySalesOwnerNames,
   getLegacyDealLineItemWorkflow,
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
@@ -21,6 +22,7 @@ import {
   normalizePhone,
   parseLegacyDate,
   parseMoney,
+  refreshLegacyProgressCandidatePeople,
   type ProgressDealCandidate,
 } from "./legacy-excel-import";
 import { parseLegacyExcelApplyRequest } from "./legacy-excel-apply-request";
@@ -121,6 +123,73 @@ describe("legacy Excel import", () => {
     expect(cleanLegacyCellValue("https://example.com")).toBe(
       "https://example.com",
     );
+  });
+
+  it("reads IS and FS only from their exact spreadsheet columns", () => {
+    expect(
+      getLegacySalesOwnerNames({
+        IS担当者: "坂本",
+        FS担当者: "前川弘行",
+        担当者名: "顧客 太郎",
+        担当: "顧客側担当",
+      }),
+    ).toEqual({ isOwnerName: "坂本", fsOwnerName: "前川弘行" });
+
+    expect(
+      getLegacySalesOwnerNames({
+        IS担当者: "",
+        FS担当者: "",
+        担当者名: "顧客 太郎",
+        担当: "顧客側担当",
+      }),
+    ).toEqual({ isOwnerName: "", fsOwnerName: "" });
+  });
+
+  it("does not use the customer contact as an FS assignee", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【第一】案件管理シート": [
+          ["案件名", "進捗", "商材", "IS担当者", "FS担当者", "担当者名"],
+          ["株式会社テスト", "E商談", "HP", "岩井", "", "顧客 太郎"],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    expect(result.progressCandidates[0]).toMatchObject({
+      isOwnerName: "岩井",
+      fsOwnerName: "",
+      contactName: "顧客 太郎",
+    });
+  });
+
+  it("repairs people fields stored by an older dry run", () => {
+    const stale = {
+      raw: {
+        IS担当者: "橋本",
+        FS担当者: "魚井",
+        担当者名: "顧客 花子",
+      },
+      contactName: "橋本",
+      isOwnerName: "橋本",
+      fsOwnerName: "顧客 花子",
+      normalized: {
+        normalizedContactName: "橋本",
+        ownerName: "橋本",
+        salesOwnerName: "顧客花子",
+      },
+    } as unknown as ProgressDealCandidate;
+
+    expect(refreshLegacyProgressCandidatePeople(stale)).toMatchObject({
+      contactName: "顧客 花子",
+      isOwnerName: "橋本",
+      fsOwnerName: "魚井",
+      normalized: {
+        normalizedContactName: "顧客花子",
+        ownerName: "橋本",
+        salesOwnerName: "魚井",
+      },
+    });
   });
 
   it("preserves spreadsheet dates for PostgreSQL DATE columns", () => {

@@ -1623,8 +1623,9 @@ export async function applyLegacyExcelImport(input: {
         }> = [];
         for (const candidate of candidates) {
           try {
-            const result = await prisma.$transaction(async (tx) =>
-              applyProgressCandidate(tx, input, candidate, applyTargets),
+            const result = await prisma.$transaction(
+              async (tx) =>
+                applyProgressCandidate(tx, input, candidate, applyTargets),
               {
                 maxWait: input.transactionMaxWaitMs ?? 2_000,
                 timeout: input.transactionTimeoutMs ?? 5_000,
@@ -1830,12 +1831,7 @@ function toProgressDealCandidate(
   ]);
   const dealName =
     getValue(values, ["商談名", "案件名"]) || `${companyName} 導入案件`;
-  const contactName = getValue(values, [
-    "担当者名",
-    "先方担当者",
-    "代表者",
-    "担当者",
-  ]);
+  const contactName = getLegacyCustomerContactName(values);
   const phone = getValue(values, ["電話番号", "TEL", "店舗電話", "携帯電話"]);
   const domain = getValue(values, [
     "ドメイン",
@@ -1862,8 +1858,7 @@ function toProgressDealCandidate(
   const businessUnitName =
     getValue(values, ["事業部"]) ||
     inferBusinessUnitName(row.sheetName, productName);
-  const isOwnerName = getValue(values, ["IS担当者", "アポ担当", "IS"]);
-  const fsOwnerName = getValue(values, ["FS担当者", "営業担当", "FS", "担当"]);
+  const { isOwnerName, fsOwnerName } = getLegacySalesOwnerNames(values);
   const rowFingerprint = hashJson(values);
   const normalized = buildNormalizedKeys({
     companyName,
@@ -2203,6 +2198,56 @@ function getValue(row: Record<string, string>, labels: string[]) {
     ) {
       continue;
     }
+    const value = cleanLegacyCellValue(rawValue);
+    if (value) return value;
+  }
+  return "";
+}
+
+export function getLegacySalesOwnerNames(row: Record<string, string>) {
+  return {
+    isOwnerName: getExactValue(row, [
+      "IS担当者",
+      "アポ担当者",
+      "アポ担当",
+      "IS",
+    ]),
+    fsOwnerName: getExactValue(row, [
+      "FS担当者",
+      "営業担当者",
+      "営業担当",
+      "FS",
+    ]),
+  };
+}
+
+export function refreshLegacyProgressCandidatePeople(
+  candidate: ProgressDealCandidate,
+): ProgressDealCandidate {
+  const { isOwnerName, fsOwnerName } = getLegacySalesOwnerNames(candidate.raw);
+  const contactName = getLegacyCustomerContactName(candidate.raw);
+  return {
+    ...candidate,
+    contactName,
+    isOwnerName,
+    fsOwnerName,
+    normalized: {
+      ...candidate.normalized,
+      normalizedContactName: normalizeLegacyName(contactName),
+      ownerName: normalizeLegacyName(isOwnerName),
+      salesOwnerName: normalizeLegacyName(fsOwnerName),
+    },
+  };
+}
+
+function getLegacyCustomerContactName(row: Record<string, string>) {
+  return getExactValue(row, ["担当者名", "先方担当者", "代表者", "担当者"]);
+}
+
+function getExactValue(row: Record<string, string>, labels: string[]) {
+  const normalizedLabels = new Set(labels.map(normalizeHeader));
+  for (const [key, rawValue] of Object.entries(row)) {
+    if (!normalizedLabels.has(normalizeHeader(key))) continue;
     const value = cleanLegacyCellValue(rawValue);
     if (value) return value;
   }
@@ -2808,14 +2853,23 @@ async function applyProgressCandidate(
   applyTargets: LegacyExcelApplyTargets,
 ): Promise<AppliedProgressResult> {
   const canonicalExternalId = legacyProgressDealExternalId(candidate);
-  const existingDeal = await tx.deal.findUnique({
-    where: {
-      organizationId_externalId: {
-        organizationId: input.organizationId,
-        externalId: canonicalExternalId,
-      },
-    },
-  });
+  const linkedDealId = await findLegacyLinkTarget(tx, input, candidate, "DEAL");
+  const existingDeal = linkedDealId
+    ? await tx.deal.findFirst({
+        where: {
+          id: linkedDealId,
+          organizationId: input.organizationId,
+          deletedAt: null,
+        },
+      })
+    : await tx.deal.findUnique({
+        where: {
+          organizationId_externalId: {
+            organizationId: input.organizationId,
+            externalId: canonicalExternalId,
+          },
+        },
+      });
   const dealCandidate = existingDeal
     ? await aggregateCurrentProgressForDeal(
         tx,
@@ -2964,7 +3018,7 @@ async function applyProgressCandidate(
       tx,
       input.organizationId,
       deal.id,
-      candidate.isOwnerName,
+      dealCandidate.isOwnerName,
       "APPOINTMENT_SETTER",
       "IS",
     );
@@ -2972,7 +3026,7 @@ async function applyProgressCandidate(
       tx,
       input.organizationId,
       deal.id,
-      candidate.fsOwnerName,
+      dealCandidate.fsOwnerName,
       "CLOSER",
       "FS",
     );
@@ -4096,13 +4150,9 @@ async function createDealLineItemIfNeeded(
   };
   const existing = input.forceCreateDealLineItems
     ? null
-    : await findLegacyLinkTarget(
-        tx,
-        input,
-        candidate,
-        "DEAL_LINE_ITEM",
-        { parentDealId: dealId },
-      );
+    : await findLegacyLinkTarget(tx, input, candidate, "DEAL_LINE_ITEM", {
+        parentDealId: dealId,
+      });
   if (existing) {
     const lineItem = await tx.dealLineItem.findFirst({
       where: { id: existing, organizationId: input.organizationId },
@@ -4221,26 +4271,64 @@ async function ensureDealParticipant(
   role: "APPOINTMENT_SETTER" | "CLOSER",
   workFunction: WorkFunction,
 ) {
-  if (!name) return;
   const user = await findUserByName(tx, organizationId, name);
-  const existing = await tx.dealParticipant.findFirst({
+  const participants = await tx.dealParticipant.findMany({
     where: {
       organizationId,
       dealId,
       role,
-      ...(user ? { userId: user.id } : { snapshotUserName: name }),
     },
+    orderBy: { updatedAt: "desc" },
   });
-  if (existing) return;
+  const normalizedName = normalizeLegacyName(name);
+  const matching = name
+    ? participants.find((participant) =>
+        user
+          ? participant.userId === user.id
+          : normalizeLegacyName(participant.snapshotUserName ?? "") ===
+            normalizedName,
+      )
+    : null;
+  const isCanonical =
+    participants.filter((participant) => participant.status === "ACTIVE")
+      .length === 1 && matching?.status === "ACTIVE";
+  if (isCanonical) return;
+
+  await tx.dealParticipant.updateMany({
+    where: {
+      organizationId,
+      dealId,
+      role,
+      status: "ACTIVE",
+    },
+    data: { status: "INACTIVE" },
+  });
+  if (!name) return;
+
+  const data = {
+    userId: user?.id ?? null,
+    workFunction,
+    status: "ACTIVE" as const,
+    creditShare: 100,
+    snapshotUserName: name.slice(0, 120),
+    metadata: {
+      source: "legacy_excel",
+      salesAttributionPercent: 50,
+    } satisfies Prisma.InputJsonValue,
+  };
+  if (matching) {
+    await tx.dealParticipant.update({
+      where: { id: matching.id },
+      data,
+    });
+    return;
+  }
   await tx.dealParticipant.create({
     data: {
       organizationId,
       dealId,
-      userId: user?.id ?? null,
-      workFunction,
       role,
-      snapshotUserName: name.slice(0, 120),
-      metadata: { source: "legacy_excel" },
+      ...data,
     },
   });
 }

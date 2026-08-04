@@ -174,6 +174,44 @@ describe("sales operations calculations", () => {
     ]);
   });
 
+  it("keeps non-login spreadsheet assignees separate by name", () => {
+    const allocations = allocateAmountBySalesRoles(1_000_000, [
+      {
+        userId: null,
+        workFunction: "IS",
+        creditShare: 100,
+        assigneeKey: "name:IS:坂本",
+        snapshotUserName: "坂本",
+      },
+      {
+        userId: "fs-user",
+        workFunction: "FS",
+        creditShare: 100,
+        assigneeKey: "user:fs-user",
+        snapshotUserName: "魚井",
+      },
+    ]);
+
+    expect(allocations).toEqual([
+      {
+        userId: null,
+        workFunction: "IS",
+        share: 0.5,
+        amount: 500_000,
+        assigneeKey: "name:IS:坂本",
+        snapshotUserName: "坂本",
+      },
+      {
+        userId: "fs-user",
+        workFunction: "FS",
+        share: 0.5,
+        amount: 500_000,
+        assigneeKey: "user:fs-user",
+        snapshotUserName: "魚井",
+      },
+    ]);
+  });
+
   it("defines win rate as WON divided by WON plus LOST only", () => {
     const result = calculateClosedDealWinRate({
       wonDealCount: 7,

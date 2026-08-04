@@ -275,9 +275,12 @@ async function repairLegacySalesAssignments(input: {
         { externalId: { in: externalIds } },
       ],
     },
-    select: { id: true, externalId: true },
+    select: { id: true, externalId: true, ownerUserId: true },
   });
   const dealIds = new Set(deals.map((deal) => deal.id));
+  const ownerByDealId = new Map(
+    deals.map((deal) => [deal.id, deal.ownerUserId]),
+  );
   const dealByExternalId = new Map(
     deals
       .filter((deal) => deal.externalId)
@@ -347,24 +350,43 @@ async function repairLegacySalesAssignments(input: {
       assignmentEntries
         .slice(index, index + 5)
         .map(async ([dealId, assignment]) => {
+          const isUserId =
+            userByName.get(normalizeLegacyName(assignment.isName)) ?? null;
+          const fsUserId =
+            userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
+          const isParticipants =
+            participantsByDealRole.get(`${dealId}\u0000APPOINTMENT_SETTER`) ??
+            [];
+          const fsParticipants =
+            participantsByDealRole.get(`${dealId}\u0000CLOSER`) ?? [];
+          const isPlan = getLegacyParticipantSyncPlan(isParticipants, {
+            name: assignment.isName,
+            userId: isUserId,
+          });
+          const fsPlan = getLegacyParticipantSyncPlan(fsParticipants, {
+            name: assignment.fsName,
+            userId: fsUserId,
+          });
+          const ownerNeedsUpdate =
+            Boolean(fsUserId) && ownerByDealId.get(dealId) !== fsUserId;
+          if (
+            isPlan.action !== "REPLACE" &&
+            fsPlan.action !== "REPLACE" &&
+            !ownerNeedsUpdate
+          ) {
+            return { updated: 0, skipped: 1, error: null };
+          }
           try {
             await prisma.$transaction(async (tx) => {
               await syncLegacyDealParticipant(tx, {
                 organizationId: input.organizationId,
                 dealId,
                 name: assignment.isName,
-                userId:
-                  userByName.get(normalizeLegacyName(assignment.isName)) ??
-                  null,
+                userId: isUserId,
                 role: "APPOINTMENT_SETTER",
                 workFunction: "IS",
-                participants:
-                  participantsByDealRole.get(
-                    `${dealId}\u0000APPOINTMENT_SETTER`,
-                  ) ?? [],
+                participants: isParticipants,
               });
-              const fsUserId =
-                userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
               await syncLegacyDealParticipant(tx, {
                 organizationId: input.organizationId,
                 dealId,
@@ -372,20 +394,20 @@ async function repairLegacySalesAssignments(input: {
                 userId: fsUserId,
                 role: "CLOSER",
                 workFunction: "FS",
-                participants:
-                  participantsByDealRole.get(`${dealId}\u0000CLOSER`) ?? [],
+                participants: fsParticipants,
               });
-              if (fsUserId) {
+              if (ownerNeedsUpdate && fsUserId) {
                 await tx.deal.update({
                   where: { id: dealId },
                   data: { ownerUserId: fsUserId },
                 });
               }
             });
-            return { updated: 1, error: null };
+            return { updated: 1, skipped: 0, error: null };
           } catch (error) {
             return {
               updated: 0,
+              skipped: 0,
               error: {
                 row: candidateRowKey(assignment.candidate),
                 message:
@@ -397,6 +419,7 @@ async function repairLegacySalesAssignments(input: {
     );
     for (const outcome of outcomes) {
       result.updated += outcome.updated;
+      result.skipped += outcome.skipped;
       if (outcome.error) result.errors.push(outcome.error);
     }
   }

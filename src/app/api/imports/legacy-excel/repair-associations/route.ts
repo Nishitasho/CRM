@@ -19,7 +19,7 @@ const repairSchema = z.object({
   importJobId: z.string().uuid(),
 });
 
-const REPAIR_BATCH_SIZE = 100;
+const REPAIR_BATCH_SIZE = 25;
 const ASSOCIATION_REPAIR_VERSION = 5;
 
 const progressRepairTargets = {
@@ -160,7 +160,7 @@ export async function POST(request: Request) {
         ? progressRepairTargets
         : projectRepairTargets,
       updateImportJob: false,
-      progressConcurrency: 4,
+      progressConcurrency: 2,
       transactionMaxWaitMs: 15_000,
       transactionTimeoutMs: 15_000,
     });

@@ -11,6 +11,7 @@ import {
   excelSerialToDateString,
   findUserByName,
   getLegacySalesOwnerNames,
+  getLegacyParticipantSyncPlan,
   getLegacyDealLineItemWorkflow,
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
@@ -35,6 +36,38 @@ import { parseXlsxWorkbook } from "./spreadsheet";
 import { writeSimpleXlsxWorkbook } from "./simple-xlsx";
 
 describe("legacy Excel import", () => {
+  it("preserves an existing assignment when a duplicate spreadsheet row is blank", () => {
+    expect(
+      getLegacyParticipantSyncPlan(
+        [
+          {
+            id: "closer-1",
+            userId: "user-1",
+            snapshotUserName: "前川弘行",
+            status: "ACTIVE",
+          },
+        ],
+        { name: "", userId: null },
+      ),
+    ).toEqual({ action: "PRESERVE", matchingId: null });
+  });
+
+  it("reuses the matching participant when restoring a spreadsheet assignment", () => {
+    expect(
+      getLegacyParticipantSyncPlan(
+        [
+          {
+            id: "closer-1",
+            userId: "user-1",
+            snapshotUserName: "前川弘行",
+            status: "INACTIVE",
+          },
+        ],
+        { name: "前川弘行", userId: "user-1" },
+      ),
+    ).toEqual({ action: "REPLACE", matchingId: "closer-1" });
+  });
+
   it("groups products into one deal while keeping different stages separate", () => {
     const base = {
       normalized: {

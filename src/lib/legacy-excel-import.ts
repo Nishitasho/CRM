@@ -2240,6 +2240,37 @@ export function refreshLegacyProgressCandidatePeople(
   };
 }
 
+export function getLegacyParticipantSyncPlan(
+  participants: Array<{
+    id: string;
+    userId: string | null;
+    snapshotUserName: string | null;
+    status: string;
+  }>,
+  input: { name: string; userId: string | null },
+) {
+  const normalizedName = normalizeLegacyName(input.name);
+  if (!normalizedName) {
+    return { action: "PRESERVE", matchingId: null } as const;
+  }
+  const matching = participants.find((participant) =>
+    input.userId
+      ? participant.userId === input.userId
+      : normalizeLegacyName(participant.snapshotUserName ?? "") ===
+        normalizedName,
+  );
+  const active = participants.filter(
+    (participant) => participant.status === "ACTIVE",
+  );
+  if (active.length === 1 && matching?.status === "ACTIVE") {
+    return { action: "UNCHANGED", matchingId: matching.id } as const;
+  }
+  return {
+    action: "REPLACE",
+    matchingId: matching?.id ?? null,
+  } as const;
+}
+
 function getLegacyCustomerContactName(row: Record<string, string>) {
   return getExactValue(row, ["担当者名", "先方担当者", "代表者", "担当者"]);
 }

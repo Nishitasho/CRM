@@ -6,6 +6,7 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   applyLegacyExcelImport,
+  getLegacyParticipantSyncPlan,
   legacyProgressDealExternalId,
   normalizeLegacyName,
   refreshLegacyProgressCandidatePeople,
@@ -22,8 +23,8 @@ const repairSchema = z.object({
   importJobId: z.string().uuid(),
 });
 
-const REPAIR_BATCH_SIZE = 25;
-const ASSOCIATION_REPAIR_VERSION = 5;
+const REPAIR_BATCH_SIZE = 50;
+const ASSOCIATION_REPAIR_VERSION = 6;
 
 const projectRepairTargets = {
   masters: false,
@@ -103,11 +104,14 @@ export async function POST(request: Request) {
       return NextResponse.json(storedProgress);
     }
     const retryRowSet = new Set(storedProgress.retryRows);
+    const assignableProgressCandidates = dryRun.progressCandidates.filter(
+      (candidate) => candidate.isOwnerName || candidate.fsOwnerName,
+    );
     const progressCandidates = retryRowSet.size
-      ? dryRun.progressCandidates.filter((candidate) =>
+      ? assignableProgressCandidates.filter((candidate) =>
           retryRowSet.has(candidateRowKey(candidate)),
         )
-      : dryRun.progressCandidates;
+      : assignableProgressCandidates;
     const repairingProgress = storedProgress.index < progressCandidates.length;
     const autoProjectIds = new Set(
       dryRun.crossFileMatches
@@ -307,10 +311,41 @@ async function repairLegacySalesAssignments(input: {
   }
 
   const assignmentEntries = Array.from(assignments.entries());
-  for (let index = 0; index < assignmentEntries.length; index += 5) {
+  const participantSnapshots = await prisma.dealParticipant.findMany({
+    where: {
+      organizationId: input.organizationId,
+      dealId: { in: assignmentEntries.map(([dealId]) => dealId) },
+      role: { in: ["APPOINTMENT_SETTER", "CLOSER"] },
+    },
+    select: {
+      id: true,
+      dealId: true,
+      role: true,
+      userId: true,
+      snapshotUserName: true,
+      status: true,
+    },
+  });
+  const participantsByDealRole = new Map<
+    string,
+    Array<{
+      id: string;
+      userId: string | null;
+      snapshotUserName: string | null;
+      status: string;
+    }>
+  >();
+  for (const participant of participantSnapshots) {
+    const key = `${participant.dealId}\u0000${participant.role}`;
+    const group = participantsByDealRole.get(key) ?? [];
+    group.push(participant);
+    participantsByDealRole.set(key, group);
+  }
+
+  for (let index = 0; index < assignmentEntries.length; index += 10) {
     const outcomes = await Promise.all(
       assignmentEntries
-        .slice(index, index + 5)
+        .slice(index, index + 10)
         .map(async ([dealId, assignment]) => {
           try {
             await prisma.$transaction(async (tx) => {
@@ -323,6 +358,10 @@ async function repairLegacySalesAssignments(input: {
                   null,
                 role: "APPOINTMENT_SETTER",
                 workFunction: "IS",
+                participants:
+                  participantsByDealRole.get(
+                    `${dealId}\u0000APPOINTMENT_SETTER`,
+                  ) ?? [],
               });
               const fsUserId =
                 userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
@@ -333,6 +372,8 @@ async function repairLegacySalesAssignments(input: {
                 userId: fsUserId,
                 role: "CLOSER",
                 workFunction: "FS",
+                participants:
+                  participantsByDealRole.get(`${dealId}\u0000CLOSER`) ?? [],
               });
               if (fsUserId) {
                 await tx.deal.update({
@@ -371,29 +412,16 @@ async function syncLegacyDealParticipant(
     userId: string | null;
     role: "APPOINTMENT_SETTER" | "CLOSER";
     workFunction: "IS" | "FS";
+    participants: Array<{
+      id: string;
+      userId: string | null;
+      snapshotUserName: string | null;
+      status: string;
+    }>;
   },
 ) {
-  const participants = await tx.dealParticipant.findMany({
-    where: {
-      organizationId: input.organizationId,
-      dealId: input.dealId,
-      role: input.role,
-    },
-    orderBy: { updatedAt: "desc" },
-  });
-  const normalizedName = normalizeLegacyName(input.name);
-  const matching = input.name
-    ? participants.find((participant) =>
-        input.userId
-          ? participant.userId === input.userId
-          : normalizeLegacyName(participant.snapshotUserName ?? "") ===
-            normalizedName,
-      )
-    : null;
-  const active = participants.filter(
-    (participant) => participant.status === "ACTIVE",
-  );
-  if (active.length === 1 && matching?.status === "ACTIVE") return;
+  const plan = getLegacyParticipantSyncPlan(input.participants, input);
+  if (plan.action === "PRESERVE" || plan.action === "UNCHANGED") return;
 
   await tx.dealParticipant.updateMany({
     where: {
@@ -404,7 +432,6 @@ async function syncLegacyDealParticipant(
     },
     data: { status: "INACTIVE" },
   });
-  if (!input.name) return;
 
   const data = {
     userId: input.userId,
@@ -417,9 +444,9 @@ async function syncLegacyDealParticipant(
       salesAttributionPercent: 50,
     } satisfies Prisma.InputJsonValue,
   };
-  if (matching) {
+  if (plan.matchingId) {
     await tx.dealParticipant.update({
-      where: { id: matching.id },
+      where: { id: plan.matchingId },
       data,
     });
     return;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allocateAmountByClosers,
+  allocateAmountBySalesRoles,
   calculateClosedDealWinRate,
   calculateAttachmentRate,
   calculateProgressDerived,
@@ -110,6 +111,67 @@ describe("sales operations calculations", () => {
     expect(salesAttributionShare("FS")).toBe(0.5);
     expect(salesAttributionShare("CS")).toBe(1);
     expect(salesAttributionShare(null)).toBe(1);
+  });
+
+  it("attributes one deal as 50% to IS and 50% to FS", () => {
+    const allocations = allocateAmountBySalesRoles(1_000_000, [
+      { userId: "is-user", workFunction: "IS", creditShare: 100 },
+      { userId: "fs-user", workFunction: "FS", creditShare: 100 },
+    ]);
+
+    expect(allocations).toEqual([
+      {
+        userId: "is-user",
+        workFunction: "IS",
+        share: 0.5,
+        amount: 500_000,
+      },
+      {
+        userId: "fs-user",
+        workFunction: "FS",
+        share: 0.5,
+        amount: 500_000,
+      },
+    ]);
+    expect(allocations.reduce((sum, item) => sum + item.amount, 0)).toBe(
+      1_000_000,
+    );
+  });
+
+  it("splits the FS half between multiple FS owners", () => {
+    const allocations = allocateAmountBySalesRoles(1_000_000, [
+      { userId: "is-user", workFunction: "IS", creditShare: 100 },
+      { userId: "fs-a", workFunction: "FS", creditShare: 60 },
+      { userId: "fs-b", workFunction: "FS", creditShare: 40 },
+    ]);
+
+    expect(allocations.map((item) => item.amount)).toEqual([
+      500_000, 300_000, 200_000,
+    ]);
+    expect(allocations.reduce((sum, item) => sum + item.amount, 0)).toBe(
+      1_000_000,
+    );
+  });
+
+  it("keeps an unassigned half visible when the IS owner is missing", () => {
+    const allocations = allocateAmountBySalesRoles(800_000, [
+      { userId: "fs-user", workFunction: "FS", creditShare: 100 },
+    ]);
+
+    expect(allocations).toEqual([
+      {
+        userId: null,
+        workFunction: "IS",
+        share: 0.5,
+        amount: 400_000,
+      },
+      {
+        userId: "fs-user",
+        workFunction: "FS",
+        share: 0.5,
+        amount: 400_000,
+      },
+    ]);
   });
 
   it("defines win rate as WON divided by WON plus LOST only", () => {

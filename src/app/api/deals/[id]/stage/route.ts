@@ -588,7 +588,14 @@ async function setCloserParticipant(
       creditShare: 100,
       contributionWeight: 1,
       snapshotUserName: member.user.name || member.user.email,
-      metadata: { source: "stage_transition_dialog" },
+      metadata: {
+        source: "stage_transition_dialog",
+        salesAttributionPercent: 50,
+      },
     },
+  });
+  await tx.deal.update({
+    where: { id: input.dealId },
+    data: { ownerUserId: input.userId },
   });
 }

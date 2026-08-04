@@ -197,6 +197,100 @@ export function allocateAmountByClosers(
   }));
 }
 
+export type SalesRoleParticipant = {
+  userId: string | null;
+  workFunction: "IS" | "FS";
+  creditShare?: number | null;
+};
+
+export function allocateAmountBySalesRoles(
+  amount: number,
+  participants: SalesRoleParticipant[],
+) {
+  return [WorkFunction.IS, WorkFunction.FS].flatMap((workFunction) => {
+    const roleParticipants = participants.filter(
+      (participant) => participant.workFunction === workFunction,
+    );
+    const roleAmount = amount * salesAttributionShare(workFunction);
+    if (!roleParticipants.length) {
+      return [
+        {
+          userId: null,
+          workFunction,
+          share: salesAttributionShare(workFunction),
+          amount: roleAmount,
+        },
+      ];
+    }
+    return allocateAmountByClosers(roleAmount, roleParticipants).map(
+      (allocation) => ({
+        ...allocation,
+        workFunction,
+        share: allocation.share * salesAttributionShare(workFunction),
+      }),
+    );
+  });
+}
+
+type ReportSalesParticipant = SalesRoleParticipant & {
+  snapshotUserName: string | null;
+};
+
+function reportSalesParticipants(
+  participants: Array<{
+    userId: string | null;
+    role: DealParticipantRole;
+    workFunction: WorkFunction | null;
+    creditShare: Prisma.Decimal | number | null;
+    snapshotUserName: string | null;
+  }>,
+  owner: {
+    userId: string | null;
+    name: string | null;
+  },
+): ReportSalesParticipant[] {
+  const result = participants.flatMap((participant) => {
+    const workFunction =
+      participant.role === DealParticipantRole.APPOINTMENT_SETTER
+        ? WorkFunction.IS
+        : participant.role === DealParticipantRole.CLOSER
+          ? WorkFunction.FS
+          : null;
+    if (!workFunction) return [];
+    return [
+      {
+        userId: participant.userId,
+        workFunction,
+        creditShare:
+          participant.creditShare === null
+            ? null
+            : numberValue(participant.creditShare),
+        snapshotUserName: participant.snapshotUserName,
+      },
+    ];
+  });
+  if (
+    owner.userId &&
+    !result.some((participant) => participant.workFunction === WorkFunction.FS)
+  ) {
+    result.push({
+      userId: owner.userId,
+      workFunction: WorkFunction.FS,
+      creditShare: null,
+      snapshotUserName: owner.name,
+    });
+  }
+  if (!result.length) {
+    result.push({
+      userId: null,
+      workFunction: WorkFunction.FS,
+      creditShare: null,
+      snapshotUserName: "担当者未設定",
+    });
+  }
+  return result;
+}
+
 function startOfDay(date: Date) {
   return new Date(
     Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
@@ -387,7 +481,15 @@ async function reportLineItems(
           nextActionDate: true,
           updatedAt: true,
           participants: {
-            where: { role: DealParticipantRole.CLOSER, status: "ACTIVE" },
+            where: {
+              role: {
+                in: [
+                  DealParticipantRole.APPOINTMENT_SETTER,
+                  DealParticipantRole.CLOSER,
+                ],
+              },
+              status: "ACTIVE",
+            },
             select: {
               id: true,
               userId: true,
@@ -682,33 +784,47 @@ export async function getSalesProgressReport(
     }
 
     if (!isConfirmed && !isOpen) continue;
-    const closers = line.deal.participants.map((participant) => ({
-      userId: participant.userId,
-      creditShare:
-        participant.creditShare === null
-          ? null
-          : numberValue(participant.creditShare),
-    }));
-    if (line.deal.status === DealStatus.WON && !closers.length) {
-      warnings.add(`商談「${line.deal.name}」にCLOSERが設定されていません。`);
+    const participants = reportSalesParticipants(line.deal.participants, {
+      userId: line.deal.ownerUserId,
+      name: line.deal.ownerUserId
+        ? (userName.get(line.deal.ownerUserId) ?? null)
+        : null,
+    });
+    if (line.deal.status === DealStatus.WON) {
+      for (const workFunction of [WorkFunction.IS, WorkFunction.FS]) {
+        const roleParticipants = participants.filter(
+          (participant) => participant.workFunction === workFunction,
+        );
+        if (!roleParticipants.length) {
+          warnings.add(
+            `商談「${line.deal.name}」に${workFunction}担当者が設定されていません。`,
+          );
+        }
+        const explicitShareSum = roleParticipants.reduce(
+          (sum, participant) => sum + (participant.creditShare ?? 0),
+          0,
+        );
+        if (
+          roleParticipants.length > 1 &&
+          explicitShareSum > 0 &&
+          Math.round(explicitShareSum) !== 100
+        ) {
+          warnings.add(
+            `商談「${line.deal.name}」の${workFunction}内配分合計が100%ではありません。`,
+          );
+        }
+      }
     }
-    const explicitShareSum = closers.reduce(
-      (sum, closer) => sum + (closer.creditShare ?? 0),
-      0,
-    );
-    if (
-      closers.length > 1 &&
-      explicitShareSum > 0 &&
-      Math.round(explicitShareSum) !== 100
-    ) {
-      warnings.add(
-        `商談「${line.deal.name}」のCLOSER配分合計が100%ではありません。`,
-      );
-    }
-    for (const allocation of allocateAmountByClosers(
+    const allocations = allocateAmountBySalesRoles(
       isConfirmed ? amount : weightedAmount,
-      closers,
-    )) {
+      participants,
+    ).filter(
+      (allocation) =>
+        (!filter.workFunction ||
+          allocation.workFunction === filter.workFunction) &&
+        (!filter.userId || allocation.userId === filter.userId),
+    );
+    for (const allocation of allocations) {
       const userId = allocation.userId ?? "unassigned";
       const userKey = `${unitId ?? "none"}:${userId}`;
       if (!userRows.has(userKey)) {
@@ -1259,9 +1375,18 @@ export async function getSalespersonComparisonReport(
         closeDate: true,
         stage: { select: { name: true } },
         participants: {
-          where: { role: DealParticipantRole.CLOSER, status: "ACTIVE" },
+          where: {
+            role: {
+              in: [
+                DealParticipantRole.APPOINTMENT_SETTER,
+                DealParticipantRole.CLOSER,
+              ],
+            },
+            status: "ACTIVE",
+          },
           select: {
             userId: true,
+            role: true,
             creditShare: true,
             workFunction: true,
             snapshotUserName: true,
@@ -1436,29 +1561,15 @@ export async function getSalespersonComparisonReport(
   }
 
   const participantOwners = (deal: (typeof deals)[number]) => {
-    const closers = deal.participants.filter((participant) =>
+    const participants = reportSalesParticipants(deal.participants, {
+      userId: deal.ownerUserId,
+      name: deal.ownerUserId ? (userName.get(deal.ownerUserId) ?? null) : null,
+    });
+    return participants.filter((participant) =>
       filter.workFunction
         ? participant.workFunction === filter.workFunction
         : true,
     );
-    if (closers.length) return closers;
-    return deal.ownerUserId
-      ? [
-          {
-            userId: deal.ownerUserId,
-            creditShare: null,
-            workFunction: userWorkFunctions.get(deal.ownerUserId) ?? null,
-            snapshotUserName: userName.get(deal.ownerUserId) ?? null,
-          },
-        ]
-      : [
-          {
-            userId: null,
-            creditShare: null,
-            workFunction: null,
-            snapshotUserName: "担当者未設定",
-          },
-        ];
   };
 
   const seenByRow = new Map<string, Set<string>>();
@@ -1529,61 +1640,56 @@ export async function getSalespersonComparisonReport(
     ) {
       continue;
     }
-    const owners =
-      line.deal.participants.length > 0
-        ? line.deal.participants
-        : [
-            {
-              userId: line.deal.ownerUserId,
-              creditShare: null,
-              workFunction: line.deal.ownerUserId
-                ? (userWorkFunctions.get(line.deal.ownerUserId) ?? null)
-                : null,
-              snapshotUserName: line.deal.ownerUserId
-                ? (userName.get(line.deal.ownerUserId) ?? null)
-                : "担当者未設定",
-            },
-          ];
-    const filteredOwners = owners.filter((owner) =>
-      filter.workFunction ? owner.workFunction === filter.workFunction : true,
-    );
-    if (!filteredOwners.length) continue;
-    for (const allocation of allocateAmountByClosers(
+    const owners = reportSalesParticipants(line.deal.participants, {
+      userId: line.deal.ownerUserId,
+      name: line.deal.ownerUserId
+        ? (userName.get(line.deal.ownerUserId) ?? null)
+        : null,
+    });
+    const revenueAllocations = allocateAmountBySalesRoles(
       numberValue(line.revenueAmount),
-      filteredOwners.map((owner) => ({
-        userId: owner.userId,
-        creditShare:
-          owner.creditShare === null ? null : numberValue(owner.creditShare),
-      })),
-    )) {
-      const owner = filteredOwners.find(
-        (item) => item.userId === allocation.userId,
+      owners,
+    ).filter(
+      (allocation) =>
+        (!filter.workFunction ||
+          allocation.workFunction === filter.workFunction) &&
+        (!filter.userId || allocation.userId === filter.userId),
+    );
+    for (const allocation of revenueAllocations) {
+      const owner = owners.find(
+        (item) =>
+          item.userId === allocation.userId &&
+          item.workFunction === allocation.workFunction,
       );
       const row = ensureRow({
         userId: allocation.userId,
         businessUnitId: unitId ?? null,
         label: owner?.snapshotUserName,
-        workFunction: owner?.workFunction ?? null,
+        workFunction: allocation.workFunction,
       });
       if (!row) continue;
       row.revenueAmount += allocation.amount;
     }
-    for (const allocation of allocateAmountByClosers(
+    const grossProfitAllocations = allocateAmountBySalesRoles(
       numberValue(line.grossProfitAmount),
-      filteredOwners.map((owner) => ({
-        userId: owner.userId,
-        creditShare:
-          owner.creditShare === null ? null : numberValue(owner.creditShare),
-      })),
-    )) {
-      const owner = filteredOwners.find(
-        (item) => item.userId === allocation.userId,
+      owners,
+    ).filter(
+      (allocation) =>
+        (!filter.workFunction ||
+          allocation.workFunction === filter.workFunction) &&
+        (!filter.userId || allocation.userId === filter.userId),
+    );
+    for (const allocation of grossProfitAllocations) {
+      const owner = owners.find(
+        (item) =>
+          item.userId === allocation.userId &&
+          item.workFunction === allocation.workFunction,
       );
       const row = ensureRow({
         userId: allocation.userId,
         businessUnitId: unitId ?? null,
         label: owner?.snapshotUserName,
-        workFunction: owner?.workFunction ?? null,
+        workFunction: allocation.workFunction,
       });
       if (!row) continue;
       row.grossProfitAmount += allocation.amount;
@@ -1633,38 +1739,6 @@ export async function getSalespersonComparisonReport(
   }
 
   for (const row of rows.values()) {
-    const attributionShare = salesAttributionShare(row.workFunction);
-    if (attributionShare !== 1) {
-      row.revenueAmount *= attributionShare;
-      row.grossProfitAmount *= attributionShare;
-      row.confirmedAmount *= attributionShare;
-      row.openForecastAmount *= attributionShare;
-      row.weightedForecastAmount *= attributionShare;
-      row.progressGap = row.confirmedAmount - row.idealProgressAmount;
-      row.landingForecastAmount =
-        row.confirmedAmount + row.weightedForecastAmount;
-      row.currentAttainmentRate = safeRate(
-        row.confirmedAmount,
-        row.targetAmount,
-      );
-      row.landingAttainmentRate = safeRate(
-        row.landingForecastAmount,
-        row.targetAmount,
-      );
-      row.targetRemainingAmount = Math.max(
-        row.targetAmount - row.confirmedAmount,
-        0,
-      );
-      row.overTargetAmount = Math.max(
-        row.confirmedAmount - row.targetAmount,
-        0,
-      );
-      row.landingGap = row.landingForecastAmount - row.targetAmount;
-      row.dailyRequiredAmount =
-        row.remainingWorkingDays > 0
-          ? row.targetRemainingAmount / row.remainingWorkingDays
-          : null;
-    }
     const winRate = calculateClosedDealWinRate({
       wonDealCount: row.wonDealCount,
       lostDealCount: row.lostDealCount,

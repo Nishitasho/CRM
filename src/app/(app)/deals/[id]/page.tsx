@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { RecordDetail } from "@/components/crm/record-detail";
 import { DealLineItemManager } from "@/components/deals/deal-line-item-manager";
 import { DealPipelineStageInlineEditor } from "@/components/deals/deal-pipeline-stage-inline-editor";
+import { DealSalesAssigneeInlineEditor } from "@/components/deals/deal-sales-assignee-inline-editor";
 import { DealTaskCard } from "@/components/tasks/deal-task-card";
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
@@ -43,7 +44,8 @@ export default async function DealDetailPage({
     lineItemProperties,
     propertyScopes,
     taskLinks,
-    closerCount,
+    dealParticipants,
+    roleMemberships,
   ] = await Promise.all([
     getRecordActivities(context.organization.id, "DEAL", id),
     getRelatedRecords(context.organization.id, "DEAL", id),
@@ -138,13 +140,41 @@ export default async function DealDetailPage({
       },
       select: { sourceObjectId: true },
     }),
-    prisma.dealParticipant.count({
+    prisma.dealParticipant.findMany({
       where: {
         organizationId: context.organization.id,
         dealId: id,
-        role: "CLOSER",
+        role: { in: ["APPOINTMENT_SETTER", "CLOSER", "MEETING_OWNER"] },
         status: "ACTIVE",
       },
+      select: {
+        userId: true,
+        role: true,
+        snapshotUserName: true,
+        updatedAt: true,
+      },
+      orderBy: { updatedAt: "desc" },
+    }),
+    prisma.businessUnitMembership.findMany({
+      where: {
+        organizationId: context.organization.id,
+        status: "ACTIVE",
+        ...(item.businessUnitId ? { businessUnitId: item.businessUnitId } : {}),
+        workFunction: { in: ["IS", "FS"] },
+        user: {
+          memberships: {
+            some: {
+              organizationId: context.organization.id,
+              status: "ACTIVE",
+            },
+          },
+        },
+      },
+      select: {
+        workFunction: true,
+        user: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "asc" },
     }),
   ]);
   const dealTasks = await prisma.task.findMany({
@@ -179,6 +209,33 @@ export default async function DealDetailPage({
       !item.ownerUserId ||
       item.ownerUserId === context.user.id);
   const dealCustomFields = asRecord(item.customFields);
+  const userNames = new Map(
+    ownerOptions.map((member) => [member.user.id, member.user.name]),
+  );
+  const appointmentSetter = dealParticipants.find(
+    (participant) => participant.role === "APPOINTMENT_SETTER",
+  );
+  const closer = dealParticipants.find(
+    (participant) => participant.role === "CLOSER",
+  );
+  const meetingOwner = dealParticipants.find(
+    (participant) => participant.role === "MEETING_OWNER",
+  );
+  const isAssigneeUserId = appointmentSetter?.userId ?? null;
+  const fsAssigneeUserId =
+    closer?.userId ?? meetingOwner?.userId ?? item.ownerUserId ?? null;
+  const isAssigneeName =
+    participantName(appointmentSetter, userNames) ??
+    stringPropertyValue(dealCustomFields.externalAppointmentSetterName);
+  const fsAssigneeName =
+    participantName(closer ?? meetingOwner, userNames) ??
+    item.owner?.name ??
+    null;
+  const isOptions = salesAssigneeOptions("IS", roleMemberships, ownerOptions);
+  const fsOptions = salesAssigneeOptions("FS", roleMemberships, ownerOptions);
+  const closerCount = dealParticipants.filter(
+    (participant) => participant.role === "CLOSER",
+  ).length;
   const appointmentAcquiredDate = datePropertyValue(
     dealCustomFields.appointmentAcquiredDate,
     dealCustomFields.appointmentAcquiredAt,
@@ -262,7 +319,8 @@ export default async function DealDetailPage({
             (category) => category.id === item.forecastCategoryId,
           )?.name ?? null
         }
-        ownerName={item.owner?.name ?? null}
+        isAssigneeName={isAssigneeName}
+        fsAssigneeName={fsAssigneeName}
         lossReasonName={lossReasonName}
         qualityIssues={qualityIssues}
       />
@@ -406,17 +464,59 @@ export default async function DealDetailPage({
             isEditable: true,
           },
           {
-            key: "ownerUserId",
-            label: "担当者",
-            value: item.ownerUserId,
-            formattedValue: item.owner?.name,
+            key: "appointmentSetterUserId",
+            label: "IS担当者",
+            value: isAssigneeUserId,
+            formattedValue: (
+              <DealSalesAssigneeInlineEditor
+                dealId={id}
+                role="IS"
+                currentUserId={isAssigneeUserId}
+                currentUserName={isAssigneeName}
+                options={isOptions}
+                canEdit={canEdit}
+              />
+            ),
             fieldType: "OWNER",
-            options: ownerOptions.map((member) => ({
-              value: member.user.id,
-              label: member.user.name,
-            })),
             isCustom: false,
-            isEditable: true,
+            isEditable: false,
+            renderDirect: true,
+          },
+          {
+            key: "closerUserId",
+            label: "FS担当者",
+            value: fsAssigneeUserId,
+            formattedValue: (
+              <DealSalesAssigneeInlineEditor
+                dealId={id}
+                role="FS"
+                currentUserId={fsAssigneeUserId}
+                currentUserName={fsAssigneeName}
+                options={fsOptions}
+                canEdit={canEdit}
+              />
+            ),
+            fieldType: "OWNER",
+            isCustom: false,
+            isEditable: false,
+            renderDirect: true,
+          },
+          {
+            key: "salesAttribution",
+            label: "売上配分",
+            value: "IS 50% / FS 50%",
+            formattedValue: (
+              <div>
+                <p>IS 50% / FS 50%</p>
+                <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                  案件売上は100%のまま集計
+                </p>
+              </div>
+            ),
+            fieldType: "TEXT",
+            isCustom: false,
+            isEditable: false,
+            renderDirect: true,
           },
           {
             key: "source",
@@ -622,10 +722,51 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function participantName(
+  participant:
+    | {
+        userId: string | null;
+        snapshotUserName: string | null;
+      }
+    | null
+    | undefined,
+  userNames: Map<string, string>,
+) {
+  if (!participant) return null;
+  return (
+    (participant.userId ? userNames.get(participant.userId) : null) ??
+    participant.snapshotUserName ??
+    null
+  );
+}
+
+function salesAssigneeOptions(
+  workFunction: "IS" | "FS",
+  memberships: Array<{
+    workFunction: "IS" | "FS" | "CS";
+    user: { id: string; name: string };
+  }>,
+  organizationMembers: Array<{ user: { id: string; name: string } }>,
+) {
+  const configured = memberships
+    .filter((membership) => membership.workFunction === workFunction)
+    .map((membership) => membership.user);
+  const candidates = configured.length
+    ? configured
+    : organizationMembers.map((member) => member.user);
+  return Array.from(
+    new Map(candidates.map((user) => [user.id, user])).values(),
+  ).map((user) => ({ value: user.id, label: user.name }));
+}
+
 function decimalNumber(value: unknown) {
   if (value === null || value === undefined) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function stringPropertyValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function datePropertyValue(...values: unknown[]) {
@@ -673,7 +814,8 @@ function DealSummaryPanel({
   billingDate,
   amount,
   forecastName,
-  ownerName,
+  isAssigneeName,
+  fsAssigneeName,
   lossReasonName,
   qualityIssues,
 }: {
@@ -692,7 +834,8 @@ function DealSummaryPanel({
   billingDate: Date | string | null;
   amount: number | null;
   forecastName: string | null;
-  ownerName: string | null;
+  isAssigneeName: string | null;
+  fsAssigneeName: string | null;
   lossReasonName: string | null;
   qualityIssues: ReturnType<typeof buildDealQualityIssues>;
 }) {
@@ -713,8 +856,9 @@ function DealSummaryPanel({
             {formatShortDate(nextActionDate)}
           </span>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <MiniStat label="担当" value={ownerName ?? "未設定"} />
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <MiniStat label="IS担当" value={isAssigneeName ?? "未設定"} />
+          <MiniStat label="FS担当" value={fsAssigneeName ?? "未設定"} />
           <MiniStat label="最終接触" value={formatShortDate(lastActivityAt)} />
           <MiniStat label="Forecast" value={forecastName ?? "未設定"} />
         </div>

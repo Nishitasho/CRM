@@ -1554,7 +1554,7 @@ function SalespersonComparisonSection({
             </div>
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            担当者別金額はCLOSERのcreditShareで配賦しています。
+            担当者別金額はIS 50%・FS 50%で帰属し、同じ職種に複数担当者がいる場合は担当者配分で按分します。
           </p>
           <details className="mt-4 rounded-lg border border-line bg-white p-4">
             <summary className="cursor-pointer text-sm font-bold text-slate-600">

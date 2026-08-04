@@ -564,8 +564,13 @@ export async function createInternalAppointment(
                   userId: appointmentSetterUserId,
                   workFunction: "IS" as const,
                   role: DealParticipantRole.APPOINTMENT_SETTER,
+                  creditShare: 100,
+                  contributionWeight: 1,
                   creditedAt: input.appointmentAcquiredAt,
-                  metadata: inputJson({ sourceChannel: input.sourceChannel }),
+                  metadata: inputJson({
+                    sourceChannel: input.sourceChannel,
+                    salesAttributionPercent: 50,
+                  }),
                 },
               ]
             : []),
@@ -579,6 +584,20 @@ export async function createInternalAppointment(
                   role: DealParticipantRole.MEETING_OWNER,
                   creditedAt: input.scheduledStartAt,
                   metadata: inputJson({ assignmentMode: input.assignmentMode }),
+                },
+                {
+                  organizationId: context.organization.id,
+                  dealId: deal.id,
+                  userId: assignedFsUserId,
+                  workFunction: "FS" as const,
+                  role: DealParticipantRole.CLOSER,
+                  creditShare: 100,
+                  contributionWeight: 1,
+                  creditedAt: input.scheduledStartAt,
+                  metadata: inputJson({
+                    assignmentMode: input.assignmentMode,
+                    salesAttributionPercent: 50,
+                  }),
                 },
               ]
             : []),

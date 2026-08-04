@@ -6,9 +6,12 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   applyLegacyExcelImport,
+  legacyProgressDealExternalId,
+  normalizeLegacyName,
   refreshLegacyProgressCandidatePeople,
   type LegacyExcelApplyTargets,
   type LegacyExcelDryRunResult,
+  type ProgressDealCandidate,
 } from "@/lib/legacy-excel-import";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
@@ -21,20 +24,6 @@ const repairSchema = z.object({
 
 const REPAIR_BATCH_SIZE = 25;
 const ASSOCIATION_REPAIR_VERSION = 5;
-
-const progressRepairTargets = {
-  masters: false,
-  companiesContacts: true,
-  deals: true,
-  dealLineItems: true,
-  deliveryProjects: false,
-  autoDeliveryProjects: false,
-  reviewDeliveryProjects: false,
-  unresolvedDeliveryProjects: false,
-  activities: false,
-  dailyMetrics: false,
-  kpiTargets: false,
-} satisfies LegacyExcelApplyTargets;
 
 const projectRepairTargets = {
   masters: false,
@@ -150,20 +139,25 @@ export async function POST(request: Request) {
       dailyMetricCandidates: [],
       kpiTargetCandidates: [],
     };
-    const result = await applyLegacyExcelImport({
-      organizationId: context.organization.id,
-      actorUserId: context.user.id,
-      importJobId: job.id,
-      dryRun: batchDryRun,
-      referenceDryRun: dryRun,
-      applyTargets: repairingProgress
-        ? progressRepairTargets
-        : projectRepairTargets,
-      updateImportJob: false,
-      progressConcurrency: 2,
-      transactionMaxWaitMs: 15_000,
-      transactionTimeoutMs: 15_000,
-    });
+    const result = repairingProgress
+      ? await repairLegacySalesAssignments({
+          organizationId: context.organization.id,
+          provider: dryRun.provider,
+          workbookFingerprint: dryRun.workbookFingerprint,
+          candidates,
+        })
+      : await applyLegacyExcelImport({
+          organizationId: context.organization.id,
+          actorUserId: context.user.id,
+          importJobId: job.id,
+          dryRun: batchDryRun,
+          referenceDryRun: dryRun,
+          applyTargets: projectRepairTargets,
+          updateImportJob: false,
+          progressConcurrency: 2,
+          transactionMaxWaitMs: 15_000,
+          transactionTimeoutMs: 15_000,
+        });
     const nextIndex = storedProgress.index + candidates.length;
     const nextProjectIndex =
       storedProgress.projectIndex + projectCandidates.length;
@@ -218,6 +212,218 @@ export async function POST(request: Request) {
   } catch (error) {
     return apiError(error);
   }
+}
+
+async function repairLegacySalesAssignments(input: {
+  organizationId: string;
+  provider: string;
+  workbookFingerprint: string;
+  candidates: ProgressDealCandidate[];
+}) {
+  const result = {
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [] as Array<{ row: string; message: string }>,
+  };
+  if (input.candidates.length === 0) return result;
+
+  const [links, members] = await Promise.all([
+    prisma.legacySourceLink.findMany({
+      where: {
+        organizationId: input.organizationId,
+        provider: input.provider,
+        workbookFingerprint: input.workbookFingerprint,
+        targetObjectType: "DEAL",
+        OR: input.candidates.map((candidate) => ({
+          sheetName: candidate.sheetName,
+          rowNumber: candidate.rowNumber,
+          rowFingerprint: candidate.rowFingerprint,
+        })),
+      },
+      select: {
+        sheetName: true,
+        rowNumber: true,
+        rowFingerprint: true,
+        targetObjectId: true,
+      },
+    }),
+    prisma.organizationMember.findMany({
+      where: { organizationId: input.organizationId, status: "ACTIVE" },
+      select: { userId: true, user: { select: { name: true } } },
+    }),
+  ]);
+  const linkByRow = new Map(
+    links.map((link) => [repairCandidateKey(link), link.targetObjectId]),
+  );
+  const externalIds = Array.from(
+    new Set(input.candidates.map(legacyProgressDealExternalId)),
+  );
+  const linkedDealIds = Array.from(
+    new Set(links.map((link) => link.targetObjectId)),
+  );
+  const deals = await prisma.deal.findMany({
+    where: {
+      organizationId: input.organizationId,
+      deletedAt: null,
+      OR: [
+        ...(linkedDealIds.length > 0 ? [{ id: { in: linkedDealIds } }] : []),
+        { externalId: { in: externalIds } },
+      ],
+    },
+    select: { id: true, externalId: true },
+  });
+  const dealIds = new Set(deals.map((deal) => deal.id));
+  const dealByExternalId = new Map(
+    deals
+      .filter((deal) => deal.externalId)
+      .map((deal) => [deal.externalId as string, deal.id]),
+  );
+  const userByName = new Map(
+    members.map((member) => [
+      normalizeLegacyName(member.user.name),
+      member.userId,
+    ]),
+  );
+  const assignments = new Map<
+    string,
+    { candidate: ProgressDealCandidate; isName: string; fsName: string }
+  >();
+  for (const candidate of input.candidates) {
+    const linkedDealId = linkByRow.get(repairCandidateKey(candidate));
+    const dealId =
+      (linkedDealId && dealIds.has(linkedDealId) ? linkedDealId : null) ??
+      dealByExternalId.get(legacyProgressDealExternalId(candidate));
+    if (!dealId) {
+      result.skipped += 1;
+      continue;
+    }
+    const current = assignments.get(dealId);
+    assignments.set(dealId, {
+      candidate,
+      isName: current?.isName || candidate.isOwnerName,
+      fsName: current?.fsName || candidate.fsOwnerName,
+    });
+  }
+
+  for (const [dealId, assignment] of assignments) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await syncLegacyDealParticipant(tx, {
+          organizationId: input.organizationId,
+          dealId,
+          name: assignment.isName,
+          userId:
+            userByName.get(normalizeLegacyName(assignment.isName)) ?? null,
+          role: "APPOINTMENT_SETTER",
+          workFunction: "IS",
+        });
+        const fsUserId =
+          userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
+        await syncLegacyDealParticipant(tx, {
+          organizationId: input.organizationId,
+          dealId,
+          name: assignment.fsName,
+          userId: fsUserId,
+          role: "CLOSER",
+          workFunction: "FS",
+        });
+        if (fsUserId) {
+          await tx.deal.update({
+            where: { id: dealId },
+            data: { ownerUserId: fsUserId },
+          });
+        }
+      });
+      result.updated += 1;
+    } catch (error) {
+      result.errors.push({
+        row: candidateRowKey(assignment.candidate),
+        message: error instanceof Error ? error.message : "不明なエラー",
+      });
+    }
+  }
+  return result;
+}
+
+async function syncLegacyDealParticipant(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    dealId: string;
+    name: string;
+    userId: string | null;
+    role: "APPOINTMENT_SETTER" | "CLOSER";
+    workFunction: "IS" | "FS";
+  },
+) {
+  const participants = await tx.dealParticipant.findMany({
+    where: {
+      organizationId: input.organizationId,
+      dealId: input.dealId,
+      role: input.role,
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+  const normalizedName = normalizeLegacyName(input.name);
+  const matching = input.name
+    ? participants.find((participant) =>
+        input.userId
+          ? participant.userId === input.userId
+          : normalizeLegacyName(participant.snapshotUserName ?? "") ===
+            normalizedName,
+      )
+    : null;
+  const active = participants.filter(
+    (participant) => participant.status === "ACTIVE",
+  );
+  if (active.length === 1 && matching?.status === "ACTIVE") return;
+
+  await tx.dealParticipant.updateMany({
+    where: {
+      organizationId: input.organizationId,
+      dealId: input.dealId,
+      role: input.role,
+      status: "ACTIVE",
+    },
+    data: { status: "INACTIVE" },
+  });
+  if (!input.name) return;
+
+  const data = {
+    userId: input.userId,
+    workFunction: input.workFunction,
+    status: "ACTIVE" as const,
+    creditShare: 100,
+    snapshotUserName: input.name.slice(0, 120),
+    metadata: {
+      source: "legacy_excel",
+      salesAttributionPercent: 50,
+    } satisfies Prisma.InputJsonValue,
+  };
+  if (matching) {
+    await tx.dealParticipant.update({
+      where: { id: matching.id },
+      data,
+    });
+    return;
+  }
+  await tx.dealParticipant.create({
+    data: {
+      organizationId: input.organizationId,
+      dealId: input.dealId,
+      role: input.role,
+      ...data,
+    },
+  });
+}
+
+function repairCandidateKey(candidate: {
+  sheetName: string;
+  rowNumber: number;
+  rowFingerprint: string;
+}) {
+  return `${candidate.sheetName}\u0000${candidate.rowNumber}\u0000${candidate.rowFingerprint}`;
 }
 
 function readRepairProgress(value: Prisma.JsonValue | undefined) {

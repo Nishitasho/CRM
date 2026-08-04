@@ -306,41 +306,57 @@ async function repairLegacySalesAssignments(input: {
     });
   }
 
-  for (const [dealId, assignment] of assignments) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        await syncLegacyDealParticipant(tx, {
-          organizationId: input.organizationId,
-          dealId,
-          name: assignment.isName,
-          userId:
-            userByName.get(normalizeLegacyName(assignment.isName)) ?? null,
-          role: "APPOINTMENT_SETTER",
-          workFunction: "IS",
-        });
-        const fsUserId =
-          userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
-        await syncLegacyDealParticipant(tx, {
-          organizationId: input.organizationId,
-          dealId,
-          name: assignment.fsName,
-          userId: fsUserId,
-          role: "CLOSER",
-          workFunction: "FS",
-        });
-        if (fsUserId) {
-          await tx.deal.update({
-            where: { id: dealId },
-            data: { ownerUserId: fsUserId },
-          });
-        }
-      });
-      result.updated += 1;
-    } catch (error) {
-      result.errors.push({
-        row: candidateRowKey(assignment.candidate),
-        message: error instanceof Error ? error.message : "不明なエラー",
-      });
+  const assignmentEntries = Array.from(assignments.entries());
+  for (let index = 0; index < assignmentEntries.length; index += 5) {
+    const outcomes = await Promise.all(
+      assignmentEntries
+        .slice(index, index + 5)
+        .map(async ([dealId, assignment]) => {
+          try {
+            await prisma.$transaction(async (tx) => {
+              await syncLegacyDealParticipant(tx, {
+                organizationId: input.organizationId,
+                dealId,
+                name: assignment.isName,
+                userId:
+                  userByName.get(normalizeLegacyName(assignment.isName)) ??
+                  null,
+                role: "APPOINTMENT_SETTER",
+                workFunction: "IS",
+              });
+              const fsUserId =
+                userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
+              await syncLegacyDealParticipant(tx, {
+                organizationId: input.organizationId,
+                dealId,
+                name: assignment.fsName,
+                userId: fsUserId,
+                role: "CLOSER",
+                workFunction: "FS",
+              });
+              if (fsUserId) {
+                await tx.deal.update({
+                  where: { id: dealId },
+                  data: { ownerUserId: fsUserId },
+                });
+              }
+            });
+            return { updated: 1, error: null };
+          } catch (error) {
+            return {
+              updated: 0,
+              error: {
+                row: candidateRowKey(assignment.candidate),
+                message:
+                  error instanceof Error ? error.message : "不明なエラー",
+              },
+            };
+          }
+        }),
+    );
+    for (const outcome of outcomes) {
+      result.updated += outcome.updated;
+      if (outcome.error) result.errors.push(outcome.error);
     }
   }
   return result;

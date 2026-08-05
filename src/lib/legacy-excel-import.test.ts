@@ -12,6 +12,7 @@ import {
   findUserByName,
   getLegacySalesOwnerNames,
   getLegacyParticipantSyncPlan,
+  getLegacyRepairUniqueDealNames,
   getLegacyDealLineItemWorkflow,
   getLegacyExcelApplyPlan,
   getLegacyExcelConfirmText,
@@ -24,6 +25,7 @@ import {
   parseLegacyDate,
   parseMoney,
   refreshLegacyProgressCandidatePeople,
+  resolveLegacyRepairDealId,
   type ProgressDealCandidate,
 } from "./legacy-excel-import";
 import { parseLegacyExcelApplyRequest } from "./legacy-excel-apply-request";
@@ -117,6 +119,73 @@ describe("legacy Excel import", () => {
     );
     expect(legacyProgressDealExternalId(lostAlias)).toBe(
       legacyProgressDealExternalId(lostCanonical),
+    );
+  });
+
+  it("repairs a uniquely named legacy deal when source fingerprints changed", () => {
+    const candidate = {
+      normalized: {
+        normalizedDealName: "おそうじ本舗茨木総持寺店",
+      },
+      dealName: "おそうじ本舗 茨木総持寺店",
+      businessUnitName: "第一事業部",
+      stage: { stageName: "AA課金" },
+      fsOwnerName: "縞谷",
+      appointmentAcquiredAt: "2025-08-26",
+      meetingDate: "2025-09-01",
+      wonDate: null,
+      raw: {},
+    } as unknown as ProgressDealCandidate;
+    const legacyDeal = {
+      id: "legacy-deal",
+      externalId: "review-workbook-key",
+      name: "おそうじ本舗 茨木総持寺店",
+      source: "legacy_excel",
+    };
+
+    expect(resolveLegacyRepairDealId(candidate, null, [legacyDeal])).toBe(
+      legacyDeal.id,
+    );
+    expect(
+      resolveLegacyRepairDealId(candidate, null, [
+        legacyDeal,
+        { ...legacyDeal, id: "duplicate-deal" },
+      ]),
+    ).toBeNull();
+    expect(
+      resolveLegacyRepairDealId(candidate, null, [
+        { ...legacyDeal, source: "manual" },
+      ]),
+    ).toBeNull();
+    expect(
+      resolveLegacyRepairDealId(candidate, null, [legacyDeal], false),
+    ).toBeNull();
+  });
+
+  it("only allows name fallback for one canonical source deal", () => {
+    const base = {
+      normalized: { normalizedDealName: "同名案件" },
+      dealName: "同名案件",
+      businessUnitName: "第一事業部",
+      stage: { stageName: "E商談" },
+      fsOwnerName: "縞谷",
+      appointmentAcquiredAt: "2026-08-01",
+      meetingDate: "2026-08-05",
+      wonDate: null,
+      raw: {},
+    } as unknown as ProgressDealCandidate;
+    const sameDealLineItem = { ...base, productName: "別商材" };
+    const separateDeal = {
+      ...base,
+      stage: { stageName: "AA課金" },
+      wonDate: "2026-08-05",
+    } as ProgressDealCandidate;
+
+    expect(getLegacyRepairUniqueDealNames([base, sameDealLineItem])).toEqual(
+      new Set(["同名案件"]),
+    );
+    expect(getLegacyRepairUniqueDealNames([base, separateDeal])).toEqual(
+      new Set(),
     );
   });
 

@@ -9,10 +9,12 @@ import {
   ensureBusinessUnit,
   ensurePipelineStage,
   getLegacyParticipantSyncPlan,
+  getLegacyRepairUniqueDealNames,
   LEGACY_ASSOCIATION_REPAIR_VERSION,
   legacyProgressDealExternalId,
   normalizeLegacyName,
   refreshLegacyProgressCandidatePeople,
+  resolveLegacyRepairDealId,
   type LegacyExcelApplyTargets,
   type LegacyExcelDryRunResult,
   type ProgressDealCandidate,
@@ -95,6 +97,9 @@ export async function POST(request: Request) {
         refreshLegacyProgressCandidatePeople,
       ),
     };
+    const uniqueDealNameFallbacks = getLegacyRepairUniqueDealNames(
+      dryRun.progressCandidates,
+    );
 
     const previousProgress = readRepairProgress(
       mapping.associationRepairProgress,
@@ -149,6 +154,7 @@ export async function POST(request: Request) {
           provider: dryRun.provider,
           workbookFingerprint: dryRun.workbookFingerprint,
           candidates,
+          uniqueDealNameFallbacks,
         })
       : await applyLegacyExcelImport({
           organizationId: context.organization.id,
@@ -223,6 +229,7 @@ async function repairLegacySalesAssignments(input: {
   provider: string;
   workbookFingerprint: string;
   candidates: ProgressDealCandidate[];
+  uniqueDealNameFallbacks: Set<string>;
 }) {
   const result = {
     created: 0,
@@ -263,6 +270,19 @@ async function repairLegacySalesAssignments(input: {
   const externalIds = Array.from(
     new Set(input.candidates.map(legacyProgressDealExternalId)),
   );
+  const dealNames = Array.from(
+    new Set(
+      input.candidates
+        .filter((candidate) =>
+          input.uniqueDealNameFallbacks.has(
+            candidate.normalized.normalizedDealName ||
+              normalizeLegacyName(candidate.dealName),
+          ),
+        )
+        .map((candidate) => candidate.dealName)
+        .filter(Boolean),
+    ),
+  );
   const linkedDealIds = Array.from(
     new Set(links.map((link) => link.targetObjectId)),
   );
@@ -273,11 +293,16 @@ async function repairLegacySalesAssignments(input: {
       OR: [
         ...(linkedDealIds.length > 0 ? [{ id: { in: linkedDealIds } }] : []),
         { externalId: { in: externalIds } },
+        ...(dealNames.length > 0
+          ? [{ source: "legacy_excel", name: { in: dealNames } }]
+          : []),
       ],
     },
     select: {
       id: true,
       externalId: true,
+      name: true,
+      source: true,
       ownerUserId: true,
       businessUnitId: true,
       pipelineId: true,
@@ -286,13 +311,7 @@ async function repairLegacySalesAssignments(input: {
       status: true,
     },
   });
-  const dealIds = new Set(deals.map((deal) => deal.id));
   const dealById = new Map(deals.map((deal) => [deal.id, deal]));
-  const dealByExternalId = new Map(
-    deals
-      .filter((deal) => deal.externalId)
-      .map((deal) => [deal.externalId as string, deal.id]),
-  );
   const userByName = new Map(
     members.map((member) => [
       normalizeLegacyName(member.user.name),
@@ -305,9 +324,15 @@ async function repairLegacySalesAssignments(input: {
   >();
   for (const candidate of input.candidates) {
     const linkedDealId = linkByRow.get(repairCandidateKey(candidate));
-    const dealId =
-      (linkedDealId && dealIds.has(linkedDealId) ? linkedDealId : null) ??
-      dealByExternalId.get(legacyProgressDealExternalId(candidate));
+    const dealId = resolveLegacyRepairDealId(
+      candidate,
+      linkedDealId,
+      deals,
+      input.uniqueDealNameFallbacks.has(
+        candidate.normalized.normalizedDealName ||
+          normalizeLegacyName(candidate.dealName),
+      ),
+    );
     if (!dealId) {
       result.skipped += 1;
       continue;

@@ -22,7 +22,7 @@ import {
 } from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
-export const LEGACY_ASSOCIATION_REPAIR_VERSION = 7;
+export const LEGACY_ASSOCIATION_REPAIR_VERSION = 8;
 
 export type LegacyExcelFileType =
   | "PROGRESS_MANAGEMENT"
@@ -136,6 +136,60 @@ export function legacyProgressDealExternalId(candidate: ProgressDealCandidate) {
     normalizeLegacyName(sourceChannel),
     normalizeLegacyName(contractUnit),
   ])}`;
+}
+
+export function resolveLegacyRepairDealId(
+  candidate: ProgressDealCandidate,
+  linkedDealId: string | null | undefined,
+  deals: Array<{
+    id: string;
+    externalId: string | null;
+    name: string;
+    source: string | null;
+  }>,
+  allowNameFallback = true,
+) {
+  if (linkedDealId && deals.some((deal) => deal.id === linkedDealId)) {
+    return linkedDealId;
+  }
+
+  const canonicalExternalId = legacyProgressDealExternalId(candidate);
+  const externalIdMatch = deals.find(
+    (deal) => deal.externalId === canonicalExternalId,
+  );
+  if (externalIdMatch) return externalIdMatch.id;
+
+  if (!allowNameFallback) return null;
+
+  const normalizedDealName =
+    candidate.normalized.normalizedDealName ||
+    normalizeLegacyName(candidate.dealName);
+  const nameMatches = deals.filter(
+    (deal) =>
+      deal.source === "legacy_excel" &&
+      normalizeLegacyName(deal.name) === normalizedDealName,
+  );
+  return nameMatches.length === 1 ? nameMatches[0].id : null;
+}
+
+export function getLegacyRepairUniqueDealNames(
+  candidates: ProgressDealCandidate[],
+) {
+  const externalIdsByName = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const normalizedDealName =
+      candidate.normalized.normalizedDealName ||
+      normalizeLegacyName(candidate.dealName);
+    if (!normalizedDealName) continue;
+    const externalIds = externalIdsByName.get(normalizedDealName) ?? new Set();
+    externalIds.add(legacyProgressDealExternalId(candidate));
+    externalIdsByName.set(normalizedDealName, externalIds);
+  }
+  return new Set(
+    Array.from(externalIdsByName.entries())
+      .filter(([, externalIds]) => externalIds.size === 1)
+      .map(([normalizedDealName]) => normalizedDealName),
+  );
 }
 
 export type HpDeliveryProjectCandidate = LegacyRowCandidateBase & {

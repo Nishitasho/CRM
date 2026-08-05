@@ -22,6 +22,8 @@ import {
 } from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
+export const LEGACY_ASSOCIATION_REPAIR_VERSION = 7;
+
 export type LegacyExcelFileType =
   | "PROGRESS_MANAGEMENT"
   | "HP_PRODUCTION"
@@ -2226,14 +2228,24 @@ export function refreshLegacyProgressCandidatePeople(
 ): ProgressDealCandidate {
   const { isOwnerName, fsOwnerName } = getLegacySalesOwnerNames(candidate.raw);
   const contactName = getLegacyCustomerContactName(candidate.raw);
+  const businessUnitName =
+    getValue(candidate.raw, ["事業部"]) ||
+    inferBusinessUnitName(
+      candidate.sheetName ?? "",
+      candidate.productName ?? "",
+    );
   return {
     ...candidate,
     contactName,
     isOwnerName,
     fsOwnerName,
+    businessUnitName: businessUnitName || candidate.businessUnitName,
     normalized: {
       ...candidate.normalized,
       normalizedContactName: normalizeLegacyName(contactName),
+      businessUnitName: normalizeLegacyName(
+        businessUnitName || candidate.businessUnitName,
+      ),
       ownerName: normalizeLegacyName(isOwnerName),
       salesOwnerName: normalizeLegacyName(fsOwnerName),
     },
@@ -2444,14 +2456,11 @@ function countAmountErrors(row: Record<string, string>) {
 }
 
 function inferBusinessUnitName(sheetName: string, productName: string) {
-  if (
-    /HD|HP|ホームページ/i.test(sheetName) ||
-    /HP|ホームページ/i.test(productName)
-  )
-    return "HD事業部";
-  if (/第一/.test(sheetName)) return "第一事業部";
+  if (/第一|第1/.test(sheetName)) return "第一事業部";
+  if (/HD|HP|ホームページ/i.test(sheetName)) return "HD事業部";
   if (/LL/i.test(sheetName)) return "LL事業部";
   if (/H2/i.test(sheetName)) return "H2事業部";
+  if (/HP|ホームページ/i.test(productName)) return "HD事業部";
   return "";
 }
 

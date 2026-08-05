@@ -3,6 +3,7 @@ import { LegacyExcelImporter } from "@/components/imports/legacy-excel-importer"
 import { PageHeading } from "@/components/ui/page-heading";
 import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
+import { LEGACY_ASSOCIATION_REPAIR_VERSION } from "@/lib/legacy-excel-import";
 import { prisma } from "@/lib/prisma";
 
 export default async function LegacyExcelImportPage() {
@@ -40,7 +41,8 @@ export default async function LegacyExcelImportPage() {
       sourceName: mapping.dryRunSummary?.sourceName ?? "",
       associationRepairCompleted:
         Boolean(mapping.associationRepairCompletedAt) &&
-        mapping.associationRepairVersion === 5 &&
+        mapping.associationRepairVersion ===
+          LEGACY_ASSOCIATION_REPAIR_VERSION &&
         (mapping.associationRepairProgress?.errors?.length ?? 0) === 0,
     };
   });

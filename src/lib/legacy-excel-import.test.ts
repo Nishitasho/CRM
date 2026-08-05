@@ -193,6 +193,24 @@ describe("legacy Excel import", () => {
       isOwnerName: "岩井",
       fsOwnerName: "",
       contactName: "顧客 太郎",
+      businessUnitName: "第一事業部",
+    });
+  });
+
+  it("keeps HP products in the First Division when the sheet is a First Division sheet", () => {
+    const result = analyzeLegacyExcelWorkbook(
+      makeWorkbook({
+        "【第一】案件管理シート": [
+          ["案件名", "進捗", "商材", "IS担当者", "FS担当者"],
+          ["第一事業部のHP案件", "AA課金", "HP制作", "魚井", "縞谷"],
+        ],
+      }),
+      "legacy.xlsx",
+    );
+
+    expect(result.progressCandidates[0]).toMatchObject({
+      businessUnitName: "第一事業部",
+      productName: "HP制作",
     });
   });
 
@@ -203,6 +221,9 @@ describe("legacy Excel import", () => {
         FS担当者: "魚井",
         担当者名: "顧客 花子",
       },
+      sheetName: "【第一】案件管理シート",
+      productName: "HP制作",
+      businessUnitName: "HD事業部",
       contactName: "橋本",
       isOwnerName: "橋本",
       fsOwnerName: "顧客 花子",
@@ -217,8 +238,10 @@ describe("legacy Excel import", () => {
       contactName: "顧客 花子",
       isOwnerName: "橋本",
       fsOwnerName: "魚井",
+      businessUnitName: "第一事業部",
       normalized: {
         normalizedContactName: "顧客花子",
+        businessUnitName: "第一事業部",
         ownerName: "橋本",
         salesOwnerName: "魚井",
       },

@@ -515,7 +515,7 @@ export function LegacyExcelImporter({
     setPending(true);
     setRepairJobId(importJobId);
     setError("");
-    setMessage("関連付けとIS・FS担当者を補修しています。");
+    setMessage("事業部・関連付け・IS/FS担当者を補修しています。");
     try {
       for (let requestCount = 0; requestCount < 100; requestCount += 1) {
         const response = await fetch(
@@ -532,7 +532,7 @@ export function LegacyExcelImporter({
         }
         if (json.complete) {
           setMessage(
-            `関連付けとIS・FS担当者の補修が完了しました。更新 ${json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors.length}件`,
+            `事業部・関連付け・IS/FS担当者の補修が完了しました。更新 ${json.updated}件、スキップ ${json.skipped}件、エラー ${json.errors.length}件`,
           );
           router.refresh();
           return;
@@ -1266,8 +1266,8 @@ export function LegacyExcelImporter({
                           {repairJobId === item.id
                             ? "補修中"
                             : item.associationRepairCompleted
-                              ? "IS・FSを再補修"
-                              : "関連付け・IS/FSを補修"}
+                              ? "事業部・IS/FSを再補修"
+                              : "事業部・関連付け・IS/FSを補修"}
                         </button>
                       ) : null}
                       {item.id === latestCompletedJobId ? (

@@ -6,7 +6,10 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   applyLegacyExcelImport,
+  ensureBusinessUnit,
+  ensurePipelineStage,
   getLegacyParticipantSyncPlan,
+  LEGACY_ASSOCIATION_REPAIR_VERSION,
   legacyProgressDealExternalId,
   normalizeLegacyName,
   refreshLegacyProgressCandidatePeople,
@@ -16,6 +19,7 @@ import {
 } from "@/lib/legacy-excel-import";
 import { Permission, requirePermission } from "@/lib/permissions";
 import { prisma } from "@/lib/prisma";
+import { dealStatusForSpreadsheetStage } from "@/lib/spreadsheet-stages";
 
 export const maxDuration = 300;
 
@@ -24,7 +28,6 @@ const repairSchema = z.object({
 });
 
 const REPAIR_BATCH_SIZE = 50;
-const ASSOCIATION_REPAIR_VERSION = 6;
 
 const projectRepairTargets = {
   masters: false,
@@ -104,14 +107,11 @@ export async function POST(request: Request) {
       return NextResponse.json(storedProgress);
     }
     const retryRowSet = new Set(storedProgress.retryRows);
-    const assignableProgressCandidates = dryRun.progressCandidates.filter(
-      (candidate) => candidate.isOwnerName || candidate.fsOwnerName,
-    );
     const progressCandidates = retryRowSet.size
-      ? assignableProgressCandidates.filter((candidate) =>
+      ? dryRun.progressCandidates.filter((candidate) =>
           retryRowSet.has(candidateRowKey(candidate)),
         )
-      : assignableProgressCandidates;
+      : dryRun.progressCandidates;
     const repairingProgress = storedProgress.index < progressCandidates.length;
     const autoProjectIds = new Set(
       dryRun.crossFileMatches
@@ -181,7 +181,7 @@ export async function POST(request: Request) {
     };
     const nextMapping: Prisma.JsonObject = {
       ...mapping,
-      associationRepairVersion: ASSOCIATION_REPAIR_VERSION,
+      associationRepairVersion: LEGACY_ASSOCIATION_REPAIR_VERSION,
       associationRepairProgress: nextProgress,
       ...(complete && nextProgress.errors.length === 0
         ? { associationRepairCompletedAt: new Date().toISOString() }
@@ -275,12 +275,19 @@ async function repairLegacySalesAssignments(input: {
         { externalId: { in: externalIds } },
       ],
     },
-    select: { id: true, externalId: true, ownerUserId: true },
+    select: {
+      id: true,
+      externalId: true,
+      ownerUserId: true,
+      businessUnitId: true,
+      pipelineId: true,
+      stageId: true,
+      probability: true,
+      status: true,
+    },
   });
   const dealIds = new Set(deals.map((deal) => deal.id));
-  const ownerByDealId = new Map(
-    deals.map((deal) => [deal.id, deal.ownerUserId]),
-  );
+  const dealById = new Map(deals.map((deal) => [deal.id, deal]));
   const dealByExternalId = new Map(
     deals
       .filter((deal) => deal.externalId)
@@ -314,6 +321,40 @@ async function repairLegacySalesAssignments(input: {
   }
 
   const assignmentEntries = Array.from(assignments.entries());
+  const routingTargets = new Map<
+    string,
+    {
+      businessUnitId: string;
+      pipelineId: string;
+      stageId: string;
+      probability: number;
+      status: ReturnType<typeof dealStatusForSpreadsheetStage>;
+    }
+  >();
+  await prisma.$transaction(async (tx) => {
+    for (const [, assignment] of assignmentEntries) {
+      const routingKey = legacyRoutingKey(assignment.candidate);
+      if (routingTargets.has(routingKey)) continue;
+      const businessUnit = await ensureBusinessUnit(
+        tx,
+        input.organizationId,
+        assignment.candidate.businessUnitName,
+      );
+      const stage = await ensurePipelineStage(
+        tx,
+        input.organizationId,
+        businessUnit.id,
+        assignment.candidate.stage,
+      );
+      routingTargets.set(routingKey, {
+        businessUnitId: businessUnit.id,
+        pipelineId: stage.pipelineId,
+        stageId: stage.id,
+        probability: stage.probability,
+        status: dealStatusForSpreadsheetStage(stage.name, stage.stageType),
+      });
+    }
+  });
   const participantSnapshots = await prisma.dealParticipant.findMany({
     where: {
       organizationId: input.organizationId,
@@ -350,6 +391,20 @@ async function repairLegacySalesAssignments(input: {
       assignmentEntries
         .slice(index, index + 5)
         .map(async ([dealId, assignment]) => {
+          const currentDeal = dealById.get(dealId);
+          const routingTarget = routingTargets.get(
+            legacyRoutingKey(assignment.candidate),
+          );
+          if (!currentDeal || !routingTarget) {
+            return {
+              updated: 0,
+              skipped: 0,
+              error: {
+                row: candidateRowKey(assignment.candidate),
+                message: "商談の事業部補修先を特定できませんでした。",
+              },
+            };
+          }
           const isUserId =
             userByName.get(normalizeLegacyName(assignment.isName)) ?? null;
           const fsUserId =
@@ -368,11 +423,18 @@ async function repairLegacySalesAssignments(input: {
             userId: fsUserId,
           });
           const ownerNeedsUpdate =
-            Boolean(fsUserId) && ownerByDealId.get(dealId) !== fsUserId;
+            Boolean(fsUserId) && currentDeal.ownerUserId !== fsUserId;
+          const routingNeedsUpdate =
+            currentDeal.businessUnitId !== routingTarget.businessUnitId ||
+            currentDeal.pipelineId !== routingTarget.pipelineId ||
+            currentDeal.stageId !== routingTarget.stageId ||
+            currentDeal.probability !== routingTarget.probability ||
+            currentDeal.status !== routingTarget.status;
           if (
             isPlan.action !== "REPLACE" &&
             fsPlan.action !== "REPLACE" &&
-            !ownerNeedsUpdate
+            !ownerNeedsUpdate &&
+            !routingNeedsUpdate
           ) {
             return { updated: 0, skipped: 1, error: null };
           }
@@ -396,10 +458,61 @@ async function repairLegacySalesAssignments(input: {
                 workFunction: "FS",
                 participants: fsParticipants,
               });
-              if (ownerNeedsUpdate && fsUserId) {
+              if (ownerNeedsUpdate || routingNeedsUpdate) {
                 await tx.deal.update({
                   where: { id: dealId },
-                  data: { ownerUserId: fsUserId },
+                  data: {
+                    ...(ownerNeedsUpdate && fsUserId
+                      ? { ownerUserId: fsUserId }
+                      : {}),
+                    ...(routingNeedsUpdate ? routingTarget : {}),
+                  },
+                });
+              }
+              if (routingNeedsUpdate) {
+                const lineItems = await tx.dealLineItem.findMany({
+                  where: {
+                    organizationId: input.organizationId,
+                    dealId,
+                  },
+                  select: { productId: true },
+                });
+                await tx.dealLineItem.updateMany({
+                  where: {
+                    organizationId: input.organizationId,
+                    dealId,
+                  },
+                  data: { businessUnitId: routingTarget.businessUnitId },
+                });
+                for (const productId of new Set(
+                  lineItems.flatMap((lineItem) =>
+                    lineItem.productId ? [lineItem.productId] : [],
+                  ),
+                )) {
+                  await tx.businessUnitProduct.upsert({
+                    where: {
+                      organizationId_businessUnitId_productId: {
+                        organizationId: input.organizationId,
+                        businessUnitId: routingTarget.businessUnitId,
+                        productId,
+                      },
+                    },
+                    create: {
+                      organizationId: input.organizationId,
+                      businessUnitId: routingTarget.businessUnitId,
+                      productId,
+                      status: "ACTIVE",
+                      metadata: { source: "legacy_excel_routing_repair" },
+                    },
+                    update: { status: "ACTIVE" },
+                  });
+                }
+                await tx.salesPerformanceEvent.updateMany({
+                  where: {
+                    organizationId: input.organizationId,
+                    dealId,
+                  },
+                  data: { businessUnitId: routingTarget.businessUnitId },
                 });
               }
             });
@@ -424,6 +537,10 @@ async function repairLegacySalesAssignments(input: {
     }
   }
   return result;
+}
+
+function legacyRoutingKey(candidate: ProgressDealCandidate) {
+  return `${candidate.businessUnitName}\u0000${candidate.stage.stageName}`;
 }
 
 async function syncLegacyDealParticipant(
@@ -532,7 +649,7 @@ function initializeRepairProgress(
   version: unknown,
   previous: ReturnType<typeof readRepairProgress>,
 ) {
-  if (version !== ASSOCIATION_REPAIR_VERSION) {
+  if (version !== LEGACY_ASSOCIATION_REPAIR_VERSION) {
     return readRepairProgress(undefined);
   }
   if (!(previous.complete && previous.errors.length > 0)) {

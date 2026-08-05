@@ -3,6 +3,7 @@ import {
   analyzeLegacyExcelWorkbook,
   analyzeLegacyExcelWorkbooks,
   buildLegacyPrimaryAssociationData,
+  buildLegacyRepairLinkWhere,
   cleanLegacyCellValue,
   checkLegacyExcelImportJobOrganization,
   ensureBusinessUnit,
@@ -187,6 +188,34 @@ describe("legacy Excel import", () => {
     expect(getLegacyRepairUniqueDealNames([base, separateDeal])).toEqual(
       new Set(),
     );
+  });
+
+  it("matches repair links across raw and reviewed workbook fingerprints", () => {
+    const where = buildLegacyRepairLinkWhere({
+      organizationId: "org-1",
+      provider: "legacy_excel_workbook",
+      candidates: [
+        {
+          sheetName: "progress.xlsx / 【第一】案件管理シート",
+          rowNumber: 29,
+          rowFingerprint: "row-fingerprint",
+        },
+      ],
+    });
+
+    expect(where).toEqual({
+      organizationId: "org-1",
+      provider: "legacy_excel_workbook",
+      targetObjectType: "DEAL",
+      OR: [
+        {
+          sheetName: "progress.xlsx / 【第一】案件管理シート",
+          rowNumber: 29,
+          rowFingerprint: "row-fingerprint",
+        },
+      ],
+    });
+    expect(where).not.toHaveProperty("workbookFingerprint");
   });
 
   it("builds canonical contact and deal associations", () => {

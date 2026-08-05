@@ -22,7 +22,7 @@ import {
 } from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
-export const LEGACY_ASSOCIATION_REPAIR_VERSION = 8;
+export const LEGACY_ASSOCIATION_REPAIR_VERSION = 9;
 
 export type LegacyExcelFileType =
   | "PROGRESS_MANAGEMENT"
@@ -190,6 +190,27 @@ export function getLegacyRepairUniqueDealNames(
       .filter(([, externalIds]) => externalIds.size === 1)
       .map(([normalizedDealName]) => normalizedDealName),
   );
+}
+
+export function buildLegacyRepairLinkWhere(input: {
+  organizationId: string;
+  provider: string;
+  candidates: Array<{
+    sheetName: string;
+    rowNumber: number;
+    rowFingerprint: string;
+  }>;
+}) {
+  return {
+    organizationId: input.organizationId,
+    provider: input.provider,
+    targetObjectType: "DEAL" as const,
+    OR: input.candidates.map((candidate) => ({
+      sheetName: candidate.sheetName,
+      rowNumber: candidate.rowNumber,
+      rowFingerprint: candidate.rowFingerprint,
+    })),
+  };
 }
 
 export type HpDeliveryProjectCandidate = LegacyRowCandidateBase & {

@@ -6,6 +6,7 @@ import { getAuthContext } from "@/lib/auth";
 import { canUseLegacyProgressImport } from "@/lib/feature-flags";
 import {
   applyLegacyExcelImport,
+  buildLegacyRepairLinkWhere,
   ensureBusinessUnit,
   ensurePipelineStage,
   getLegacyParticipantSyncPlan,
@@ -152,7 +153,6 @@ export async function POST(request: Request) {
       ? await repairLegacySalesAssignments({
           organizationId: context.organization.id,
           provider: dryRun.provider,
-          workbookFingerprint: dryRun.workbookFingerprint,
           candidates,
           uniqueDealNameFallbacks,
         })
@@ -227,7 +227,6 @@ export async function POST(request: Request) {
 async function repairLegacySalesAssignments(input: {
   organizationId: string;
   provider: string;
-  workbookFingerprint: string;
   candidates: ProgressDealCandidate[];
   uniqueDealNameFallbacks: Set<string>;
 }) {
@@ -241,17 +240,7 @@ async function repairLegacySalesAssignments(input: {
 
   const [links, members] = await Promise.all([
     prisma.legacySourceLink.findMany({
-      where: {
-        organizationId: input.organizationId,
-        provider: input.provider,
-        workbookFingerprint: input.workbookFingerprint,
-        targetObjectType: "DEAL",
-        OR: input.candidates.map((candidate) => ({
-          sheetName: candidate.sheetName,
-          rowNumber: candidate.rowNumber,
-          rowFingerprint: candidate.rowFingerprint,
-        })),
-      },
+      where: buildLegacyRepairLinkWhere(input),
       select: {
         sheetName: true,
         rowNumber: true,

@@ -401,6 +401,85 @@ async function repairLegacySalesAssignments(input: {
     participantsByDealRole.set(key, group);
   }
 
+  const bulkRoutingGroups = new Map<
+    string,
+    {
+      target: (typeof routingTargets extends Map<string, infer T> ? T : never);
+      dealIds: string[];
+    }
+  >();
+  for (const [dealId, assignment] of assignmentEntries) {
+    const currentDeal = dealById.get(dealId);
+    const routingKey = legacyRoutingKey(assignment.candidate);
+    const routingTarget = routingTargets.get(routingKey);
+    if (!currentDeal || !routingTarget) continue;
+    const isUserId =
+      userByName.get(normalizeLegacyName(assignment.isName)) ?? null;
+    const fsUserId =
+      userByName.get(normalizeLegacyName(assignment.fsName)) ?? null;
+    const isPlan = getLegacyParticipantSyncPlan(
+      participantsByDealRole.get(`${dealId}\u0000APPOINTMENT_SETTER`) ?? [],
+      { name: assignment.isName, userId: isUserId },
+    );
+    const fsPlan = getLegacyParticipantSyncPlan(
+      participantsByDealRole.get(`${dealId}\u0000CLOSER`) ?? [],
+      { name: assignment.fsName, userId: fsUserId },
+    );
+    const ownerNeedsUpdate =
+      Boolean(fsUserId) && currentDeal.ownerUserId !== fsUserId;
+    const routingNeedsUpdate =
+      currentDeal.businessUnitId !== routingTarget.businessUnitId ||
+      currentDeal.pipelineId !== routingTarget.pipelineId ||
+      currentDeal.stageId !== routingTarget.stageId ||
+      currentDeal.probability !== routingTarget.probability ||
+      currentDeal.status !== routingTarget.status;
+    if (
+      routingNeedsUpdate &&
+      !ownerNeedsUpdate &&
+      isPlan.action !== "REPLACE" &&
+      fsPlan.action !== "REPLACE"
+    ) {
+      const group = bulkRoutingGroups.get(routingKey) ?? {
+        target: routingTarget,
+        dealIds: [],
+      };
+      group.dealIds.push(dealId);
+      bulkRoutingGroups.set(routingKey, group);
+    }
+  }
+  const bulkRoutedDealIds = new Set<string>();
+  for (const group of bulkRoutingGroups.values()) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.deal.updateMany({
+          where: {
+            organizationId: input.organizationId,
+            id: { in: group.dealIds },
+          },
+          data: group.target,
+        });
+        await tx.dealLineItem.updateMany({
+          where: {
+            organizationId: input.organizationId,
+            dealId: { in: group.dealIds },
+          },
+          data: { businessUnitId: group.target.businessUnitId },
+        });
+        await tx.salesPerformanceEvent.updateMany({
+          where: {
+            organizationId: input.organizationId,
+            dealId: { in: group.dealIds },
+          },
+          data: { businessUnitId: group.target.businessUnitId },
+        });
+      });
+      for (const dealId of group.dealIds) bulkRoutedDealIds.add(dealId);
+      result.updated += group.dealIds.length;
+    } catch {
+      // The per-deal path below retries the group safely and records errors.
+    }
+  }
+
   for (
     let index = 0;
     index < assignmentEntries.length;
@@ -410,6 +489,9 @@ async function repairLegacySalesAssignments(input: {
       assignmentEntries
         .slice(index, index + REPAIR_ASSIGNMENT_CONCURRENCY)
         .map(async ([dealId, assignment]) => {
+          if (bulkRoutedDealIds.has(dealId)) {
+            return { updated: 0, skipped: 0, error: null };
+          }
           const currentDeal = dealById.get(dealId);
           const routingTarget = routingTargets.get(
             legacyRoutingKey(assignment.candidate),

@@ -238,7 +238,7 @@ async function repairLegacySalesAssignments(input: {
   };
   if (input.candidates.length === 0) return result;
 
-  const [links, historicalDealLinks, members] = await Promise.all([
+  const [links, members] = await Promise.all([
     prisma.legacySourceLink.findMany({
       where: buildLegacyRepairLinkWhere(input),
       select: {
@@ -247,15 +247,6 @@ async function repairLegacySalesAssignments(input: {
         rowFingerprint: true,
         targetObjectId: true,
       },
-    }),
-    prisma.legacySourceLink.findMany({
-      where: {
-        organizationId: input.organizationId,
-        provider: input.provider,
-        targetObjectType: "DEAL",
-      },
-      select: { targetObjectId: true },
-      distinct: ["targetObjectId"],
     }),
     prisma.organizationMember.findMany({
       where: { organizationId: input.organizationId, status: "ACTIVE" },
@@ -282,12 +273,8 @@ async function repairLegacySalesAssignments(input: {
     ),
   );
   const linkedDealIds = Array.from(
-    new Set([
-      ...links.map((link) => link.targetObjectId),
-      ...historicalDealLinks.map((link) => link.targetObjectId),
-    ]),
+    new Set(links.map((link) => link.targetObjectId)),
   );
-  const legacyLinkedDealIds = new Set(linkedDealIds);
   const deals = await prisma.deal.findMany({
     where: {
       organizationId: input.organizationId,
@@ -296,7 +283,7 @@ async function repairLegacySalesAssignments(input: {
         ...(linkedDealIds.length > 0 ? [{ id: { in: linkedDealIds } }] : []),
         { externalId: { in: externalIds } },
         ...(dealNames.length > 0
-          ? [{ source: "legacy_excel", name: { in: dealNames } }]
+          ? [{ name: { in: dealNames } }]
           : []),
       ],
     },
@@ -334,7 +321,6 @@ async function repairLegacySalesAssignments(input: {
         candidate.normalized.normalizedDealName ||
           normalizeLegacyName(candidate.dealName),
       ),
-      legacyLinkedDealIds,
     );
     if (!dealId) {
       result.skipped += 1;

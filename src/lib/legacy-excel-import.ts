@@ -22,7 +22,7 @@ import {
 } from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
-export const LEGACY_ASSOCIATION_REPAIR_VERSION = 11;
+export const LEGACY_ASSOCIATION_REPAIR_VERSION = 12;
 
 export type LegacyExcelFileType =
   | "PROGRESS_MANAGEMENT"
@@ -3797,21 +3797,41 @@ export async function ensureBusinessUnit(
   const isFirstDivision = /第一事業部|第1事業部/.test(requestedName);
   const isHdDivision = /HD事業部/i.test(requestedName);
   const businessUnitName = isFirstDivision
-    ? "第1事業部"
+    ? "第一事業部"
     : isHdDivision
       ? "HD事業部"
       : requestedName;
-  const existing = await tx.businessUnit.findFirst({
+
+  const existingByName = await tx.businessUnit.findFirst({
     where: {
       organizationId,
-      OR: [
-        { name: businessUnitName },
-        { slug: slugify(businessUnitName) },
-        ...(isFirstDivision ? [{ name: "第一事業部" }, { slug: "first" }] : []),
-      ],
+      name: businessUnitName,
     },
   });
-  if (existing) return existing;
+  if (existingByName) return existingByName;
+
+  if (isFirstDivision) {
+    const alternateFirstDivision = await tx.businessUnit.findFirst({
+      where: {
+        organizationId,
+        name: "第1事業部",
+      },
+    });
+    if (alternateFirstDivision) return alternateFirstDivision;
+  }
+
+  // Canonical divisions are matched by name only. A legacy slug such as
+  // "first" may already belong to a different division in production.
+  if (!isFirstDivision && !isHdDivision) {
+    const existingBySlug = await tx.businessUnit.findFirst({
+      where: {
+        organizationId,
+        slug: slugify(businessUnitName),
+      },
+    });
+    if (existingBySlug) return existingBySlug;
+  }
+
   return tx.businessUnit.create({
     data: {
       organizationId,

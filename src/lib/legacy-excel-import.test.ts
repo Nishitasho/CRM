@@ -937,10 +937,39 @@ describe("legacy Excel import", () => {
     expect(findFirst).toHaveBeenCalledWith({
       where: {
         organizationId: "org-crestix",
-        OR: [{ name: "HD事業部" }, { slug: expect.any(String) }],
+        name: "HD事業部",
       },
     });
     expect(create.mock.calls[0][0].data.organizationId).toBe("org-crestix");
+  });
+
+  it("prefers the First division name over a colliding legacy slug", async () => {
+    const firstDivision = {
+      id: "bu-first",
+      name: "第一事業部",
+      slug: "2",
+    };
+    const findFirst = vi.fn().mockResolvedValue(firstDivision);
+    const create = vi.fn();
+    const tx = {
+      businessUnit: { findFirst, create },
+    } as never;
+
+    const result = await ensureBusinessUnit(
+      tx,
+      "org-crestix",
+      "第一事業部",
+    );
+
+    expect(result).toBe(firstDivision);
+    expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        organizationId: "org-crestix",
+        name: "第一事業部",
+      },
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("scopes legacy Excel user owner matching to the importing organization", async () => {

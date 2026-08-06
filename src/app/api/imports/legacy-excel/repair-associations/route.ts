@@ -347,6 +347,7 @@ async function repairLegacySalesAssignments(input: {
     }
   >();
   await prisma.$transaction(async (tx) => {
+    await configureLegacyRepairTransaction(tx);
     for (const [, assignment] of assignmentEntries) {
       const routingKey = legacyRoutingKey(assignment.candidate);
       if (routingTargets.has(routingKey)) continue;
@@ -451,6 +452,7 @@ async function repairLegacySalesAssignments(input: {
   for (const group of bulkRoutingGroups.values()) {
     try {
       await prisma.$transaction(async (tx) => {
+        await configureLegacyRepairTransaction(tx);
         await tx.deal.updateMany({
           where: {
             organizationId: input.organizationId,
@@ -541,6 +543,7 @@ async function repairLegacySalesAssignments(input: {
           }
           try {
             await prisma.$transaction(async (tx) => {
+              await configureLegacyRepairTransaction(tx);
               await syncLegacyDealParticipant(tx, {
                 organizationId: input.organizationId,
                 dealId,
@@ -608,6 +611,13 @@ async function repairLegacySalesAssignments(input: {
     }
   }
   return result;
+}
+
+async function configureLegacyRepairTransaction(
+  tx: Prisma.TransactionClient,
+) {
+  await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '5000ms'");
+  await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '15000ms'");
 }
 
 function legacyRoutingKey(candidate: ProgressDealCandidate) {

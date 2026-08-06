@@ -31,6 +31,7 @@ const repairSchema = z.object({
 });
 
 const REPAIR_BATCH_SIZE = 20;
+const REPAIR_ASSIGNMENT_CONCURRENCY = 10;
 
 const projectRepairTargets = {
   masters: false,
@@ -449,10 +450,14 @@ async function repairLegacySalesAssignments(input: {
     participantsByDealRole.set(key, group);
   }
 
-  for (let index = 0; index < assignmentEntries.length; index += 5) {
+  for (
+    let index = 0;
+    index < assignmentEntries.length;
+    index += REPAIR_ASSIGNMENT_CONCURRENCY
+  ) {
     const outcomes = await Promise.all(
       assignmentEntries
-        .slice(index, index + 5)
+        .slice(index, index + REPAIR_ASSIGNMENT_CONCURRENCY)
         .map(async ([dealId, assignment]) => {
           const currentDeal = dealById.get(dealId);
           const routingTarget = routingTargets.get(

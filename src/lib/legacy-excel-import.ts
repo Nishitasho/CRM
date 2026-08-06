@@ -3883,6 +3883,22 @@ export async function ensurePipelineStage(
     },
   });
   if (existingStage) {
+    const existingRequiredFields = Array.isArray(existingStage.requiredFields)
+      ? existingStage.requiredFields
+      : [];
+    const requiredFieldsMatch =
+      existingRequiredFields.length === definition.requiredFields.length &&
+      existingRequiredFields.every(
+        (field, index) => field === definition.requiredFields[index],
+      );
+    if (
+      existingStage.probability === definition.probability &&
+      existingStage.stageType === definition.stageType &&
+      existingStage.staleDays === definition.staleDays &&
+      requiredFieldsMatch
+    ) {
+      return existingStage;
+    }
     const updated = await tx.pipelineStage.update({
       where: { id: existingStage.id },
       data: {

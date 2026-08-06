@@ -517,7 +517,7 @@ export function LegacyExcelImporter({
     setError("");
     setMessage("事業部・関連付け・IS/FS担当者を補修しています。");
     try {
-      for (let requestCount = 0; requestCount < 100; requestCount += 1) {
+      for (let requestCount = 0; requestCount < 500; requestCount += 1) {
         const response = await fetch(
           "/api/imports/legacy-excel/repair-associations",
           {

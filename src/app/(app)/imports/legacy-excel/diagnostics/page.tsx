@@ -31,7 +31,11 @@ export default async function LegacyExcelDiagnosticsPage({
     orderBy: { createdAt: "desc" },
   });
   const mapping = job?.mapping as
-    | { dryRunSummary?: LegacyExcelDryRunResult }
+    | {
+        dryRunSummary?: LegacyExcelDryRunResult;
+        associationRepairVersion?: number;
+        associationRepairProgress?: unknown;
+      }
     | undefined;
   const candidates = (mapping?.dryRunSummary?.progressCandidates ?? [])
     .map(refreshLegacyProgressCandidatePeople)
@@ -81,9 +85,20 @@ export default async function LegacyExcelDiagnosticsPage({
         },
       })
     : [];
+  const businessUnits = await prisma.businessUnit.findMany({
+    where: { organizationId: context.organization.id },
+    select: { id: true, name: true, slug: true },
+    orderBy: { name: "asc" },
+  });
   const report = {
     importJob: job
-      ? { id: job.id, createdAt: job.createdAt, totalRows: job.totalRows }
+      ? {
+          id: job.id,
+          createdAt: job.createdAt,
+          totalRows: job.totalRows,
+          associationRepairVersion: mapping?.associationRepairVersion ?? null,
+          associationRepairProgress: mapping?.associationRepairProgress ?? null,
+        }
       : null,
     candidates: candidates.map(({ candidate, index }) => ({
       index,
@@ -99,6 +114,9 @@ export default async function LegacyExcelDiagnosticsPage({
     deals: deals.map((deal) => ({
       id: deal.id,
       name: deal.name,
+      businessUnitId: deal.businessUnitId,
+      pipelineId: deal.pipelineId,
+      stageId: deal.stageId,
       source: deal.source,
       externalId: deal.externalId,
       businessUnit: deal.businessUnit?.name ?? null,
@@ -110,6 +128,7 @@ export default async function LegacyExcelDiagnosticsPage({
       })),
     })),
     links,
+    businessUnits,
   };
 
   return (

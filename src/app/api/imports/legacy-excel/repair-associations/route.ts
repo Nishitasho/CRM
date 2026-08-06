@@ -30,7 +30,7 @@ const repairSchema = z.object({
   importJobId: z.string().uuid(),
 });
 
-const REPAIR_BATCH_SIZE = 20;
+const REPAIR_BATCH_SIZE = 100;
 const REPAIR_ASSIGNMENT_CONCURRENCY = 10;
 
 const projectRepairTargets = {

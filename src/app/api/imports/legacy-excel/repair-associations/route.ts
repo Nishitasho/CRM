@@ -369,6 +369,55 @@ async function repairLegacySalesAssignments(input: {
       });
     }
   });
+  const lineItems = await prisma.dealLineItem.findMany({
+    where: {
+      organizationId: input.organizationId,
+      dealId: { in: assignmentEntries.map(([dealId]) => dealId) },
+      productId: { not: null },
+    },
+    select: { dealId: true, productId: true },
+  });
+  const requiredBusinessUnitProducts = new Map<
+    string,
+    { businessUnitId: string; productId: string }
+  >();
+  for (const lineItem of lineItems) {
+    if (!lineItem.productId) continue;
+    const assignment = assignments.get(lineItem.dealId);
+    if (!assignment) continue;
+    const routingTarget = routingTargets.get(
+      legacyRoutingKey(assignment.candidate),
+    );
+    if (!routingTarget) continue;
+    requiredBusinessUnitProducts.set(
+      `${routingTarget.businessUnitId}\u0000${lineItem.productId}`,
+      {
+        businessUnitId: routingTarget.businessUnitId,
+        productId: lineItem.productId,
+      },
+    );
+  }
+  // Ensure each product/division pair once before parallel deal transactions.
+  // Concurrent upserts of the same pair can otherwise block one another.
+  for (const pair of requiredBusinessUnitProducts.values()) {
+    await prisma.businessUnitProduct.upsert({
+      where: {
+        organizationId_businessUnitId_productId: {
+          organizationId: input.organizationId,
+          businessUnitId: pair.businessUnitId,
+          productId: pair.productId,
+        },
+      },
+      create: {
+        organizationId: input.organizationId,
+        businessUnitId: pair.businessUnitId,
+        productId: pair.productId,
+        status: "ACTIVE",
+        metadata: { source: "legacy_excel_routing_repair" },
+      },
+      update: { status: "ACTIVE" },
+    });
+  }
   const participantSnapshots = await prisma.dealParticipant.findMany({
     where: {
       organizationId: input.organizationId,
@@ -484,13 +533,6 @@ async function repairLegacySalesAssignments(input: {
                 });
               }
               if (routingNeedsUpdate) {
-                const lineItems = await tx.dealLineItem.findMany({
-                  where: {
-                    organizationId: input.organizationId,
-                    dealId,
-                  },
-                  select: { productId: true },
-                });
                 await tx.dealLineItem.updateMany({
                   where: {
                     organizationId: input.organizationId,
@@ -498,29 +540,6 @@ async function repairLegacySalesAssignments(input: {
                   },
                   data: { businessUnitId: routingTarget.businessUnitId },
                 });
-                for (const productId of new Set(
-                  lineItems.flatMap((lineItem) =>
-                    lineItem.productId ? [lineItem.productId] : [],
-                  ),
-                )) {
-                  await tx.businessUnitProduct.upsert({
-                    where: {
-                      organizationId_businessUnitId_productId: {
-                        organizationId: input.organizationId,
-                        businessUnitId: routingTarget.businessUnitId,
-                        productId,
-                      },
-                    },
-                    create: {
-                      organizationId: input.organizationId,
-                      businessUnitId: routingTarget.businessUnitId,
-                      productId,
-                      status: "ACTIVE",
-                      metadata: { source: "legacy_excel_routing_repair" },
-                    },
-                    update: { status: "ACTIVE" },
-                  });
-                }
                 await tx.salesPerformanceEvent.updateMany({
                   where: {
                     organizationId: input.organizationId,

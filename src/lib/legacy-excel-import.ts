@@ -22,7 +22,7 @@ import {
 } from "./spreadsheet-stages";
 import { parseXlsxWorkbook, type ParsedWorkbookSheet } from "./spreadsheet";
 
-export const LEGACY_ASSOCIATION_REPAIR_VERSION = 9;
+export const LEGACY_ASSOCIATION_REPAIR_VERSION = 10;
 
 export type LegacyExcelFileType =
   | "PROGRESS_MANAGEMENT"
@@ -148,6 +148,7 @@ export function resolveLegacyRepairDealId(
     source: string | null;
   }>,
   allowNameFallback = true,
+  legacyLinkedDealIds: ReadonlySet<string> = new Set(),
 ) {
   if (linkedDealId && deals.some((deal) => deal.id === linkedDealId)) {
     return linkedDealId;
@@ -166,7 +167,7 @@ export function resolveLegacyRepairDealId(
     normalizeLegacyName(candidate.dealName);
   const nameMatches = deals.filter(
     (deal) =>
-      deal.source === "legacy_excel" &&
+      (deal.source === "legacy_excel" || legacyLinkedDealIds.has(deal.id)) &&
       normalizeLegacyName(deal.name) === normalizedDealName,
   );
   return nameMatches.length === 1 ? nameMatches[0].id : null;

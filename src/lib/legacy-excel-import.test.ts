@@ -159,6 +159,15 @@ describe("legacy Excel import", () => {
       ]),
     ).toBeNull();
     expect(
+      resolveLegacyRepairDealId(
+        candidate,
+        null,
+        [{ ...legacyDeal, source: "manual" }],
+        true,
+        new Set([legacyDeal.id]),
+      ),
+    ).toBe(legacyDeal.id);
+    expect(
       resolveLegacyRepairDealId(candidate, null, [legacyDeal], false),
     ).toBeNull();
   });
